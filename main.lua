@@ -51,4 +51,4 @@ if addConsoleCommand ~= nil then
     end
 end
 
-print("[StockGuard] loaded (SG-6 capacity core; adapters unbound, see SGCapacity.UNBOUND_ADAPTERS)")
+print("[StockGuard] loaded (SG-6 capacity core; extender, Realistic Livestock, Montana and realSilo bound; ProductionControl, Pumps N' Hoses, UnlimitedFillTypes and Distribution Redux refused, see SGCapacity.ADAPTERS)")

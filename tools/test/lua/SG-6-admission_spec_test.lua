@@ -924,6 +924,32 @@ do
     T.eq("S5 naming Class.method", what, "Storage.readStream")
     Storage.readStream = oursRead
     T.eq("S6 restored pairs verify", (WF.verifyInstalled()), true)
+    -- A re-source of the file keeps the installed map on the global table: a
+    -- second install() (the re-sourced chunk's call) returns early, the map
+    -- still holds every pair, and a later replacement is still detected.
+    local n = 0 for _ in pairs(SGWireFormats._ours) do n = n + 1 end
+    T.eq("S6a the installed map lives on the global table with all ten pairs", n, 10)
+    T.eq("S6b a re-sourced install returns early", (WF.install(ctl)), true)
+    local n2 = 0 for _ in pairs(SGWireFormats._ours) do n2 = n2 + 1 end
+    T.eq("S6c the map survives the re-source", n2, 10)
+    local oursWrite = Storage.writeStream
+    Storage.writeStream = function(...) return oursWrite(...) end
+    local ok2, what2 = WF.verifyInstalled()
+    T.eq("S6d detection still works after the re-source", tostring(ok2) .. "/" .. tostring(what2), "false/Storage.writeStream")
+    Storage.writeStream = oursWrite
+    -- The Storage writer validates its own set before writing.
+    local w = NewStream()
+    local badStorage = { sortedFillTypes = { 3, 2 }, fillLevels = { [2] = 1, [3] = 1 }, fillLevelsLastSynced = {} }
+    local ctlW = CAP.new(); ctlW.phase = "READY"; ctlW.widthBits = 8; ctlW.registeredCount = 3
+    g_server = { closed = {}, closeConnection = function(self, c) self.closed[#self.closed + 1] = c end }
+    local connW = { getIsServer = function() return false end }
+    WF.install(ctlW)
+    local savedFtm = g_fillTypeManager
+    g_fillTypeManager = { fillTypes = { {}, {}, {} } }
+    Storage.writeStream(badStorage, w, connW)
+    T.eq("S6e an unordered own set refuses the peer instead of writing it", g_server.closed[1], connW)
+    T.eq("S6f the frame carries a zero count for alignment", w.cells[#w.cells], 0)
+    g_fillTypeManager = savedFtm
     -- The freeze wrapper fails the load on a changed hook.
     local ftm = setmetatable({ fillTypes = { { name = "UNKNOWN" } } }, { __index = FillTypeManager })
     g_fillTypeManager = ftm

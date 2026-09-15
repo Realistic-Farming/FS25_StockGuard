@@ -85,7 +85,13 @@ end
 -- Installation (native classes, once per process, active only when READY)
 -- =========================================================
 local ctl = nil   -- the capacity controller (width and registry facts)
-local ours = {}   -- Class.method -> the function this module installed
+-- Class.method -> the function this module installed. On the global table: a
+-- mods-set change at the main menu re-sources this file into the same mod
+-- environment (mods.lua:431 reuses _G[modName]) while _installed stays true,
+-- so a file-local map would come back empty and verifyInstalled would see
+-- nothing. The map, like the flag, survives the re-source.
+SGWireFormats._ours = SGWireFormats._ours or {}
+local ours = SGWireFormats._ours
 
 local function width() return ctl ~= nil and ctl:getFrozenWidth() or FillTypeManager.SEND_NUM_BITS end
 local function registered() return ctl ~= nil and ctl:getFrozenRegisteredCount() or nil end
@@ -298,8 +304,19 @@ function SGWireFormats.install(controller)
     -- ---------------- Storage ----------------
     local stRead, stWrite = Storage.readStream, Storage.writeStream
     local stReadU, stWriteU = Storage.readUpdateStream, Storage.writeUpdateStream
-    local function writeStoragePayload(self, streamId)
+    local function writeStoragePayload(self, streamId, connection)
         local list = self.sortedFillTypes
+        -- Same validate-before-write rule as the list writers (brief 4.7): the
+        -- object's own sorted set must be valid registered ids in ascending
+        -- order within the frozen width, or the peer is refused.
+        local rows = {}
+        for i, fillType in ipairs(list) do rows[i] = { id = fillType, present = false } end
+        local ok, why = SGWireFormats.validateStorageFrame(rows, #rows, list, width(), registered())
+        if not ok then
+            refuse("Storage payload (writer)", why, connection)
+            streamWriteUInt16(streamId, 0)   -- alignment only; the peer has been refused
+            return
+        end
         streamWriteUInt16(streamId, #list)
         for _, fillType in ipairs(list) do
             streamWriteUIntN(streamId, fillType, width())
@@ -335,7 +352,7 @@ function SGWireFormats.install(controller)
         if st == "inactive" then return stWrite(self, streamId, connection) end
         if st == "refused" then return end
         Storage:superClass().writeStream(self, streamId, connection)
-        writeStoragePayload(self, streamId)
+        writeStoragePayload(self, streamId, connection)
     end
     Storage.readUpdateStream = function(self, streamId, timestamp, connection)
         local st = liveState(connection, "Storage.readUpdateStream")
@@ -351,7 +368,7 @@ function SGWireFormats.install(controller)
         Storage:superClass().writeUpdateStream(self, streamId, connection, dirtyMask)
         if not connection:getIsServer() then
             local flag = self.storageDirtyFlag
-            if streamWriteBool(streamId, bit32.band(dirtyMask, flag) ~= 0) then writeStoragePayload(self, streamId) end
+            if streamWriteBool(streamId, bit32.band(dirtyMask, flag) ~= 0) then writeStoragePayload(self, streamId, connection) end
         end
     end
     ours["Storage.readStream"] = Storage.readStream
