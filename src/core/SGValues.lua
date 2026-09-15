@@ -25,6 +25,7 @@ V.VERSION = "2"
 V.FORMAT_TOKEN = "SG_VALUES_2"
 V.MAX_TOKENS = 1000000
 V.MAX_DEPTH = 64
+V.MAX_STRING_BYTES = 8192
 V.INTEGER_LIMIT = 2 ^ 53
 
 local function isFinite(n) return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge end
@@ -164,6 +165,7 @@ local function decodeAt(tokens, i, depth)
     elseif tag == "S" then
         local s = tokens[i + 1]
         if type(s) ~= "string" then return nil, i, "BAD_STRING" end
+        if #s > V.MAX_STRING_BYTES then return nil, i, "STRING_TOO_LONG" end
         return s, i + 2
     elseif tag == "L" then
         local n = parseCount(tokens[i + 1], #tokens - (i + 1))
@@ -186,6 +188,7 @@ local function decodeAt(tokens, i, depth)
         for _ = 1, n do
             local key = tokens[pos]
             if type(key) ~= "string" then return nil, pos, "BAD_KEY" end
+            if #key > V.MAX_STRING_BYTES then return nil, pos, "STRING_TOO_LONG" end
             if lastKey ~= nil and not (lastKey < key) then return nil, pos, (lastKey == key) and "DUPLICATE_KEY" or "UNSORTED_KEY" end
             lastKey = key
             local v, nextPos, why, present = decodeAt(tokens, pos + 1, depth + 1)

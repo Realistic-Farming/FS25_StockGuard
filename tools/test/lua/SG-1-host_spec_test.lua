@@ -4,8 +4,6 @@
 --
 --!load: src/capacity/SGSha256.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua
 
--- SGTransport's file-local alias T shadows the prelude's T in the concatenated bench program.
-local T = _G.T
 FarmManager = FarmManager or { SPECTATOR_FARM_ID = 0, SINGLEPLAYER_FARM_ID = 1, GUIDED_TOUR_FARM_ID = 14, INVALID_FARM_ID = 15, MAX_FARM_ID = 8, MAX_NUM_FARMS = 8 }
 local clock = 100
 getTimeSec = function() return clock end
@@ -90,11 +88,17 @@ do
     local first = ops.stocks[ops.carriers[SGRecords.carrierKeyString(binding("silo", "01").carrierKey)].stockId]
     first.properties["sf.moisture"] = { propertyId = "sf.moisture", schemaVersion = 1, producerId = "soil", propertyRevision = 1, knowledge = "KNOWN", payload = { moisture = 0.14, secret = "internal" } }
     local page = views:getManagementView(farmer, { route = "STOCK", selectionKind = "FARM" })
-    T.eq("H11 first page is READY with 64 rows and a continuation", page.state .. "/" .. #page.view.rows .. "/" .. tostring(page.view.nextPageCursor ~= nil), "READY/64/true")
+    T.eq("H11 first page is READY, within the row cap and byte budget, with a continuation", page.state .. "/" .. tostring(#page.view.rows <= 64 and #page.view.rows > 0) .. "/" .. tostring(#SGViews.encodeView(page.view) <= SGTransport.MAX_TOKENS) .. "/" .. tostring(page.view.nextPageCursor ~= nil), "READY/true/true/true")
     T.eq("H12 rows are in identity order and STOCK kind", page.view.rows[1].rowKind .. "/" .. page.view.rows[1].label, "STOCK/Silo 1")
     T.eq("H13 disclosed property omits producer internals", tostring(page.view.rows[1].properties[1].payload.secret) .. "/" .. page.view.rows[1].properties[1].payload.moisture, "nil/0.14")
-    local page2 = views:getManagementView(farmer, { route = "STOCK", selectionKind = "FARM" }, { pageCursor = page.view.nextPageCursor })
-    T.eq("H14 continuation returns the remaining rows and is exhausted", page2.state .. "/" .. #page2.view.rows .. "/" .. tostring(page2.view.nextPageCursor), "READY/6/nil")
+    local total, pages, cursor, page2 = #page.view.rows, 1, page.view.nextPageCursor, nil
+    while cursor ~= nil and pages < 10 do
+        page2 = views:getManagementView(farmer, { route = "STOCK", selectionKind = "FARM" }, { pageCursor = cursor })
+        total = total + #page2.view.rows
+        pages = pages + 1
+        cursor = page2.view.nextPageCursor
+    end
+    T.eq("H14 continuation returns every remaining row and ends exhausted (no next cursor)", page2.state .. "/" .. total .. "/" .. tostring(page2.view.nextPageCursor), "READY/70/nil")
     T.eq("H15 the empty station bay is not enumerated without context", (function() for _, r in ipairs(page2.view.rows) do if r.rowKind == "CARRIER" then return "carrier" end end return "none" end)(), "none")
     local other = { farmId = 2, userId = "u2", actorState = "RESOLVED", connectionId = "c2" }
     T.eq("H16 another farm sees an empty READY page, not another farm's rows", #views:getManagementView(other, { route = "STOCK", selectionKind = "FARM" }).view.rows, 0)
@@ -103,7 +107,7 @@ do
     T.eq("H18 a domain reset invalidates cursors", views:getManagementView(farmer, { route = "STOCK", selectionKind = "FARM" }, { pageCursor = page.view.nextPageCursor }).state, "STALE")
     local focus = views:getManagementView(farmer, { route = "STOCK", selectionKind = "FARM" }, { navigationCarrierId = "nav:station" })
     T.eq("H19 navigation focus enumerates the empty station bay with its role", #focus.view.rows .. "/" .. focus.view.rows[1].rowKind .. "/" .. tostring(focus.view.rows[1].navigationRole), "1/CARRIER/PRODUCT_A")
-    T.eq("H20 unknown focus is an empty READY page, not farm rows", #views:getManagementView(farmer, { route = "STOCK", selectionKind = "FARM" }, { navigationCarrierId = "nav:nowhere" }).view.rows, 0)
+    T.eq("H20 unknown focus is keyed unavailable, never farm rows", views:getManagementView(farmer, { route = "STOCK", selectionKind = "FARM" }, { navigationCarrierId = "nav:nowhere" }).reason, "NAVIGATION_UNKNOWN")
     local stockOnly = views:getManagementView(farmer, { route = "STOCK", selectionKind = "FARM" }, { rowKinds = { "STOCK" } }, true)
     T.eq("H21 trusted rowKinds STOCK gives stock rows only", (function() for _, r in ipairs(stockOnly.view.rows) do if r.rowKind ~= "STOCK" then return "mixed" end end return "stock" end)(), "stock")
     T.eq("H22 recipe route is unavailable until its owner joins", views:getManagementView(farmer, { route = "RECIPE_LIBRARY", selectionKind = "LIBRARY", libraryId = "@current" }).state, "UNAVAILABLE")
@@ -119,7 +123,7 @@ do
     local tokens = SGViews.encodeView(page.view)
     T.ok("H26 view encodes to string tokens", SGValues.isTokenArray(tokens))
     local back, why, terminal = SGViews.decodeView(tokens)
-    T.eq("H27 view decodes with rows and keys intact", #back.rows .. "/" .. tostring(back.selectionKey == page.view.selectionKey) .. "/" .. tostring(back.rows[1].stockRef.contentsGeneration), "64/true/1")
+    T.eq("H27 view decodes with rows and keys intact", tostring(#back.rows == #page.view.rows) .. "/" .. tostring(back.selectionKey == page.view.selectionKey) .. "/" .. tostring(back.rows[1].stockRef.contentsGeneration), "true/true/1")
     local bad = SGValues.copy(page.view)
     bad.schemaVersion = 3
     local _, whyB, termB = SGViews.decodeView(SGViews.encodeView(bad))
@@ -136,7 +140,11 @@ local commands = SGCommands.new(registry, function() return clock end)
 do
     local state = { enabled = false, revision = "1" }
     local invoked, executed, quoted = 0, 0, 0
+    pendingState = { state = "PENDING" }
+    pendingCompleted = 0
     registry:registerManagementOwner("native", { version = 1, targetKinds = { "PROCESS", "STOCK" },
+        readPending = function(pendingId) if pendingState.state == "COMPLETE" then return { state = "COMPLETE", outcome = "APPLIED", detail = { resultingRevision = "9" } } end return { state = "PENDING" } end,
+        onPendingComplete = function(pendingId, outcome) pendingCompleted = pendingCompleted + 1 end,
         enumerateTargets = function() return { state = "READY", targets = { { targetKind = "PROCESS", targetId = "p1" } }, exhausted = true } end,
         resolveTarget = function(id) if id == "p1" or id == "s1" then return { id = id } end return nil end,
         readTarget = function(b) return { rowKind = "PROCESS", processId = b.id, label = "Mill", enabled = state.enabled, processStateLabelKey = "sg_native_inactive" } end,
@@ -177,7 +185,7 @@ do
     T.eq("I7 DIRECT desired state applies and advances", r1.outcome .. "/" .. r1.nextSequence .. "/" .. tostring(state.enabled), "APPLIED/2/true")
     T.eq("I8 a duplicate of the latest request returns the retained result without another invoke", commands:handle(farmer, first).outcome .. "/" .. invoked, "APPLIED/1")
     T.eq("I9 conflicting reuse of the sequence refuses", commands:handle(farmer, req(1, "DIRECT", { arguments = { enabled = false } })).reasonCode, "SEQUENCE_CONFLICT")
-    T.eq("I10 a stale expected revision is STALE with the current target", (function() local r = commands:handle(farmer, req(2, "DIRECT", { expectedRevision = "1" })) return r.outcome .. "/" .. tostring(r.currentTarget and r.currentTarget.row.processId) end)(), "STALE/p1")
+    T.eq("I10 a stale expected revision is STALE with the current target identity and revision, no owner row", (function() local r = commands:handle(farmer, req(2, "DIRECT", { expectedRevision = "1" })) return r.outcome .. "/" .. tostring(r.currentTarget and r.currentTarget.targetId) .. "/" .. tostring(r.currentTarget and r.currentTarget.currentRevision) .. "/" .. tostring(r.currentTarget and r.currentTarget.row) end)(), "STALE/p1/2/nil")
     T.eq("I11 a refused command still consumed its sequence", commands:credentialsFor(farmer, "STOCK").nextSequence, "3")
     T.eq("I12 another actor cannot use this session", commands:handle({ farmId = 2, userId = "u2", actorState = "RESOLVED", connectionId = "c2" }, req(3, "DIRECT")).reasonCode, "SESSION_INVALID")
     -- QUOTE / EXECUTE.
@@ -205,6 +213,14 @@ do
     local pend = commands:handle(farmer, req(12, "DIRECT", { actionId = "PENDING_THING", arguments = {} }))
     T.eq("I20 ACCEPTED_PENDING keeps the outstanding sequence", pend.outcome .. "/" .. pend.nextSequence .. "/" .. pend.actualPendingId, "ACCEPTED_PENDING/12/pend1")
     T.eq("I21 no new command while one is pending", commands:handle(farmer, req(13, "DIRECT")).reasonCode, "COMMAND_PENDING")
+    -- Completion clears the outstanding command only through the owner's pending path.
+    pendingState.state = "PENDING"
+    T.eq("I21b polling while the owner still reports PENDING clears nothing", commands:pollPending() .. "/" .. tostring(session.outstanding ~= nil), "0/true")
+    pendingState.state = "COMPLETE"
+    T.eq("I21c owner completion clears the outstanding command and advances", commands:pollPending() .. "/" .. tostring(session.outstanding) .. "/" .. session.nextSequence, "1/nil/13")
+    T.eq("I21d the completion result is the retained result for that sequence", commands:handle(farmer, req(12, "DIRECT", { actionId = "PENDING_THING", arguments = {} })).outcome, "APPLIED")
+    T.eq("I21e the owner was told once", pendingCompleted, 1)
+    T.eq("I21f a later command is admitted again", commands:handle(farmer, req(13, "DIRECT")).outcome, "APPLIED")
     -- Exhaustion.
     session.outstanding = nil
     session.nextSequence = SGCommands.SEQUENCE_LIMIT
@@ -218,7 +234,8 @@ end
 -- (J) Transport: NS-7 producer/consumer and the fallback events
 do
     local transport = SGTransport.new(views, commands)
-    local ctx = function(state, cid) return { connection = {}, connectionId = cid or "c1", userId = "u1", farmId = 1, actorState = state or "RESOLVED", serverSession = "1", subscriptionId = "1", modId = "stockGuard" } end
+    local conn1 = { streamId = 1 }
+    local ctx = function(state, cid) return { connection = conn1, connectionId = cid or "c1", userId = "u1", farmId = 1, actorState = state or "RESOLVED", serverSession = "1", subscriptionId = "1", modId = "stockGuard" } end
     T.eq("J1 waiting actor builds WAITING with no values", transport:buildView(ctx("WAITING"), nil, true).state, "WAITING")
     T.eq("J2 spectator builds DENIED", transport:buildView(ctx("SPECTATOR"), nil, true).state, "DENIED")
     local full = transport:buildView(ctx(), nil, true)
@@ -228,14 +245,15 @@ do
     ops:reconcileCarrier(SGRecords.carrierKeyString(binding("silo", "01").carrierKey), { materialRef = wheat, amount = 50, unit = "l" })
     local changed = transport:buildView(ctx(), { viewKey = full.viewKey, dataRevision = full.dataRevision }, false)
     T.eq("J5 a material change answers FULL with a new revision", changed.mode .. "/" .. tostring(changed.dataRevision ~= full.dataRevision), "FULL/true")
-    T.ok("J6 selection change per connection changes the view key", transport:setSelection("c1", { route = "STOCK", selectionKind = "GROUND", groundFootprint = { x = 2, z = 0, radius = 1.5 } }) and transport:buildView(ctx(), nil, true).viewKey ~= full.viewKey)
-    T.eq("J7 an invalid selection is refused and grants nothing", select(2, transport:setSelection("c1", { route = "STOCK", selectionKind = "FARM", siteId = "x" })), "CROSS_KIND_PARAMETERS")
+    T.ok("J6 selection change per connection object changes the view key", transport:setSelection(conn1, { route = "STOCK", selectionKind = "GROUND", groundFootprint = { x = 2, z = 0, radius = 1.5 } }) and transport:buildView(ctx(), nil, true).viewKey ~= full.viewKey)
+    T.eq("J6b another connection object keeps its own default selection", transport:buildView({ connection = { streamId = 2 }, connectionId = "c2", userId = "u1", farmId = 1, actorState = "RESOLVED" }, nil, true).viewKey, full.viewKey)
+    T.eq("J7 an invalid selection is refused and grants nothing", select(2, transport:setSelection(conn1, { route = "STOCK", selectionKind = "FARM", siteId = "x" })), "CROSS_KIND_PARAMETERS")
     -- Client side.
     local client = SGTransport.new(views, commands)
     client:expectSelection({ route = "STOCK", selectionKind = "FARM" })
     local mismatch = client:applyView({ mode = "FULL", values = transport:buildView(ctx(), nil, true).values, dataRevision = "x" })
     T.eq("J8 a publication for another selection is not applied", mismatch.outcome .. "/" .. mismatch.reason, "RETRYABLE/SELECTION_MISMATCH")
-    transport:setSelection("c1", { route = "STOCK", selectionKind = "FARM" })
+    transport:setSelection(conn1, { route = "STOCK", selectionKind = "FARM" })
     local pub = transport:buildView(ctx(), nil, true)
     local applied = client:applyView({ mode = "FULL", values = pub.values, dataRevision = pub.dataRevision })
     T.eq("J9 the matching publication applies with its revision", applied.outcome .. "/" .. tostring(applied.dataRevision == pub.dataRevision) .. "/" .. tostring(client.client.usable), "APPLIED/true/true")
@@ -257,6 +275,8 @@ do
     T.eq("J15 a waiting NS-7 keeps waiting, never a unilateral fallback", tostring(t3:selectRoute({ networkSync = { getScopedCapabilities = function() return { bootstrapVersion = 1, protocolVersions = { 1 }, ready = false, waiting = true, reasonCode = "WAITING_MISSION_LOAD" } end, registerScopedModule = function() end } })), "nil")
     local t4 = SGTransport.new(views, commands)
     T.eq("J16 absent NS-7 selects the dedicated fallback", t4:selectRoute({}), "FALLBACK")
+    local t5 = SGTransport.new(views, commands)
+    T.eq("J16b a present NS-7 that refuses the registration is UNAVAILABLE, never fallback", t5:selectRoute({ networkSync = { getScopedCapabilities = function() return { bootstrapVersion = 1, protocolVersions = { 1 }, ready = true } end, registerScopedModule = function() return false, "MODULE_LIMIT" end } }) .. "/" .. t5.routeReason, "UNAVAILABLE/NS7_REGISTRATION_REFUSED:MODULE_LIMIT")
     t2:teardown()
     T.eq("J17 teardown unregisters the scoped module", tostring(registered), "nil")
     -- Events.
@@ -287,6 +307,11 @@ do
     SGCommandRequestEvent.emptyNew():readStream(s3, nil)
     SGCommandRequestEvent.run = origC
     T.eq("J20 command request roundtrips through the codec", gotCmd.route .. "/" .. gotCmd.sequence, "STOCK/1")
+    -- Oversize token counts are refused without allocation.
+    local s4 = NewStream()
+    streamWriteInt32(s4, SGTransport.MAX_TOKENS + 1)
+    T.eq("J21 an oversize token count is refused before any string is read", select(2, SGTransport.readTokens(s4)), "OVERSIZE")
+    T.eq("J22 a decoded string above the byte bound refuses", select(2, SGValues.decode({ "SG_VALUES", "2", "S", string.rep("x", SGValues.MAX_STRING_BYTES + 1) })), "STRING_TOO_LONG")
 end
 
 -- (K) The mission handle and the SG-6 finished-loading chain
@@ -304,7 +329,7 @@ do
     end
     local mission = setmetatable({ _server = true, _localFarm = 1, _farms = {}, playerUserId = "host", missionDynamicInfo = { isMultiplayer = false }, missionInfo = {}, userManager = { getUserByConnection = function(_, c) return c.user end } }, Mission)
     local sg = StockGuard.attach(mission)
-    T.ok("K1 handle published on the mission", mission.stockGuard == sg and type(mission.stockGuard.registerCarrierAdapter) == "function")
+    T.ok("K1 a separate handle is published on the mission; the host is not reachable through it", mission.stockGuard ~= sg and StockGuard.hostOf(mission) == sg and type(mission.stockGuard.registerCarrierAdapter) == "function" and mission.stockGuard.operations == nil and mission.stockGuard.registry == nil)
     T.eq("K2 attach is idempotent", StockGuard.attach(mission), sg)
     local h = mission.stockGuard
     local lease = h.registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" }, resolveCarrier = function() end, readNativeState = function() end,
@@ -320,21 +345,21 @@ do
     sg6Suppress = false
     StockGuardCapacity = { isReady = function() return true end }
     T.eq("K7 original body runs first and its return is preserved", mission:onFinishedLoading(), "parent")
-    T.eq("K8 after the original body the barrier is observed once: carriers enumerated, views READY, capacity published", superCalls .. "/" .. tostring(sg.views.ready) .. "/" .. tostring(sg.capacity ~= nil) .. "/" .. sg.getStatus().carriers, "1/true/true/1")
+    T.eq("K8 after the original body the barrier is observed once: carriers enumerated, views READY, capacity published", superCalls .. "/" .. tostring(sg.views.ready) .. "/" .. tostring(sg.capacity ~= nil) .. "/" .. h.getStatus().carriers, "1/true/true/1")
     mission:onFinishedLoading()
-    T.eq("K9 a repeat finished-loading does not re-enumerate", superCalls .. "/" .. sg.getStatus().carriers, "2/1")
+    T.eq("K9 a repeat finished-loading does not re-enumerate", superCalls .. "/" .. h.getStatus().carriers, "2/1")
     T.eq("K10 farm phase resolved UNCHANGED without a merge in singleplayer", sg.coordinator.phase, "UNCHANGED")
     -- Actor resolution.
     local conn = { user = MakeUser("u7", false), streamId = 7 }
     mission._farms[conn] = 3
-    local a = sg.resolveActor(conn)
+    local a = h.resolveActor(conn)
     T.eq("K11 remote actor resolved from the connection", a.actorState .. "/" .. a.farmId .. "/" .. a.userId, "RESOLVED/3/u7")
     mission._farms[conn] = 0
-    T.eq("K12 spectator farm is SPECTATOR", sg.resolveActor(conn).actorState, "SPECTATOR")
-    T.eq("K13 unknown user is WAITING", sg.resolveActor({ streamId = 8 }).actorState, "WAITING")
-    T.eq("K14 local host resolves its own farm", sg.resolveActor(nil).actorState .. "/" .. sg.resolveActor(nil).farmId, "RESOLVED/1")
+    T.eq("K12 spectator farm is SPECTATOR", h.resolveActor(conn).actorState, "SPECTATOR")
+    T.eq("K13 unknown user is WAITING", h.resolveActor({ streamId = 8 }).actorState, "WAITING")
+    T.eq("K14 local host resolves its own farm", h.resolveActor(nil).actorState .. "/" .. h.resolveActor(nil).farmId, "RESOLVED/1")
     g_dedicatedServer = {}
-    T.eq("K15 a dedicated server has no implicit local farmer", sg.resolveActor(nil).actorState, "INVALID")
+    T.eq("K15 a dedicated server has no implicit local farmer", h.resolveActor(nil).actorState, "INVALID")
     g_dedicatedServer = nil
     -- Fallback publication to a connection.
     local sent = {}
@@ -352,5 +377,130 @@ do
     sg:delete()
     T.eq("K18 delete leaves a foreign instance wrapper in place and drops the handle", tostring(mission.onFinishedLoading == foreign) .. "/" .. tostring(mission.stockGuard), "true/nil")
     T.ok("K19 leases are dead after delete", not sg.registry:isLive(lease))
+    SGFarmRestore.removeHooks()
+end
+
+-- (L) The host end to end: the wired farm-restore path, NS-7 request
+-- handling, publication ordering, per-player farm changes, connection
+-- close, event direction, client gates, pending polling from update (#2 review).
+do
+    local Mission = {}
+    Mission.__index = Mission
+    function Mission:getIsServer() return self._server end
+    function Mission:getFarmId(connection) if connection == nil then return self._localFarm end return self._farms[connection] end
+    Mission.onFinishedLoading = function(m) return "parent" end
+    local unsubscribed = 0
+    g_messageCenter = { subscribe = function() end, unsubscribeAll = function(_, target) unsubscribed = unsubscribed + 1 end }
+    MessageType = { PLAYER_FARM_CHANGED = 1, FARM_DELETED = 2 }
+    StockGuardCapacity = { isReady = function() return true end }
+    local mission = setmetatable({ _server = true, _localFarm = 1, _farms = {}, playerUserId = "host", missionDynamicInfo = { isMultiplayer = false }, missionInfo = { savegameDirectory = "sg" }, userManager = { getUserByConnection = function(_, c) return c.user end } }, Mission)
+    local sg = StockGuard.attach(mission)
+    local h = mission.stockGuard
+    -- A merged conversion observed by the coordinator; sections through the handle.
+    local stagedPhase, committedIds = nil, {}
+    h.registerSaveSection("own", { schemaVersion = 1, farmRestorePolicy = "OWNER", serialize = function() return { n = 1 } end,
+        stageLoad = function(payload, context) stagedPhase = context.farmRestore and context.farmRestore.phase return { ok = true } end,
+        commitLoad = function() committedIds[#committedIds + 1] = "own" end, clearReadiness = function() end })
+    h.registerSaveSection("plain", { schemaVersion = 1, serialize = function() return { n = 2 } end, stageLoad = function() return { ok = true } end, commitLoad = function() committedIds[#committedIds + 1] = "plain" end, clearReadiness = function() end })
+    local adapterLease = h.registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" }, resolveCarrier = function() end, readNativeState = function() end,
+        enumerateCarriers = function() return { { binding = binding("bin", "1"), nativeState = { materialRef = wheat, amount = 10, unit = "l" } } } end, hasAccess = function() return true end })
+    sg.save.backendId = SGSave.BACKEND_XML
+    local env = sg.save:buildEnvelope({})
+    sg:installFinishedLoadingObserver()
+    sg:onLoadMission00Finished()
+    sg.coordinator:observeBeforeMerge({ farms = { { farmId = 1 }, { farmId = 2 } } })
+    sg.coordinator:observeAfterMerge({ farms = {}, mergedFarms = { [2] = 1 }, farmIdToFarm = { [1] = {} } })
+    sg.coordinator:retainPayload(SGValues.decode(SGValues.encode(env)), "xml")
+    mission:onFinishedLoading()
+    T.eq("L1 through the host the OWNER section is staged with context.farmRestore MERGED", tostring(stagedPhase), "MERGED")
+    T.eq("L1b the undeclared section is retained under the conversion, the OWNER section installed", tostring(sg.save.sectionState.plain.reason) .. "/" .. tostring(sg.save.sectionState.own.ready), "FARM_RESTORE_UNSUPPORTED/true")
+    T.eq("L1c the next envelope carries the receipt and the pending unit for the retained section", (function() local e = sg.save:buildEnvelope({}) return tostring(e.farmRestore ~= nil and e.farmRestore.pendingUnits["section:plain"] ~= nil) end)(), "true")
+    T.eq("L1d the status reports the load state", h.getStatus().loadState .. "/" .. h.getStatus().farmPhase, "READY/MERGED")
+    -- NS-7 route: a view request sets the selection and marks dirty; no state event is sent.
+    local dirtyMarks, sent = 0, {}
+    sg.transport.route = "NS7"
+    sg.transport.networkSync = { markDirty = function() dirtyMarks = dirtyMarks + 1 end }
+    local remote = { user = MakeUser("u9", false), streamId = 9, isReadyForEvents = true, sendEvent = function(self, e) sent[#sent + 1] = e end }
+    mission._farms[remote] = 1
+    sg:onViewRequest(remote, { route = "STOCK", selectionKind = "GROUND", groundFootprint = { x = 0, z = 0, radius = 5 } }, {})
+    T.eq("L2 on NS7 a view request only sets the selection and marks dirty, never a state event", #sent .. "/" .. tostring(dirtyMarks > 0) .. "/" .. sg.transport:selectionFor(remote).normalized.selectionKind, "0/true/GROUND")
+    T.eq("L2b the selection is keyed by the connection object NS-7 hands to the producer", sg.transport:buildView({ connection = remote, connectionId = "c77", userId = "u9", farmId = 1, actorState = "RESOLVED" }, nil, true).state, "READY")
+    -- Fallback publication ordering on the client side.
+    local client = StockGuard.attach(setmetatable({ _server = false, _localFarm = 1, _farms = {}, missionDynamicInfo = { isMultiplayer = true }, missionInfo = {} }, Mission))
+    local ch = client.mission.stockGuard
+    T.eq("L3 material mutators refuse on a client", select(2, ch.bindCarrier(nil, nil, nil)) .. "/" .. select(2, ch.settleOperation(nil, nil)) .. "/" .. select(2, ch.getManagementView(nil, nil)), "NOT_SERVER/NOT_SERVER/NOT_SERVER")
+    client.transport.route = "FALLBACK"
+    client.transport:expectSelection({ route = "STOCK", selectionKind = "FARM" })
+    sg.transport.route = "FALLBACK"
+    sg:onViewRequest(remote, { route = "STOCK", selectionKind = "FARM" }, {})
+    local pub1 = sent[#sent]
+    sg.transport:markDirty()
+    sg:publishAllFallback()
+    local pub2 = sent[#sent]
+    T.ok("L3b two ordered publications were sent", pub1 ~= nil and pub2 ~= nil and pub1 ~= pub2 and SGValues.compareDecimal(pub2.publicationId, pub1.publicationId) > 0)
+    client:onViewState(pub2)
+    local rev2 = client.transport.client.replica and client.transport.client.replica.dataRevision
+    client:onViewState(pub1)
+    T.eq("L3c an older publication of the same session and epoch is ignored", tostring(client.transport.client.replica.dataRevision == rev2), "true")
+    local otherSession = SGViewStateEvent.new("s-other", "1", "1", "READY", "", pub1.tokens)
+    client:onViewState(otherSession)
+    T.eq("L3d a different server session resets the ordering baseline and applies", tostring(client.transport.client.usable) .. "/" .. client.clientOrder.serverSession, "true/s-other")
+    -- Per-player farm change and connection close.
+    local farmerA = h.resolveActor(remote)
+    local sessionA = sg.commands:issueSession(farmerA, "STOCK")
+    local remoteB = { user = MakeUser("u10", false), streamId = 10, isReadyForEvents = true, sendEvent = function() end }
+    mission._farms[remoteB] = 1
+    local sessionB = sg.commands:issueSession(h.resolveActor(remoteB), "STOCK")
+    sg:onPlayerFarmChanged({ getUserId = function() return "u9" end })
+    T.eq("L4 a player's farm change withdraws only that player's sessions", tostring(sg.commands.sessions[sessionA.commandSessionId]) .. "/" .. tostring(sg.commands.sessions[sessionB.commandSessionId] ~= nil), "nil/true")
+    sg:onConnectionClosed(remoteB)
+    T.eq("L5 a closed connection withdraws its command sessions and selection", tostring(sg.commands.sessions[sessionB.commandSessionId]) .. "/" .. tostring(rawget(sg.transport.selections, remoteB)), "nil/nil")
+    -- Event direction: a result event is accepted only from the server.
+    local resultsSeen = 0
+    client.onCommandResultCallback = function() resultsSeen = resultsSeen + 1 end
+    g_currentMission = client.mission
+    local ev = SGCommandResultEvent.new({ outcome = "APPLIED" })
+    local s = NewStream()
+    ev:writeStream(s, nil)
+    local fromClient = SGCommandResultEvent.emptyNew()
+    fromClient.tokens = SGTransport.readTokens(s)
+    fromClient:run({ getIsServer = function() return false end })
+    T.eq("L6 a command result from a non-server connection is ignored", resultsSeen, 0)
+    fromClient:run({ getIsServer = function() return true end })
+    T.eq("L6b a command result from the server is applied", resultsSeen, 1)
+    g_currentMission = mission
+    -- Pending completion is polled from the host tick.
+    local pendingDone = false
+    h.registerManagementOwner("mill", { version = 1, targetKinds = { "PROCESS" },
+        enumerateTargets = function() return { state = "READY", targets = {}, exhausted = true } end,
+        resolveTarget = function(id) return { id = id } end, readTarget = function(b) return { rowKind = "PROCESS", processId = b.id, label = "Mill", processStateLabelKey = "k" } end,
+        hasAccess = function() return true end,
+        getActions = function() return { { actionId = "START", targetKind = "PROCESS", targetId = "p1", expectedRevision = "1", argumentSchemaId = "S", controlKind = "ORDINARY", admission = "DIRECT_DESIRED_STATE", available = true } } end,
+        invoke = function() return "ACCEPTED_PENDING", { pendingId = "pend9" } end,
+        readPending = function() if pendingDone then return { state = "COMPLETE", outcome = "APPLIED", detail = {} } end return { state = "PENDING" } end })
+    local actorA = h.resolveActor(remote)
+    local sess = sg.commands:issueSession(actorA, "STOCK")
+    local res = sg.commands:handle(actorA, { protocolVersion = 2, route = "STOCK", commandSessionId = sess.commandSessionId, sequence = "1", phase = "DIRECT", actionId = "START", targetKind = "PROCESS", targetId = "p1", expectedRevision = "1", arguments = {} })
+    T.eq("L7 the owner's pending command is outstanding", res.outcome .. "/" .. tostring(sess.outstanding ~= nil), "ACCEPTED_PENDING/true")
+    sg:update(16)
+    T.eq("L7b the host tick leaves it outstanding while the owner reports PENDING", tostring(sess.outstanding ~= nil), "true")
+    pendingDone = true
+    sg:update(16)
+    T.eq("L7c the host tick clears it once the owner reports completion", tostring(sess.outstanding) .. "/" .. sess.nextSequence, "nil/2")
+    -- Route retry from update and teardown.
+    local retries = SGTransport.new(sg.views, sg.commands)
+    sg.transport = retries
+    sg.transport.stockGuard = sg
+    sg.mission.networkSync = { getScopedCapabilities = function() return { bootstrapVersion = 1, protocolVersions = { 1 }, ready = false, reasonCode = "WAITING_MISSION_LOAD" } end, registerScopedModule = function() return true end }
+    sg.routeLogged = false
+    sg:tryRoute()
+    T.eq("L8 a waiting NS-7 leaves the route unresolved with its reason", tostring(sg.transport.route) .. "/" .. sg.transport.routeReason, "nil/WAITING_MISSION_LOAD")
+    sg.mission.networkSync.getScopedCapabilities = function() return { bootstrapVersion = 1, protocolVersions = { 1 }, ready = true } end
+    for _ = 1, StockGuard.RETRY_TICKS do sg:update(16) end
+    T.eq("L8b the update tick retries until the route resolves", tostring(sg.transport.route), "NS7")
+    sg:delete()
+    T.eq("L9 delete removes the message subscriptions and the handle", unsubscribed .. "/" .. tostring(mission.stockGuard) .. "/" .. tostring(StockGuard.hostOf(mission)), "1/nil/nil")
+    client:delete()
+    g_messageCenter, MessageType = nil, nil
     SGFarmRestore.removeHooks()
 end

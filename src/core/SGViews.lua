@@ -7,16 +7,24 @@
 -- selection, session, quote or transport baseline. Selection kinds are
 -- FARM, SITE(siteId) and GROUND(groundFootprint); readOptions carry an
 -- opaque pageCursor, a navigationCarrierId focus (FARM only, no cursor) and
--- the trusted server-local rowKinds filter. A page holds at most 64
--- top-level rows in deterministic UTF-8-byte identity order; an outer
--- cursor binds mission/actor/farm epoch, normalized selection and the
--- identity after which continuation resumes. It carries identity only.
+-- the trusted server-local rowKinds filter.
 --
--- The STOCK VIEW encodes to SG_VALUES_2 (schemaVersion 2, pagingVersion 1)
--- and decodes on the client through decodeView, which refuses an
--- unsupported route or schema before any row is parsed (TERMINAL,
--- UNSUPPORTED_APPLICATION_VERSION). selectionKey is the lossless
--- token-length concatenation of the encoded selection request.
+-- A page holds at most 64 top-level rows AND at most PAGE_TOKEN_BUDGET
+-- encoded tokens: every row is size-accounted after disclosure while the
+-- page is built, and the page is cut with a cursor before the budget is
+-- exceeded. A single row that cannot fit is replaced by its small truthful
+-- floor (identity, amount, knowledge, no properties or actions, detail
+-- UNAVAILABLE/OVERSIZE); no PropertyRecord or action is ever split.
+--
+-- Rows come first from SG-1's own carrier/stock indexes in deterministic
+-- identity order, then from every registered management owner's bounded
+-- enumerateTargets continuation (PROCESS targets on the STOCK route). The
+-- outer cursor binds mission/actor/farm epoch, normalized selection and the
+-- position: the last carrier identity, then the owner index, the owner's
+-- own continuation and any owner targets already enumerated but not yet
+-- returned (never jumped over). An owner whose enumeration is missing,
+-- malformed or not READY is reported in ownerStates as explicitly
+-- unavailable, never as empty success.
 -- =========================================================
 
 SGViews = SGViews or {}
@@ -27,6 +35,9 @@ W.APPLICATION = "SG_APPLICATION_2"
 W.STOCK_SCHEMA_VERSION = 2
 W.PAGING_VERSION = 1
 W.PAGE_ROWS = 64
+W.PAGE_TOKEN_BUDGET = 3600     -- rows only; the view header and the event envelope fit in the rest of SGTransport.MAX_TOKENS
+W.OWNER_LIMIT = 64
+W.MAX_CURSORS = 256
 W.ROUTE_STOCK = "STOCK"
 W.ROUTE_RECIPES = "RECIPE_LIBRARY"
 W.SELECTION_KINDS = { FARM = true, SITE = true, GROUND = true }
@@ -34,6 +45,7 @@ W.ROW_KINDS = { CARRIER = true, STOCK = true, PROCESS = true, OBSERVATION = true
 W.AVAILABILITY = { READY = true, WAITING = true, DENIED = true, UNAVAILABLE = true, ERROR = true }
 W.MAX_CURSOR_BYTES = 128
 W.MAX_NAVIGATION_BYTES = 4096
+W.NAVIGATION_ROLES = { PRODUCT_A = true, PRODUCT_B = true, WATER = true, RF_WIP = true, RF_FINISHED = true }
 
 local copy = SGValues.copy
 local isFinite = SGValues.isFinite
@@ -45,7 +57,7 @@ function W.new(registry, operations, sites)
     self.operations = operations
     self.sites = sites
     self.viewEpoch = "1"          -- bumps on authorization-domain resets (site changes, farm changes)
-    self.cursors = {}             -- cursorToken -> cursor record (unsaved, mission-local)
+    self.cursors = {}             -- cursorToken -> cursor record (unsaved, mission-local, bounded)
     self.nextCursor = 0
     self.loadEpoch = "1"
     self.ready = false
@@ -144,7 +156,7 @@ function W:getCapabilities()
         siteSchema = (self.sites ~= nil and self.sites.available) and SGSiteBinding.SCHEMA or nil,
         siteReasonCode = self.sites ~= nil and self.sites.reasonCode or "NOT_BOUND",
         quoteSchema = quoteReady and "SG_QUOTE_1" or nil,
-        carrierPendingSchema = pendingReady and "SG_CARRIER_PENDING_1" or nil,
+        carrierPendingSchema = pendingReady and SGOperations.PENDING_SCHEMA or nil,
         adapters = adapters, properties = properties, managementOwners = owners,
         ready = self.ready, reasonCode = self.ready and "READY" or self.reasonCode,
     }
@@ -210,7 +222,7 @@ local function navigationOf(self, carrier)
     if lease == nil or type(lease.spec.getNavigationCarrierId) ~= "function" then return nil, nil end
     local ok, navId, role = pcall(lease.spec.getNavigationCarrierId, copy(carrier.binding))
     if not ok or not nonempty(navId, 4096) then return nil, nil end
-    if role ~= nil and not nonempty(role, 32) then return nil, nil end
+    if role ~= nil and not W.NAVIGATION_ROLES[role] then role = nil end
     return navId, role
 end
 
@@ -242,11 +254,13 @@ end
 local function carrierRow(self, carrier, actor)
     local n = carrier.native or {}
     local navId, role = navigationOf(self, carrier)
+    local p = self.operations.pending[carrier.carrierId]
     return {
         rowKind = "CARRIER", carrierId = carrier.carrierId, carrierKind = carrier.binding.profileId,
         label = tostring(n.label or carrier.binding.profileId), positionKnown = n.x ~= nil, x = n.x, z = n.z,
         capacityKnown = n.capacity ~= nil, capacity = n.capacity, capacityUnit = n.capacity ~= nil and amountUnitToken(n.unit) or nil,
         navigationCarrierId = navId, navigationRole = role, actions = actionsFor(self, "CARRIER", carrier.carrierId, actor),
+        pendingArmed = p ~= nil and p.pendingTarget ~= nil or nil, emptyEpoch = p and p.emptyEpoch or nil, selectionRevision = p and p.selectionRevision or nil,
     }
 end
 
@@ -262,6 +276,23 @@ local function stockRow(self, stock, carrier, actor)
     }
 end
 
+--- The small truthful floor of a row that cannot fit the page budget.
+local function floorRow(row)
+    local f = copy(row)
+    f.properties = row.rowKind == "STOCK" and {} or nil
+    f.actions = {}
+    f.detail = "UNAVAILABLE"
+    f.detailReason = "OVERSIZE"
+    return f
+end
+
+--- Encoded token cost of a row (after disclosure).
+local function rowCost(row)
+    local tokens = SGValues.encodeBare(row)
+    if tokens == nil then return math.huge end
+    return #tokens
+end
+
 --- Enumerate the actor-authorized carriers in the selection, in
 --- deterministic identity order.
 function W:authorizedCarriers(actor, normalized, options)
@@ -270,7 +301,7 @@ function W:authorizedCarriers(actor, normalized, options)
     table.sort(ids)
     local site = nil
     if normalized.selectionKind == "SITE" then
-        local s, reason = self.sites ~= nil and self.sites:site(normalized.siteId, actor) or nil, "SITE_UNAVAILABLE"
+        local s = self.sites ~= nil and self.sites:site(normalized.siteId, actor) or nil
         if s == nil then return nil, "SITE_UNAVAILABLE" end
         site = s
     end
@@ -294,16 +325,27 @@ function W:authorizedCarriers(actor, normalized, options)
 end
 
 -- ---------------------------------------------------------
--- Cursors (unsaved derived read cursors)
+-- Cursors (unsaved derived read cursors, bounded)
 -- ---------------------------------------------------------
 local function cursorBinding(self, actor, normalized, options)
     return SGValues.canonicalKey({ epoch = self.loadEpoch, viewEpoch = self.viewEpoch, farmId = actor.farmId, userId = tostring(actor.userId or ""), selection = normalized, navigation = options.navigationCarrierId, rowKinds = options.rowKinds })
 end
 
-function W:issueCursor(binding, lastIdentity)
+function W:issueCursor(binding, position)
     self.nextCursor = self.nextCursor + 1
     local token = "c" .. self.loadEpoch .. "." .. tostring(self.nextCursor)
-    self.cursors[token] = { binding = binding, lastIdentity = lastIdentity }
+    self.cursors[token] = { binding = binding, position = position, serial = self.nextCursor }
+    -- Bounded: evict the oldest beyond the limit.
+    local n = 0
+    for _ in pairs(self.cursors) do n = n + 1 end
+    while n > W.MAX_CURSORS do
+        local oldest, oldestSerial = nil, nil
+        for t, c in pairs(self.cursors) do
+            if oldestSerial == nil or c.serial < oldestSerial then oldest, oldestSerial = t, c.serial end
+        end
+        self.cursors[oldest] = nil
+        n = n - 1
+    end
     return token
 end
 
@@ -312,6 +354,38 @@ function W:resolveCursor(token, binding)
     if c == nil then return nil, "CURSOR_UNKNOWN" end
     if c.binding ~= binding then return nil, "CURSOR_STALE" end
     return c
+end
+
+-- ---------------------------------------------------------
+-- Owner target enumeration (bounded continuation)
+-- ---------------------------------------------------------
+local function processRow(self, lease, ownerId, target, actor)
+    local okR, binding = pcall(lease.spec.resolveTarget, target.targetId)
+    if not okR or binding == nil then return nil, "TARGET_UNRESOLVED" end
+    local okA, allowed = pcall(lease.spec.hasAccess, binding, copy(actor))
+    if not okA or allowed ~= true then return nil, "UNAUTHORIZED" end
+    local okT, row = pcall(lease.spec.readTarget, binding)
+    if not okT or type(row) ~= "table" then return nil, "TARGET_UNREADABLE" end
+    if row.rowKind ~= "PROCESS" or not nonempty(row.processId, 512) or type(row.label) ~= "string" or not nonempty(row.processStateLabelKey, 128) then return nil, "ROW_MALFORMED" end
+    local out = copy(row)
+    out.ownerId = ownerId
+    out.actions = actionsFor(self, "PROCESS", target.targetId, actor)
+    return out
+end
+
+--- Call one owner's enumerateTargets once and validate the answer.
+local function enumerateOwner(lease, actor, normalized, options, ownerCursor, limit)
+    local ok, res = pcall(lease.spec.enumerateTargets, copy(actor), copy(normalized), { limit = limit, cursor = ownerCursor, navigationCarrierId = options.navigationCarrierId })
+    if not ok or type(res) ~= "table" then return nil, "ENUMERATION_ERROR" end
+    if res.state ~= "READY" then return nil, tostring(res.reason or res.state or "NOT_READY") end
+    if type(res.targets) ~= "table" or #res.targets > limit then return nil, "ENUMERATION_MALFORMED" end
+    local targets = {}
+    for _, t in ipairs(res.targets) do
+        if type(t) ~= "table" or t.targetKind ~= "PROCESS" or not nonempty(t.targetId, 512) then return nil, "ENUMERATION_MALFORMED" end
+        targets[#targets + 1] = { targetKind = t.targetKind, targetId = t.targetId }
+    end
+    if res.exhausted ~= true and res.nextCursor == nil then return nil, "ENUMERATION_MALFORMED" end
+    return { targets = targets, nextCursor = (res.exhausted ~= true) and res.nextCursor or nil, exhausted = res.exhausted == true }
 end
 
 -- ---------------------------------------------------------
@@ -324,12 +398,11 @@ function W:getManagementView(actor, selection, readOptions, trusted)
     if normalized == nil then return { state = "UNAVAILABLE", reason = why, view = nil } end
     local options, whyO = W.normalizeReadOptions(normalized, readOptions, trusted ~= false)
     if options == nil then return { state = "UNAVAILABLE", reason = whyO, view = nil } end
-    local baseKey = W.selectionKey(normalized, { navigationCarrierId = options.navigationCarrierId, rowKinds = options.rowKinds })
     local view = {
         schemaVersion = W.STOCK_SCHEMA_VERSION, route = normalized.route, availability = availability, reasonCode = reason or "",
         viewKey = "", dataRevision = self.operations.revision, selectionKind = normalized.selectionKind, selectionKey = W.selectionKey(normalized, options),
         siteId = normalized.siteId, groundFootprint = normalized.groundFootprint, libraryId = normalized.libraryId,
-        pagingVersion = W.PAGING_VERSION, pageCursor = options.pageCursor, nextPageCursor = nil, rows = {},
+        pagingVersion = W.PAGING_VERSION, pageCursor = options.pageCursor, nextPageCursor = nil, rows = {}, ownerStates = {},
     }
     if availability ~= "READY" then return { state = availability, reason = reason, view = view } end
     if not self.ready then
@@ -344,7 +417,7 @@ function W:getManagementView(actor, selection, readOptions, trusted)
     end
     local binding = cursorBinding(self, actor, normalized, options)
     view.viewKey = SGValues.canonicalKey({ binding = binding, access = self.viewEpoch })
-    local after = nil
+    local position = { phase = "CARRIERS", after = nil, ownerIndex = 1, ownerCursor = nil, retained = {} }
     if options.pageCursor ~= nil then
         local c, whyC = self:resolveCursor(options.pageCursor, binding)
         if c == nil then
@@ -352,7 +425,7 @@ function W:getManagementView(actor, selection, readOptions, trusted)
             view.reasonCode = whyC
             return { state = "STALE", reason = whyC, view = view }
         end
-        after = c.lastIdentity
+        position = copy(c.position)
     end
     local carriers, whyS = self:authorizedCarriers(actor, normalized, options)
     if carriers == nil then
@@ -360,39 +433,146 @@ function W:getManagementView(actor, selection, readOptions, trusted)
         view.reasonCode = whyS
         return { state = "UNAVAILABLE", reason = whyS, view = view }
     end
+    if options.navigationCarrierId ~= nil and #carriers == 0 then
+        -- An unknown, revoked or foreign focus is keyed unavailable, never farm rows.
+        view.availability = "UNAVAILABLE"
+        view.reasonCode = "NAVIGATION_UNKNOWN"
+        return { state = "UNAVAILABLE", reason = "NAVIGATION_UNKNOWN", view = view }
+    end
     local wantKinds = nil
     if options.rowKinds ~= nil then
         wantKinds = {}
         for _, k in ipairs(options.rowKinds) do wantKinds[k] = true end
     end
+    local wantCarrier = wantKinds == nil or wantKinds.CARRIER
+    local wantStock = wantKinds == nil or wantKinds.STOCK
+    local wantProcess = wantKinds == nil or wantKinds.PROCESS
     local rows = {}
-    local lastIdentity = nil
+    local used = 0
     local truncated = false
-    for _, c in ipairs(carriers) do
-        if after == nil or c.carrierId > after then
-            local stock = c.stockId and self.operations.stocks[c.stockId] or nil
-            local produced = {}
-            local wantCarrier = wantKinds == nil or wantKinds.CARRIER
-            local wantStock = wantKinds == nil or wantKinds.STOCK
-            local carrierHasContext = options.navigationCarrierId ~= nil or (#actionsFor(self, "CARRIER", c.carrierId, actor) > 0)
-            if stock ~= nil then
-                if wantStock then produced[#produced + 1] = stockRow(self, stock, c, actor) end
-                if wantCarrier and carrierHasContext then table.insert(produced, 1, carrierRow(self, c, actor)) end
-            elseif carrierHasContext and (wantCarrier or wantStock) then
-                -- An empty carrier is enumerated only with a current action,
-                -- pending context or the selected navigation focus; it stays
-                -- the required contextual carrier beside STOCK-only requests.
-                produced[#produced + 1] = carrierRow(self, c, actor)
-            end
-            if #produced > 0 then
-                if #rows + #produced > W.PAGE_ROWS then truncated = true break end
-                for _, r in ipairs(produced) do rows[#rows + 1] = r end
-            end
-            lastIdentity = c.carrierId
+
+    --- Add a group of rows that belong together (a target with its required
+    --- contextual carrier). Returns false when the page is full.
+    local function admit(group)
+        if #rows + #group > W.PAGE_ROWS then return false end
+        local cost = 0
+        for _, r in ipairs(group) do cost = cost + rowCost(r) end
+        if used + cost <= W.PAGE_TOKEN_BUDGET then
+            for _, r in ipairs(group) do rows[#rows + 1] = r end
+            used = used + cost
+            return true
         end
+        -- Try the floor of every row in the group.
+        local floors, floorCost = {}, 0
+        for _, r in ipairs(group) do
+            local f = floorRow(r)
+            floors[#floors + 1] = f
+            floorCost = floorCost + rowCost(f)
+        end
+        if used + floorCost <= W.PAGE_TOKEN_BUDGET or #rows == 0 then
+            for _, f in ipairs(floors) do rows[#rows + 1] = f end
+            used = used + floorCost
+            return true
+        end
+        return false
     end
+
+    -- Phase 1: SG-1's own carrier and stock rows.
+    if position.phase == "CARRIERS" then
+        for _, c in ipairs(carriers) do
+            if position.after == nil or c.carrierId > position.after then
+                local stock = c.stockId and self.operations.stocks[c.stockId] or nil
+                local produced = {}
+                local carrierHasContext = options.navigationCarrierId ~= nil or self.operations:carrierHasPending(c.carrierId)
+                    or (#actionsFor(self, "CARRIER", c.carrierId, actor) > 0)
+                if stock ~= nil then
+                    if wantStock then produced[#produced + 1] = stockRow(self, stock, c, actor) end
+                    if wantCarrier and carrierHasContext then table.insert(produced, 1, carrierRow(self, c, actor)) end
+                elseif carrierHasContext and (wantCarrier or wantStock) then
+                    -- An empty carrier is enumerated only with a current action,
+                    -- pending context or the selected navigation focus; it stays
+                    -- the required contextual carrier beside STOCK-only requests.
+                    produced[#produced + 1] = carrierRow(self, c, actor)
+                end
+                if #produced > 0 and not admit(produced) then truncated = true break end
+                position.after = c.carrierId
+            end
+        end
+        if not truncated then position.phase = "OWNERS" end
+    end
+
+    -- Phase 2: registered owners' PROCESS targets through their bounded continuation.
+    if position.phase == "OWNERS" and not truncated then
+        local owners = {}
+        for ownerId, lease in self.registry:each(SGRegistry.KIND_MANAGEMENT) do
+            local supported = false
+            for _, k in ipairs(lease.spec.targetKinds) do if k == "PROCESS" then supported = true end end
+            if supported then owners[#owners + 1] = { ownerId = ownerId, lease = lease } end
+        end
+        local i = position.ownerIndex or 1
+        while i <= #owners and not truncated do
+            local owner = owners[i]
+            if not wantProcess then
+                i = i + 1
+            else
+                -- Drain targets enumerated earlier but not yet returned first.
+                local retained = position.retained or {}
+                local exhausted = position.ownerExhausted == true
+                while #retained > 0 and not truncated do
+                    local t = retained[1]
+                    local row, whyR = processRow(self, owner.lease, owner.ownerId, t, actor)
+                    if row ~= nil then
+                        if admit({ row }) then table.remove(retained, 1) else truncated = true end
+                    else
+                        table.remove(retained, 1)
+                    end
+                end
+                if not truncated then
+                    while not exhausted and not truncated do
+                        local limit = math.min(W.OWNER_LIMIT, W.PAGE_ROWS - #rows)
+                        if limit <= 0 then truncated = true break end
+                        local chunk, whyE = enumerateOwner(owner.lease, actor, normalized, options, position.ownerCursor, limit)
+                        if chunk == nil then
+                            view.ownerStates[#view.ownerStates + 1] = { ownerId = owner.ownerId, state = "UNAVAILABLE", reason = whyE }
+                            exhausted = true
+                            break
+                        end
+                        position.ownerCursor = chunk.nextCursor
+                        exhausted = chunk.exhausted
+                        for _, t in ipairs(chunk.targets) do retained[#retained + 1] = t end
+                        while #retained > 0 and not truncated do
+                            local t = retained[1]
+                            local row = processRow(self, owner.lease, owner.ownerId, t, actor)
+                            if row ~= nil then
+                                if admit({ row }) then table.remove(retained, 1) else truncated = true end
+                            else
+                                table.remove(retained, 1)
+                            end
+                        end
+                        if #chunk.targets == 0 and not exhausted then
+                            -- An owner that returns nothing but claims continuation is not followed forever.
+                            view.ownerStates[#view.ownerStates + 1] = { ownerId = owner.ownerId, state = "UNAVAILABLE", reason = "ENUMERATION_EMPTY_CONTINUATION" }
+                            exhausted = true
+                        end
+                    end
+                end
+                position.retained = retained
+                position.ownerExhausted = exhausted
+                if not truncated then
+                    i = i + 1
+                    position.ownerCursor = nil
+                    position.retained = {}
+                    position.ownerExhausted = false
+                end
+            end
+        end
+        position.ownerIndex = i
+        if i > #owners and not truncated then position.phase = "DONE" end
+    end
+
     view.rows = rows
-    if truncated then view.nextPageCursor = self:issueCursor(binding, lastIdentity) end
+    table.sort(view.ownerStates, function(a, b) return a.ownerId < b.ownerId end)
+    if truncated then view.nextPageCursor = self:issueCursor(binding, position) end
     return { state = "READY", reason = nil, view = view }
 end
 
@@ -416,7 +596,7 @@ function W.encodeView(view)
         viewKey = view.viewKey or "", dataRevision = view.dataRevision or "", selectionKind = view.selectionKind or "", selectionKey = view.selectionKey or "",
         siteId = view.siteId, siteRevision = view.siteRevision, groundFootprint = view.groundFootprint, libraryId = view.libraryId,
         commandSessionId = view.commandSessionId, nextSequence = view.nextSequence, pagingVersion = view.pagingVersion, pageCursor = view.pageCursor,
-        nextPageCursor = view.nextPageCursor, rows = rows,
+        nextPageCursor = view.nextPageCursor, rows = rows, ownerStates = view.ownerStates and copy(view.ownerStates) or nil,
     }
     return SGValues.encode(record)
 end
@@ -427,12 +607,21 @@ local function validateRow(r)
         if not SGRecords.isStockRef(r.stockRef) or not nonempty(r.carrierId, 2048) or not SGRecords.isMaterialRef(r.materialRef) then return false end
         if not SGRecords.isAmount(r.amount) or not nonempty(r.amountUnit, 32) or type(r.label) ~= "string" then return false end
         if type(r.properties) ~= "table" then return false end
+        for _, p in ipairs(r.properties) do
+            if type(p) ~= "table" or not nonempty(p.propertyId, 128) or not SGRecords.KNOWLEDGE[p.knowledge] then return false end
+        end
     elseif r.rowKind == "CARRIER" then
         if not nonempty(r.carrierId, 2048) or type(r.label) ~= "string" then return false end
     elseif r.rowKind == "PROCESS" then
         if not nonempty(r.processId, 512) or type(r.label) ~= "string" or not nonempty(r.processStateLabelKey, 128) then return false end
     end
-    if r.actions ~= nil and type(r.actions) ~= "table" then return false end
+    if r.actions ~= nil then
+        if type(r.actions) ~= "table" then return false end
+        for _, a in ipairs(r.actions) do
+            if type(a) ~= "table" or not nonempty(a.actionId, 64) then return false end
+        end
+    end
+    if r.detail ~= nil and r.detail ~= "UNAVAILABLE" then return false end
     return true
 end
 
@@ -453,9 +642,16 @@ function W.decodeView(tokens)
         for _, r in ipairs(record.rows) do
             if not validateRow(r) then return nil, "MALFORMED_ROW", false end
         end
+        if record.ownerStates ~= nil then
+            if type(record.ownerStates) ~= "table" then return nil, "MALFORMED", false end
+            for _, o in ipairs(record.ownerStates) do
+                if type(o) ~= "table" or not nonempty(o.ownerId, 64) or o.state ~= "UNAVAILABLE" then return nil, "MALFORMED", false end
+            end
+        end
+        if record.nextPageCursor ~= nil and (type(record.nextPageCursor) ~= "string" or record.nextPageCursor == "" or #record.nextPageCursor > W.MAX_CURSOR_BYTES) then return nil, "MALFORMED", false end
     else
         if record.rows ~= nil and #record.rows > 0 then return nil, "PRIVATE_ROWS_ON_NON_READY", false end
-        if record.commandSessionId ~= nil or record.nextPageCursor ~= nil then return nil, "CREDENTIALS_ON_NON_READY", false end
+        if record.commandSessionId ~= nil or record.nextPageCursor ~= nil or record.pageCursor ~= nil then return nil, "CREDENTIALS_ON_NON_READY", false end
     end
     return record, nil, false
 end

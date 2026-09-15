@@ -304,8 +304,11 @@ do
     T.eq("E42 mismatch keeps native quantity, unknown history, next generation", mism.observedAmount .. "/" .. mism.knowledge .. "/" .. mism.contentsGeneration, "99/UNKNOWN/2")
     T.eq("E43 visit owned records enumerates with a bound cursor", ops:visitOwnedPropertyRecords(prop, nil, 64).exhausted, true)
     T.eq("E44 a cursor from another revision is stale", ops:visitOwnedPropertyRecords(prop, { revision = "0", epoch = "1", position = 1 }, 64).state, "STALE")
-    local mix = ops:readPropertyMix(consumer, { { stockRef = ops:stockRef(s2), amount = 10, unit = "l" }, { capturedContribution = { properties = {}, knowledge = "UNKNOWN", materialRef = wheat }, amount = 10, unit = "l" } }, {})
+    local captured = { captureRef = "op:1:9", allocationRef = "op:1:9:a1", properties = {}, knowledge = "UNKNOWN", materialRef = wheat, actualAmount = 10, amountUnit = "l" }
+    local mix = ops:readPropertyMix(consumer, { { stockRef = ops:stockRef(s2), amount = 10, unit = "l" }, { capturedContribution = captured, amount = 10, unit = "l" } }, { purpose = "FEED" })
     T.eq("E45 mix preview is detached and explicit about the unknown share", mix.state .. "/" .. mix.properties["sf.moisture"].knowledge .. "/" .. mix.properties["sf.moisture"].knownAmount, "READY/PARTIAL/0")
+    T.eq("E45b a mix preview without a resolved purpose is DENIED, not previewed", ops:readPropertyMix(consumer, { { stockRef = ops:stockRef(s2), amount = 10, unit = "l" } }, {}).state, "DENIED")
+    T.eq("E45c a captured contribution without its FP1 fields refuses", ops:readPropertyMix(consumer, { { capturedContribution = { properties = {}, knowledge = "UNKNOWN", materialRef = wheat }, amount = 10, unit = "l" } }, { purpose = "FEED" }).reason, "CAPTURED_REFS:1")
     T.eq("E46 mix preview did not change the store", ops.stocks[s2.stockId].observedAmount, 60)
     -- An error inside settle never leaves the store locked (Sasha, #2 review).
     local cap5 = ops:captureOperation(adapter, "TRANSFER", { { carrierId = c2.carrierId, expectedStockRef = ops:stockRef(s2) } })
@@ -314,6 +317,7 @@ do
     local o5, why5 = ops:settleOperation(cap5.handle, { participantsAfter = { [c2.carrierId] = { materialRef = wheat, amount = 60, unit = "l" } } })
     ops._settle = realSettle
     T.eq("E26b an exception during settle is UNRESOLVED SETTLE_ERROR", o5 .. "/" .. why5, "UNRESOLVED/SETTLE_ERROR")
+    T.eq("E26b2 the store is never left busy after an error", ops.busy, false)
     T.eq("E26c the store is not left busy and the handle is consumed", tostring(ops.busy) .. "/" .. tostring(cap5.handle.open), "false/false")
     T.eq("E26d the captured stock is qualified, native quantity kept", ops.stocks[s2.stockId].knowledge .. "/" .. ops.stocks[s2.stockId].observedAmount, "UNAVAILABLE/60")
     local cap6 = ops:captureOperation(adapter, "REMOVE", { { carrierId = c2.carrierId, expectedStockRef = ops:stockRef(s2) } })
@@ -407,4 +411,365 @@ do
     -- Farm restore retention validates receipts.
     T.eq("F17 farmRestore receipts validate through receiptMap", select(2, SGSave.validateFarmRestore({ version = 1, receipts = { R = { sourceSaveAttemptId = 1, targetFarmId = 1, sourceToTarget = { { sourceFarmId = 2, targetFarmId = 3 } } } }, pendingUnits = {} })), "RECEIPT_MAP:R")
     T.ok("F18 valid farmRestore accepted", SGSave.validateFarmRestore({ version = 1, receipts = { R = { sourceSaveAttemptId = 1, targetFarmId = 1, sourceToTarget = { { sourceFarmId = 2, targetFarmId = 1 } } } }, pendingUnits = { A = { receiptId = "R", continuityLost = false } } }))
+end
+
+-- (G) Settlement rebuilt: detached candidates, validated after-states, one
+-- replacement, CONVERT through transform, causal carry, candidate refs,
+-- replacements, the carrier-pending join, historical persistence (#2 review).
+do
+    local reg = SGRegistry.new("g")
+    local o = SGOperations.new(reg, "g")
+    local function adapterSpecFor() return { version = 1, carrierKinds = { "silo" }, resolveCarrier = function() end, readNativeState = function() end, enumerateCarriers = function() return {} end, hasAccess = function() return true end } end
+    local ad = reg:registerCarrierAdapter("sg2", adapterSpecFor())
+    local otherAd = reg:registerCarrierAdapter("other", adapterSpecFor())
+    local function b(owner, comp, adapterId, alias) return { carrierKey = { adapterId = adapterId or "sg2", nativeOwnerKey = owner, componentKey = comp }, adapterVersion = 1, profileId = "silo", profileVersion = 1, quantityBasisKey = owner .. "/" .. comp, aliasOf = alias } end
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    local barley = { kind = "FILL_TYPE", fillTypeName = "BARLEY" }
+    local combineCalls, transformCalls, causalCalls, contexts = 0, 0, 0, {}
+    local moistureSpec = { schemaVersion = 1, producerId = "soil", residency = "STORED",
+        validate = function(r) return r.payload ~= nil end,
+        combine = function(ctx, contributions, before)
+            combineCalls = combineCalls + 1
+            contexts[#contexts + 1] = ctx
+            local total, w = 0, 0
+            for _, c in ipairs(contributions) do local p = c.properties["sf.moisture"] total = total + c.amount if p and p.payload then w = w + p.payload.m * c.amount end end
+            if before then local p = before.properties["sf.moisture"] total = total + before.observedAmount if p and p.payload then w = w + p.payload.m * before.observedAmount end end
+            if total == 0 then return nil, "NO_MATERIAL" end
+            return { propertyId = "sf.moisture", schemaVersion = 1, producerId = "soil", propertyRevision = 0, knowledge = "KNOWN", knownAmount = total, basisAmount = total, amountUnit = "LITRE", payload = { m = w / total } }
+        end,
+        transform = function(ctx, inputs, outputs)
+            transformCalls = transformCalls + 1
+            local out = outputs[1]
+            return { propertyId = "sf.moisture", schemaVersion = 1, producerId = "soil", propertyRevision = 0, knowledge = "KNOWN", knownAmount = out.amount, basisAmount = out.amount, amountUnit = "KILOGRAM", payload = { m = 0.5, basis = inputs[1].conversionBasisId } }
+        end,
+        disclosure = function(_, r) return r end }
+    local moisture = reg:registerProperty("sf.moisture", moistureSpec)
+    local function moist(m, amount) return { propertyId = "sf.moisture", schemaVersion = 1, producerId = "soil", propertyRevision = 0, knowledge = "KNOWN", knownAmount = amount, basisAmount = amount, amountUnit = "LITRE", payload = { m = m } } end
+    local function stockOf(c) return o.stocks[o.carriers[c.carrierId].stockId] end
+    local function after(t) local out = {} for c, ns in pairs(t) do out[c.carrierId] = ns end return out end
+    local function alloc(src, dst, n, unit, extra)
+        local a = { source = { carrierId = src.carrierId }, destination = dst.retire and { retire = true } or { carrierId = dst.carrierId }, sourceAmount = n, sourceUnit = unit or "l", destinationAmount = n, destinationUnit = unit or "l" }
+        for k, v in pairs(extra or {}) do a[k] = v end
+        return a
+    end
+
+    -- G1: after-states are validated up front; nothing is written on refusal.
+    local silo = o:bindCarrier(ad, b("silo", "1"), { materialRef = wheat, amount = 100, unit = "l" })
+    o:publishProperties(moisture, { { stockRef = o:stockRef(stockOf(silo)), expectedPropertyRevision = 0, record = moist(0.10, 100) } })
+    local trailer = o:bindCarrier(ad, b("trailer", "1"), { amount = 0, unit = "l" })
+    local cap = o:captureOperation(ad, "TRANSFER", { { carrierId = silo.carrierId, expectedStockRef = o:stockRef(stockOf(silo)) }, { carrierId = trailer.carrierId } })
+    local out, why = o:settleOperation(cap.handle, { participantsAfter = { [silo.carrierId] = { materialRef = wheat, amount = -5, unit = "l" }, [trailer.carrierId] = { amount = 0, unit = "l" } }, allocations = { alloc(silo, trailer, 40) } })
+    T.eq("G1 a negative after-state amount is UNRESOLVED before any write", out .. "/" .. why, "UNRESOLVED/AFTER_STATE:AMOUNT")
+    T.eq("G1b the source keeps its native quantity, qualified, and the destination stays empty", stockOf(silo).observedAmount .. "/" .. stockOf(silo).knowledge .. "/" .. tostring(o.carriers[trailer.carrierId].stockId), "100/UNAVAILABLE/nil")
+    cap = o:captureOperation(ad, "TRANSFER", { { carrierId = silo.carrierId, expectedStockRef = o:stockRef(stockOf(silo)) }, { carrierId = trailer.carrierId } })
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [silo.carrierId] = { materialRef = wheat, amount = "60", unit = "l" }, [trailer.carrierId] = { amount = 0, unit = "l" } }, allocations = { alloc(silo, trailer, 40) } })
+    T.eq("G1c a string amount is UNRESOLVED, never installed", why, "AFTER_STATE:AMOUNT")
+    T.eq("G1d a valid after-state reported beside the refusal is still reconciled as the observed native fact", stockOf(silo).observedAmount, 100)
+
+    -- G2: a changed participant without an after-state is not invented.
+    cap = o:captureOperation(ad, "TRANSFER", { { carrierId = silo.carrierId, expectedStockRef = o:stockRef(stockOf(silo)) }, { carrierId = trailer.carrierId } })
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [silo.carrierId] = { materialRef = wheat, amount = 100, unit = "l" } }, allocations = { alloc(silo, trailer, 40) } })
+    T.eq("G2 a destination without an after-state is UNRESOLVED", out .. "/" .. why, "UNRESOLVED/AFTER_STATE_REQUIRED:" .. trailer.carrierId)
+    T.eq("G2b nothing was minted for the destination", tostring(o.carriers[trailer.carrierId].stockId), "nil")
+
+    -- G3: an over-debit is UNRESOLVED, never clamped.
+    cap = o:captureOperation(ad, "TRANSFER", { { carrierId = silo.carrierId, expectedStockRef = o:stockRef(stockOf(silo)) }, { carrierId = trailer.carrierId } })
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [silo.carrierId] = { materialRef = wheat, amount = 100, unit = "l" }, [trailer.carrierId] = { amount = 0, unit = "l" } }, allocations = { alloc(silo, trailer, 150) } })
+    T.eq("G3 an over-debit is UNRESOLVED", why, "OVER_DEBIT:" .. silo.carrierId)
+    T.eq("G3b the source stock survived with its native quantity", stockOf(silo).observedAmount, 100)
+
+    -- G4: the candidate phase runs the pure callbacks; a failure after them installs nothing.
+    o:publishProperties(moisture, { { stockRef = o:stockRef(stockOf(silo)), expectedPropertyRevision = stockOf(silo).properties["sf.moisture"].propertyRevision, record = moist(0.10, 100) } })
+    local pendingLease = reg:registerCarrierPending("sg4", { sectionId = "sg4", collectionPath = "extensions.sg4.guidanceCarriers", schemaVersion = 1,
+        validatePending = function(ctx, target) return target.recipe ~= nil end,
+        prepareCreationBinding = function(ctx, pendingBefore, created) return {} end })
+    T.eq("G4 an empty carrier reads as empty with its tokens", (function() local r = o:readCarrierPending(pendingLease, b("trailer", "1").carrierKey) return tostring(r.empty) .. "/" .. r.emptyEpoch .. "/" .. r.selectionRevision end)(), "true/1/1")
+    T.eq("G4b arming with a stale token is STALE without change", (o:setCarrierPending(pendingLease, b("trailer", "1").carrierKey, 1, 7, { recipe = "R1" })), "STALE")
+    T.eq("G4c arming a nonempty carrier is refused", select(2, o:setCarrierPending(pendingLease, b("silo", "1").carrierKey, 1, 1, { recipe = "R1" })).reason, "NOT_EMPTY")
+    T.eq("G4d an invalid target is refused by the owner", select(2, o:setCarrierPending(pendingLease, b("trailer", "1").carrierKey, 1, 1, { other = 1 })).reason, "TARGET_INVALID:REFUSED")
+    local armed, armedDetail = o:setCarrierPending(pendingLease, b("trailer", "1").carrierKey, 1, 1, { recipe = "R1" })
+    T.eq("G4e arming applies and advances the selection revision", armed .. "/" .. armedDetail.selectionRevision, "APPLIED/2")
+    local before = combineCalls
+    cap = o:captureOperation(ad, "TRANSFER", { { carrierId = silo.carrierId, expectedStockRef = o:stockRef(stockOf(silo)) }, { carrierId = trailer.carrierId } })
+    T.eq("G4f capture records the pending state of the empty carrier", cap.before.carriers[trailer.carrierId].pending.pendingTarget.recipe, "R1")
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [silo.carrierId] = { materialRef = wheat, amount = 60, unit = "l" }, [trailer.carrierId] = { materialRef = wheat, amount = 40, unit = "l" } }, allocations = { alloc(silo, trailer, 40) } })
+    T.eq("G4g a malformed creation binding leaves the whole settlement UNRESOLVED", out .. "/" .. why, "UNRESOLVED/CREATION_BINDING_FAILED")
+    T.eq("G4h the pure combine had already run (candidate phase), yet nothing from the candidate set was installed: the native outcome is reconciled as unexplained, the source qualified", tostring(combineCalls > before) .. "/" .. stockOf(silo).observedAmount .. "/" .. stockOf(silo).knowledge .. "/" .. stockOf(trailer).knowledge .. "/" .. tostring(stockOf(trailer).properties["sf.moisture"]) .. "/" .. tostring(stockOf(trailer).properties["sg4.recipeBinding"]), "true/60/UNAVAILABLE/UNKNOWN/nil/nil")
+    T.eq("G4i the unbound target is marked unavailable before any view treats it as usable", o.pending[trailer.carrierId].availability, "UNAVAILABLE")
+    T.eq("G4j the handle is consumed", cap.handle.open, false)
+
+    -- G5: the creation join commits stock, property results and the carrier update once.
+    local recipeProp = reg:registerProperty("sg4.recipeBinding", { schemaVersion = 1, producerId = "sg4", residency = "STORED", validate = function() return true end, combine = function() return nil end, transform = function() return nil end, disclosure = function(_, r) return r end })
+    reg:get(SGRegistry.KIND_CARRIER_PENDING, "sg4").spec.prepareCreationBinding = function(ctx, pendingBefore, created)
+        return { propertyResults = { ["sg4.recipeBinding"] = { propertyId = "sg4.recipeBinding", schemaVersion = 1, producerId = "sg4", propertyRevision = 0, knowledge = "KNOWN", payload = { recipe = pendingBefore.pendingTarget.recipe, stock = created.stockRef.stockId } } },
+            carrierUpdates = { collectionPath = "extensions.sg4.guidanceCarriers", key = created.carrierId, expectedEmptyEpoch = pendingBefore.emptyEpoch, expectedSelectionRevision = pendingBefore.selectionRevision, replacementRecord = { pendingTarget = nil, nativeContentState = "NONEMPTY" } } }
+    end
+    local trailer2 = o:bindCarrier(ad, b("trailer", "2"), { amount = 0, unit = "l" })
+    T.eq("G4k a fresh empty carrier arms", (o:setCarrierPending(pendingLease, b("trailer", "2").carrierKey, 1, 1, { recipe = "R1" })), "APPLIED")
+    o:publishProperties(moisture, { { stockRef = o:stockRef(stockOf(silo)), expectedPropertyRevision = stockOf(silo).properties["sf.moisture"].propertyRevision, record = moist(0.10, 60) } })
+    cap = o:captureOperation(ad, "TRANSFER", { { carrierId = silo.carrierId, expectedStockRef = o:stockRef(stockOf(silo)) }, { carrierId = trailer2.carrierId } })
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [silo.carrierId] = { materialRef = wheat, amount = 20, unit = "l" }, [trailer2.carrierId] = { materialRef = wheat, amount = 40, unit = "l" } }, allocations = { alloc(silo, trailer2, 40) } })
+    local created = stockOf(trailer2)
+    T.eq("G5 the join commits", out .. "/" .. tostring(why), "COMMITTED/nil")
+    T.eq("G5b the created stock carries the owner's recipe binding to its own candidate id", created.properties["sg4.recipeBinding"].payload.recipe .. "/" .. tostring(created.properties["sg4.recipeBinding"].payload.stock == created.stockId), "R1/true")
+    T.eq("G5c the carrier update landed in the same replacement: target consumed, bound stock recorded, revision advanced", tostring(o.pending[trailer2.carrierId].pendingTarget) .. "/" .. tostring(o.pending[trailer2.carrierId].boundStockRef.stockId == created.stockId) .. "/" .. o.pending[trailer2.carrierId].selectionRevision, "nil/true/3")
+    T.eq("G5d the source was debited to its observed after-state", stockOf(silo).observedAmount, 20)
+    T.near("G5e moisture carried into the created stock", created.properties["sf.moisture"].payload.m, 0.10, 1e-9)
+
+    -- G6: candidate refs and allocation refs are supplied to the pure callbacks.
+    local ctx = contexts[#contexts]
+    T.eq("G6 the combine context named the candidate StockRef that was then minted", tostring(ctx.candidates[trailer2.carrierId].stockRef.stockId == created.stockId) .. "/" .. ctx.candidates[trailer2.carrierId].mode, "true/BIRTH")
+    T.eq("G6b allocation references are assigned before the callbacks", ctx.allocations[1].allocationRef, cap.operationId .. ":a1")
+
+    -- G7: mix in place never double counts; the own remainder is the baseline.
+    o:publishProperties(moisture, { { stockRef = o:stockRef(created), expectedPropertyRevision = created.properties["sf.moisture"].propertyRevision, record = moist(0.30, 40) } })
+    o:publishProperties(moisture, { { stockRef = o:stockRef(stockOf(silo)), expectedPropertyRevision = stockOf(silo).properties["sf.moisture"].propertyRevision, record = moist(0.10, 20) } })
+    local siloStockId = stockOf(silo).stockId
+    cap = o:captureOperation(ad, "MIX", { { carrierId = trailer2.carrierId, expectedStockRef = o:stockRef(stockOf(trailer2)) }, { carrierId = silo.carrierId, expectedStockRef = o:stockRef(stockOf(silo)) } })
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [trailer2.carrierId] = { amount = 0, unit = "l" }, [silo.carrierId] = { materialRef = wheat, amount = 60, unit = "l" } }, allocations = { alloc(trailer2, silo, 40) } })
+    T.eq("G7 mix into an occupied carrier commits into the same generation", out .. "/" .. tostring(stockOf(silo).stockId == siloStockId) .. "/" .. stockOf(silo).contentsGeneration, "COMMITTED/true/1")
+    T.near("G7b the mix weighs the remainder once: (20*0.10+40*0.30)/60", stockOf(silo).properties["sf.moisture"].payload.m, 14 / 60, 1e-9)
+    T.eq("G7c coverage basis equals the observed amount, not a double count", stockOf(silo).properties["sf.moisture"].basisAmount .. "/" .. stockOf(silo).observedAmount, "60/60")
+    T.eq("G7d the emptied source retired and advanced its empty epoch", tostring(o.carriers[trailer2.carrierId].stockId) .. "/" .. o.pending[trailer2.carrierId].emptyEpoch, "nil/2")
+
+    -- G8: a destination material change ends the generation like reconcile does.
+    local bin = o:bindCarrier(ad, b("bin", "1"), { materialRef = barley, amount = 50, unit = "l" })
+    local old = stockOf(silo)
+    cap = o:captureOperation(ad, "TRANSFER", { { carrierId = bin.carrierId, expectedStockRef = o:stockRef(stockOf(bin)) }, { carrierId = silo.carrierId, expectedStockRef = o:stockRef(old) } })
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [bin.carrierId] = { amount = 0, unit = "l" }, [silo.carrierId] = { materialRef = barley, amount = 120, unit = "l" } }, allocations = { alloc(bin, silo, 50) } })
+    T.eq("G8 a material change on the destination commits a NEW generation and retires the old stock", out .. "/" .. tostring(stockOf(silo).stockId ~= old.stockId) .. "/" .. stockOf(silo).contentsGeneration .. "/" .. tostring(o.retiredStocks[old.stockId].retireReason), "COMMITTED/true/2/MATERIAL_CHANGED")
+    T.eq("G8b the delta the allocations do not explain is marked, not balanced", tostring(stockOf(silo).reason), "UNEXPLAINED_DELTA")
+
+    -- G9: CONVERT goes through transform with its basis; unit mixing without a basis refuses.
+    local mill = o:bindCarrier(ad, b("mill", "out"), { amount = 0, unit = "kg" })
+    cap = o:captureOperation(ad, "CONVERT", { { carrierId = silo.carrierId, expectedStockRef = o:stockRef(stockOf(silo)) }, { carrierId = mill.carrierId } })
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [silo.carrierId] = { materialRef = barley, amount = 120, unit = "l" }, [mill.carrierId] = { amount = 0, unit = "kg" } }, allocations = { { source = { carrierId = silo.carrierId }, destination = { carrierId = mill.carrierId }, sourceAmount = 100, sourceUnit = "l", destinationAmount = 80, destinationUnit = "kg" } } })
+    T.eq("G9 CONVERT without a conversion basis is UNRESOLVED", out .. "/" .. why, "UNRESOLVED/CONVERSION_BASIS_REQUIRED")
+    cap = o:captureOperation(ad, "TRANSFER", { { carrierId = silo.carrierId, expectedStockRef = o:stockRef(stockOf(silo)) }, { carrierId = mill.carrierId } })
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [silo.carrierId] = { materialRef = barley, amount = 120, unit = "l" }, [mill.carrierId] = { amount = 0, unit = "kg" } }, allocations = { { source = { carrierId = silo.carrierId }, destination = { carrierId = mill.carrierId }, sourceAmount = 100, sourceUnit = "l", destinationAmount = 80, destinationUnit = "kg" } } })
+    T.eq("G9b a TRANSFER that mixes units without a basis is UNRESOLVED", why, "UNIT_MISMATCH")
+    o:publishProperties(moisture, { { stockRef = o:stockRef(stockOf(silo)), expectedPropertyRevision = stockOf(silo).properties["sf.moisture"] and stockOf(silo).properties["sf.moisture"].propertyRevision or nil, record = moist(0.2, 120) } })
+    cap = o:captureOperation(ad, "CONVERT", { { carrierId = silo.carrierId, expectedStockRef = o:stockRef(stockOf(silo)) }, { carrierId = mill.carrierId } })
+    local t0 = transformCalls
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [silo.carrierId] = { materialRef = barley, amount = 20, unit = "l" }, [mill.carrierId] = { materialRef = { kind = "FILL_TYPE", fillTypeName = "FLOUR" }, amount = 80, unit = "kg" } }, allocations = { { source = { carrierId = silo.carrierId }, destination = { carrierId = mill.carrierId }, sourceAmount = 100, sourceUnit = "l", destinationAmount = 80, destinationUnit = "kg", conversionBasisId = "grind:1" } } })
+    T.eq("G9c CONVERT with a basis commits through transform, each side keeping its unit", out .. "/" .. (transformCalls - t0) .. "/" .. stockOf(mill).amountUnit .. "/" .. stockOf(mill).properties["sf.moisture"].amountUnit .. "/" .. stockOf(mill).properties["sf.moisture"].payload.basis, "COMMITTED/1/kg/KILOGRAM/grind:1")
+    T.eq("G9d the source keeps litres", stockOf(silo).amountUnit .. "/" .. stockOf(silo).observedAmount, "l/20")
+
+    -- G10: causal state travels with the material and is transformed by its owner.
+    local causalCalls2 = 0
+    local causal = reg:registerProperty("cd15.disease", { schemaVersion = 1, producerId = "cd15", residency = "STORED", validate = function() return true end, combine = function() return { propertyId = "cd15.disease", schemaVersion = 1, producerId = "cd15", propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } } end, transform = function() return nil end, disclosure = function(_, r) return r end,
+        validateCause = function(c, floor) return c.sequence > (floor and floor.sequence or 0) end, transformCausalState = function(ctx, sources, output) causalCalls2 = causalCalls2 + 1 return nil end, compactCausalState = function() end })
+    local field = o:bindCarrier(ad, b("field", "7"), { materialRef = wheat, amount = 200, unit = "l" })
+    local cause5 = { sourceStreamId = "f7", epoch = 1, sequence = 5, fingerprint = "fp5" }
+    T.eq("G10 the causal owner validates against the accepted floor", o:publishProperties(causal, { { stockRef = o:stockRef(stockOf(field)), expectedPropertyRevision = 0, record = { propertyId = "cd15.disease", schemaVersion = 1, producerId = "cd15", propertyRevision = 0, knowledge = "KNOWN", payload = { p = 2 } } } }, cause5), "APPLIED")
+    local cart = o:bindCarrier(ad, b("cart", "1"), { amount = 0, unit = "l" })
+    cap = o:captureOperation(ad, "TRANSFER", { { carrierId = field.carrierId, expectedStockRef = o:stockRef(stockOf(field)) }, { carrierId = cart.carrierId } })
+    out = o:settleOperation(cap.handle, { participantsAfter = { [field.carrierId] = { materialRef = wheat, amount = 120, unit = "l" }, [cart.carrierId] = { materialRef = wheat, amount = 80, unit = "l" } }, allocations = { alloc(field, cart, 80) } })
+    T.eq("G10b the owner's transformCausalState ran for the descendant", out .. "/" .. causalCalls2, "COMMITTED/1")
+    T.eq("G10c the accepted cause travelled: replaying it on the descendant is ALREADY_APPLIED", o:publishProperties(causal, { { stockRef = o:stockRef(stockOf(cart)), expectedPropertyRevision = 1, record = { propertyId = "cd15.disease", schemaVersion = 1, producerId = "cd15", propertyRevision = 0, knowledge = "KNOWN", payload = { p = 2 } } } }, cause5), "ALREADY_APPLIED")
+    T.eq("G10d a lower sequence on the descendant is STALE", o:publishProperties(causal, { { stockRef = o:stockRef(stockOf(cart)), expectedPropertyRevision = 1, record = { propertyId = "cd15.disease", schemaVersion = 1, producerId = "cd15", propertyRevision = 0, knowledge = "KNOWN", payload = { p = 2 } } } }, { sourceStreamId = "f7", epoch = 1, sequence = 4, fingerprint = "fp4" }), "STALE")
+    T.eq("G10e the source portion that stayed keeps its floor too", tostring(stockOf(field).acceptedCauses["f7/1"] ~= nil), "true")
+    -- Without causal interpretation the property is unavailable while the floor still travels.
+    reg:get(SGRegistry.KIND_PROPERTY, "cd15.disease").spec.causalUnavailable = true
+    local cart2 = o:bindCarrier(ad, b("cart", "2"), { amount = 0, unit = "l" })
+    cap = o:captureOperation(ad, "TRANSFER", { { carrierId = cart.carrierId, expectedStockRef = o:stockRef(stockOf(cart)) }, { carrierId = cart2.carrierId } })
+    o:settleOperation(cap.handle, { participantsAfter = { [cart.carrierId] = { amount = 0, unit = "l" }, [cart2.carrierId] = { materialRef = wheat, amount = 80, unit = "l" } }, allocations = { alloc(cart, cart2, 80) } })
+    T.eq("G10f without the owner's causal interpretation the descendant property is unavailable, floor retained", stockOf(cart2).properties["cd15.disease"].reason .. "/" .. tostring(stockOf(cart2).acceptedCauses["f7/1"].sequence), "CAUSAL_INTERPRETATION_UNAVAILABLE/5")
+
+    -- G11: REBIND replacements alias a carrier without a new stock or generation.
+    local oldId = cart2.carrierId
+    local oldStock = stockOf(cart2)
+    cap = o:captureOperation(ad, "REBIND", { { carrierId = oldId, expectedStockRef = o:stockRef(oldStock) } })
+    out, why = o:settleOperation(cap.handle, { participantsAfter = { [oldId] = { materialRef = wheat, amount = 80, unit = "l" } }, replacements = { { carrierId = oldId, binding = b("cart", "2b", nil, oldId) } } })
+    local newId = SGRecords.carrierKeyString(b("cart", "2b").carrierKey)
+    T.eq("G11 a proved alias moves the carrier under its new key", out .. "/" .. tostring(o.carriers[oldId]) .. "/" .. tostring(o.carriers[newId] ~= nil), "COMMITTED/nil/true")
+    T.eq("G11b the stock, its generation and its causes are unchanged", tostring(o.stocks[oldStock.stockId] ~= nil) .. "/" .. o.stocks[oldStock.stockId].contentsGeneration .. "/" .. o.stocks[oldStock.stockId].carrierId .. "/" .. tostring(o.stocks[oldStock.stockId].acceptedCauses["f7/1"] ~= nil), "true/1/" .. newId .. "/true")
+    cap = o:captureOperation(ad, "REBIND", { { carrierId = newId } })
+    T.eq("G11c an unproved replacement (no alias, other basis) refuses", select(2, o:settleOperation(cap.handle, { participantsAfter = { [newId] = { materialRef = wheat, amount = 80, unit = "l" } }, replacements = { { carrierId = newId, binding = b("cart", "9") } } })), "REPLACEMENT_UNPROVED")
+
+    -- G12: adapters, handles, busy and knowledge rules.
+    T.eq("G12 capturing another adapter's carrier is refused", select(2, o:captureOperation(otherAd, "REMOVE", { { carrierId = silo.carrierId } })), "ADAPTER_MISMATCH")
+    local openCap = o:captureOperation(ad, "REMOVE", { { carrierId = silo.carrierId } })
+    o:withdrawAdapter("sg2", "ADAPTER_UNREGISTERED")
+    T.eq("G12b withdrawing an adapter closes its open handles", tostring(openCap.handle.open) .. "/" .. select(2, o:settleOperation(openCap.handle, {})), "false/HANDLE_CLOSED")
+    o.busy = true
+    T.eq("G12c mutators refuse while a replacement runs", select(2, o:bindCarrier(otherAd, b("x", "1", "other"), { amount = 0, unit = "l" })) .. "/" .. select(2, o:reconcileCarrier("x", { amount = 0, unit = "l" })) .. "/" .. select(2, o:withdrawCarrier("x")), "REENTRANT/REENTRANT/REENTRANT")
+    o.busy = false
+    T.eq("G12d knowledge of uniform states maps exactly", SGOperations.knowledgeOf({ properties = { a = { knowledge = "UNKNOWN" }, b = { knowledge = "UNKNOWN" } } }) .. "/" .. SGOperations.knowledgeOf({ properties = { a = { knowledge = "HISTORICAL" }, b = { knowledge = "HISTORICAL" } } }) .. "/" .. SGOperations.knowledgeOf({ properties = { a = { knowledge = "KNOWN" }, b = { knowledge = "PARTIAL" } } }), "UNKNOWN/HISTORICAL/PARTIAL")
+    -- Notifications are queued during a replacement and flushed after it.
+    local reg3 = SGRegistry.new("g3")
+    local o3 = SGOperations.new(reg3, "g3")
+    local ad3 = reg3:registerCarrierAdapter("sg2", adapterSpecFor())
+    local seenDuring = {}
+    o3.onChanged = function(kind, id) seenDuring[#seenDuring + 1] = { kind = kind, id = id, busy = o3.busy, stockThere = o3.stocks[id] ~= nil or o3.retiredStocks[id] ~= nil or o3.carriers[id] ~= nil } end
+    local a3 = o3:bindCarrier(ad3, b("a", "1"), { materialRef = wheat, amount = 10, unit = "l" })
+    local b3 = o3:bindCarrier(ad3, b("b", "1"), { amount = 0, unit = "l" })
+    seenDuring = {}
+    local cap3 = o3:captureOperation(ad3, "TRANSFER", { { carrierId = a3.carrierId }, { carrierId = b3.carrierId } })
+    o3:settleOperation(cap3.handle, { participantsAfter = { [a3.carrierId] = { amount = 0, unit = "l" }, [b3.carrierId] = { materialRef = wheat, amount = 10, unit = "l" } }, allocations = { alloc(a3, b3, 10) } })
+    local allAfter = #seenDuring > 0
+    for _, n in ipairs(seenDuring) do if n.busy then allAfter = false end end
+    T.eq("G12e change notifications fire only after the replacement, never inside it", tostring(allAfter), "true")
+    -- scaleCoverage bumps the property revision; a changed basis key ends the generation.
+    o3:publishProperties(reg3:registerProperty("sf.moisture", moistureSpec), { { stockRef = o3:stockRef(o3.stocks[o3.carriers[b3.carrierId].stockId]), expectedPropertyRevision = 0, record = moist(0.1, 10) } })
+    local sb = o3.stocks[o3.carriers[b3.carrierId].stockId]
+    local revBefore = sb.properties["sf.moisture"].propertyRevision
+    o3:reconcileCarrier(b3.carrierId, { materialRef = wheat, amount = 5, unit = "l" })
+    T.eq("G12f a coverage rescale bumps the property revision", sb.properties["sf.moisture"].propertyRevision, revBefore + 1)
+    local rebound = { carrierKey = b("b", "1").carrierKey, adapterVersion = 1, profileId = "silo", profileVersion = 1, quantityBasisKey = "b/1/v2" }
+    o3:bindCarrier(ad3, rebound, { materialRef = wheat, amount = 5, unit = "l" })
+    T.eq("G12g a rebind with a changed quantity basis ends the generation", tostring(o3.retiredStocks[sb.stockId] ~= nil) .. "/" .. o3.stocks[o3.carriers[b3.carrierId].stockId].contentsGeneration, "true/2")
+
+    -- G13: per-entry ALREADY_APPLIED and the accepted floor.
+    local reg4 = SGRegistry.new("g4")
+    local o4 = SGOperations.new(reg4, "g4")
+    local ad4 = reg4:registerCarrierAdapter("sg2", adapterSpecFor())
+    local c4 = reg4:registerProperty("cd15.disease", { schemaVersion = 1, producerId = "cd15", residency = "STORED", validate = function() return true end, combine = function() return nil end, transform = function() return nil end, disclosure = function(_, r) return r end,
+        validateCause = function() return true end, transformCausalState = function() return nil end, compactCausalState = function() end })
+    local x = o4:bindCarrier(ad4, b("x", "1"), { materialRef = wheat, amount = 10, unit = "l" })
+    local y = o4:bindCarrier(ad4, b("y", "1"), { materialRef = wheat, amount = 10, unit = "l" })
+    local rec = function() return { propertyId = "cd15.disease", schemaVersion = 1, producerId = "cd15", propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } } end
+    local sx, sy = o4.stocks[x.stockId], o4.stocks[y.stockId]
+    o4:publishProperties(c4, { { stockRef = o4:stockRef(sx), expectedPropertyRevision = 0, record = rec() } }, cause5)
+    local outcome, detail = o4:publishProperties(c4, { { stockRef = o4:stockRef(sx), expectedPropertyRevision = 1, record = rec() }, { stockRef = o4:stockRef(sy), expectedPropertyRevision = 0, record = rec() } }, cause5)
+    T.eq("G13 a batch with one entry already accepted installs only the other", outcome .. "/" .. #detail.installed .. "/" .. detail.alreadyApplied, "APPLIED/1/1")
+    T.eq("G13b a batch that is fully accepted answers ALREADY_APPLIED without a write", (o4:publishProperties(c4, { { stockRef = o4:stockRef(sx), expectedPropertyRevision = 1, record = rec() }, { stockRef = o4:stockRef(sy), expectedPropertyRevision = 1, record = rec() } }, cause5)), "ALREADY_APPLIED")
+
+    -- G14: unresolved historical stocks persist until a load resolves them.
+    local core = o4:serializeCore()
+    local o5 = SGOperations.new(reg4, "g5")
+    local r5 = o5:restoreCore(core)
+    T.eq("G14 saved stocks whose carriers are absent are retained as historical", r5.historical, 2)
+    local core2 = o5:serializeCore()
+    T.eq("G14b historical stocks are serialized again, not dropped", #core2.historical .. "/" .. #core2.stocks, "2/0")
+    T.ok("G14c a core with historical stocks validates", SGOperations.validateCore(core2) ~= nil)
+    local o6 = SGOperations.new(reg4, "g6")
+    o6:bindCarrier(ad4, b("x", "1"), { materialRef = wheat, amount = 10, unit = "l" })
+    local r6 = o6:restoreCore(core2)
+    T.eq("G14d a later load with the carrier back reattaches from the historical row", r6.restored .. "/" .. r6.historical .. "/" .. tostring(o6.stocks[sx.stockId] ~= nil) .. "/" .. #o6:serializeCore().historical, "1/1/true/1")
+end
+
+-- (H) Save retention rules: retained payloads travel untouched, a refused
+-- envelope is written back, coupled sets are atomic, the farm-restore gate
+-- is wired end to end with receipts and pending units, the manifest and
+-- the pending collection injection (#2 review).
+do
+    local reg = SGRegistry.new("h")
+    local ops = SGOperations.new(reg, "h")
+    local serialized, committed, cleared = {}, {}, {}
+    local function section(id, deps, opts)
+        opts = opts or {}
+        local spec = { schemaVersion = opts.schema or 1, dependencies = deps, farmRestorePolicy = opts.policy,
+            serialize = function() serialized[#serialized + 1] = id return { id = id, live = true } end,
+            stageLoad = function(payload, context) if opts.failStage then return nil, "BAD" end return { id = id, payload = payload, phase = context.farmRestore and context.farmRestore.phase } end,
+            commitLoad = function(c) if opts.failCommit then error("boom") end committed[#committed + 1] = id end,
+            clearReadiness = function(reason) cleared[#cleared + 1] = id .. ":" .. tostring(reason):match("^[A-Z_]+") end }
+        return spec
+    end
+    reg:registerSaveSection("inv", section("inv", {}, { policy = "INVARIANT" }))
+    reg:registerSaveSection("own", section("own", {}, { policy = "OWNER" }))
+    reg:registerSaveSection("undecl", section("undecl", {}))
+    reg:registerSaveSection("broken", section("broken", {}, { policy = "INVARIANT", failStage = true }))
+    reg:registerSaveSection("depA", section("depA", {}, { policy = "INVARIANT" }))
+    reg:registerSaveSection("depB", section("depB", { "depA" }, { policy = "INVARIANT", failCommit = true }))
+    local coord = SGFarmRestore.new("h")
+    local save = SGSave.new(reg, ops, coord)
+    save.backendId = SGSave.BACKEND_XML
+    local env = save:buildEnvelope({})
+    env.sections.broken.payload = { id = "broken", original = true }
+    env.sections.undecl.payload = { id = "undecl", original = true }
+    -- A MERGED conversion: undeclared retained, OWNER installed with the phase, dependent set atomic.
+    coord.onStage = function(_, payload, context) save:stageLoad(payload, { farmRestore = context }) end
+    g_currentMission.missionDynamicInfo = { isMultiplayer = false }
+    coord:observeBeforeMerge({ farms = { { farmId = 1 }, { farmId = 2 } } })
+    coord:observeAfterMerge({ farms = {}, mergedFarms = { [2] = 1 }, farmIdToFarm = { [1] = {} } })
+    coord:retainPayload(SGValues.decode(SGValues.encode(env)), "xml")
+    coord:observeNativeReady()
+    local st = save.sectionState
+    T.eq("H1 under MERGED an undeclared policy is retained, INVARIANT and OWNER install", st.undecl.reason .. "/" .. tostring(st.inv.ready) .. "/" .. tostring(st.own.ready), "FARM_RESTORE_UNSUPPORTED/true/true")
+    T.eq("H1b the OWNER section received context.farmRestore with the MERGED phase", (function() for _, id in ipairs(committed) do if id == "own" then return "own" end end return "none" end)() .. "/" .. tostring(save.loadResult.sections.own), "own/READY")
+    T.eq("H1c a section whose staging failed is retained with its original payload", st.broken.reason:sub(1, 13) .. "/" .. tostring(st.broken.payload.original), "STAGE_FAILED:/true")
+    T.eq("H2 a dependent's commit failure withdraws the whole coupled set", tostring(st.depA.ready) .. "/" .. st.depA.reason .. "/" .. tostring(st.depB.ready) .. "/" .. st.depB.reason:sub(1, 14), "false/DEPENDENCY_NOT_READY/false/COMMIT_FAILED:")
+    T.eq("H2b the already installed dependency had its readiness cleared", (function() for _, c in ipairs(cleared) do if c == "depA:SET_WITHDRAWN" then return "cleared" end end return "kept" end)(), "cleared")
+    -- The next save writes retained originals, never the live owner state.
+    serialized = {}
+    local env2 = save:buildEnvelope({})
+    T.eq("H3 retained sections write their original payload and their serialize is not called", tostring(env2.sections.undecl.payload.original) .. "/" .. tostring(env2.sections.broken.payload.original) .. "/" .. (function() for _, id in ipairs(serialized) do if id == "undecl" or id == "broken" or id == "depA" then return "called" end end return "skipped" end)(), "true/true/skipped")
+    T.eq("H3b live sections still serialize", (function() for _, id in ipairs(serialized) do if id == "own" then return "own" end end return "none" end)(), "own")
+    T.eq("H4 the merged load emitted one receipt and a pending unit per retained candidate", (function() local n = 0 for _ in pairs(env2.farmRestore.receipts) do n = n + 1 end local u = {} for id in pairs(env2.farmRestore.pendingUnits) do u[#u + 1] = id end table.sort(u) return n .. "/" .. table.concat(u, ",") end)(), "1/section:broken,section:depA,section:depB,section:undecl")
+    T.eq("H4b the receipt carries the canonical row sequence to the singleplayer target", env2.farmRestore.receipts[next(env2.farmRestore.receipts)].sourceToTarget[1].sourceFarmId .. "/" .. env2.farmRestore.receipts[next(env2.farmRestore.receipts)].targetFarmId, "2/1")
+    T.ok("H4c the envelope with the proof validates", SGSave.validateEnvelope(SGValues.decode(SGValues.encode(env2))) ~= nil)
+    T.eq("H4d the produced snapshot key names backend, epoch and attempt", env2.nativeSnapshotKey, "OWN_XML:1:2")
+    -- A late owner that now declares its policy installs its retained section and resolves the unit.
+    local lateSpec = section("undecl", {}, { policy = "OWNER" })
+    reg.onRegister = function(lease) save:onSectionRegistered(lease) end
+    reg:unregisterOwner(reg:get(SGRegistry.KIND_SAVE_SECTION, "undecl"))
+    reg:registerSaveSection("undecl", lateSpec)
+    T.eq("H5 a re-registered owner with a declared policy installs the retained original and removes its unit", tostring(save.sectionState.undecl.ready) .. "/" .. tostring(save.farmRestore.pendingUnits["section:undecl"]), "true/nil")
+    T.ok("H5b the receipt stays while other units still reference it", next(save.farmRestore.receipts) ~= nil)
+    -- FAILED and WAITING phases retain OWNER sections.
+    local reg2 = SGRegistry.new("h2")
+    reg2:registerSaveSection("own", section("own", {}, { policy = "OWNER" }))
+    reg2:registerSaveSection("inv", section("inv", {}, { policy = "INVARIANT" }))
+    local ops2 = SGOperations.new(reg2, "h2")
+    local coord2 = SGFarmRestore.new("h2")
+    local save2 = SGSave.new(reg2, ops2, coord2)
+    save2.backendId = SGSave.BACKEND_XML
+    local envF = save2:buildEnvelope({})
+    coord2.onStage = function(_, payload, context) save2:stageLoad(payload, { farmRestore = context }) end
+    coord2:observeBeforeMerge({ farms = { { farmId = 1 }, { farmId = 2 } } })
+    coord2:observeAfterMerge({ farms = {}, mergedFarms = { [7] = 1 }, farmIdToFarm = { [1] = {} } })
+    coord2:retainPayload(SGValues.decode(SGValues.encode(envF)), "xml")
+    coord2:observeNativeReady()
+    T.eq("H6 under FAILED an OWNER section is retained and INVARIANT installs", save2.sectionState.own.reason .. "/" .. tostring(save2.sectionState.inv.ready), "FARM_RESTORE_FAILED/true")
+    -- A refused envelope is written back unchanged; a malformed file is never overwritten.
+    local reg3 = SGRegistry.new("h3")
+    local save3 = SGSave.new(reg3, SGOperations.new(reg3, "h3"), SGFarmRestore.new("h3"))
+    save3.backendId = SGSave.BACKEND_LEDGER
+    local newer = { schemaVersion = 3, future = "data", sections = {}, initializedSections = {} }
+    save3:stageLoad(newer, {})
+    T.eq("H7 a newer envelope is refused and retained", save3.loadResult.state .. "/" .. save3.loadResult.reason, "UNAVAILABLE/UNSUPPORTED_SCHEMA")
+    T.eq("H7b the next save writes the retained envelope back unchanged", tostring(save3:serializeForLedger().future) .. "/" .. save3:serializeForLedger().schemaVersion, "data/3")
+    local save4 = SGSave.new(reg3, SGOperations.new(reg3, "h4"), SGFarmRestore.new("h4"))
+    save4.backendId = SGSave.BACKEND_XML
+    save4:stageLoad({ malformed = true, reason = "XML_TOKENS" }, {})
+    XMLFile = { create = function() error("must not be called") end, loadIfExists = function() return nil end }
+    T.eq("H7c a malformed retained file is not overwritten", save4:saveToXML({ savegameDirectory = "sg" }), false)
+    XMLFile = nil
+    -- The manifest decides first use.
+    local save5 = SGSave.new(reg3, SGOperations.new(reg3, "h5"), SGFarmRestore.new("h5"))
+    save5.backendId = SGSave.BACKEND_LEDGER
+    save5.manifest = { backendId = "STATE_LEDGER", saveAttemptId = 3 }
+    save5:stageLoad({ firstUse = true, nilDelivery = true }, {})
+    T.eq("H8 a nil delivery after an initialized save is a missing payload, never first use", save5.loadResult.state .. "/" .. save5.loadResult.reason, "UNAVAILABLE/PAYLOAD_MISSING")
+    local save6 = SGSave.new(reg3, SGOperations.new(reg3, "h6"), SGFarmRestore.new("h6"))
+    save6.backendId = SGSave.BACKEND_LEDGER
+    save6:stageLoad({ firstUse = true, nilDelivery = true }, {})
+    T.eq("H8b without a manifest a nil delivery is first use", save6.loadResult.state, "FIRST_USE")
+    -- A refused farmRestore proof leaves only that proof unavailable.
+    local save7 = SGSave.new(reg3, SGOperations.new(reg3, "h7"), SGFarmRestore.new("h7"))
+    save7.backendId = SGSave.BACKEND_XML
+    local env7 = save7:buildEnvelope({})
+    env7.farmRestore = { version = 9 }
+    save7:stageLoad(SGValues.decode(SGValues.encode(env7)), {})
+    T.eq("H9 an invalid farmRestore proof is scoped: the load stays READY with the proof refused", save7.loadResult.state .. "/" .. tostring(save7.loadResult.farmRestoreRefused), "READY/FARM_RESTORE_VERSION")
+    -- The carrier-pending collection is injected once at its declared path and restored from there.
+    local reg8 = SGRegistry.new("h8")
+    local ops8 = SGOperations.new(reg8, "h8")
+    local ad8 = reg8:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" }, resolveCarrier = function() end, readNativeState = function() end, enumerateCarriers = function() return {} end, hasAccess = function() return true end })
+    reg8:registerSaveSection("sg4", section("sg4", {}, { policy = "OWNER" }))
+    local pl8 = reg8:registerCarrierPending("sg4", { sectionId = "sg4", collectionPath = "extensions.sg4.guidanceCarriers", schemaVersion = 1, validatePending = function() return true end, prepareCreationBinding = function() return {} end })
+    local key8 = { adapterId = "sg2", nativeOwnerKey = "bay", componentKey = "A" }
+    ops8:bindCarrier(ad8, { carrierKey = key8, adapterVersion = 1, profileId = "silo", profileVersion = 1, quantityBasisKey = "bay/A" }, { amount = 0, unit = "l" })
+    ops8:setCarrierPending(pl8, key8, 1, 1, { recipe = "R9" })
+    local save8 = SGSave.new(reg8, ops8, SGFarmRestore.new("h8"))
+    save8.backendId = SGSave.BACKEND_XML
+    local env8 = save8:buildEnvelope({})
+    T.eq("H10 the pending collection is injected at the owner's declared path", env8.sections.sg4.payload.extensions.sg4.guidanceCarriers.rows[1].pendingTarget.recipe .. "/" .. env8.sections.sg4.payload.extensions.sg4.guidanceCarriers.rows[1].selectionRevision, "R9/2")
+    local ops9 = SGOperations.new(reg8, "h9")
+    ops9:bindCarrier(ad8, { carrierKey = key8, adapterVersion = 1, profileId = "silo", profileVersion = 1, quantityBasisKey = "bay/A" }, { amount = 0, unit = "l" })
+    local save9 = SGSave.new(reg8, ops9, SGFarmRestore.new("h9"))
+    save9.backendId = SGSave.BACKEND_XML
+    save9:stageLoad(SGValues.decode(SGValues.encode(env8)), {})
+    T.eq("H10b the collection restores its tokens and target onto the empty carrier", (function() local r = ops9:readCarrierPending(pl8, key8) return r.emptyEpoch .. "/" .. r.selectionRevision .. "/" .. tostring(r.pendingTarget and r.pendingTarget.recipe) end)(), "1/2/R9")
 end

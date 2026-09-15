@@ -112,7 +112,10 @@ end
 -- Request validation
 -- ---------------------------------------------------------
 local function parseSequence(s)
-    if type(s) == "number" then s = string.format("%d", s) end
+    if type(s) == "number" then
+        if not SGValues.isInteger(s) or s < 1 then return nil end
+        s = string.format("%d", s)
+    end
     if not SGValues.isCanonicalDecimal(s) or #s > 10 then return nil end
     local n = tonumber(s)
     if n == nil or n > C.SEQUENCE_LIMIT then return nil end
@@ -203,13 +206,29 @@ function C:handle(actor, req)
     -- Advance on every terminal result; ACCEPTED_PENDING keeps the sequence.
     if out.outcome == "ACCEPTED_PENDING" then
         session.outstanding = { sequence = sequence, pendingId = out.actualPendingId }
+        session.pendingOwner = out.ownerId
+        out.ownerId = nil
     else
         self:_advance(session, actor)
     end
     out.nextSequence = tostring(session.outstanding and session.outstanding.sequence or session.nextSequence)
     if session.commandSessionId ~= req.commandSessionId then out.commandSessionId = session.commandSessionId end
-    session.latest = { sequence = sequence, fingerprint = C.fingerprint(req), result = copy(out) }
+    session.latest = { sequence = sequence, fingerprint = C.fingerprint(req), request = copy(req), result = copy(out) }
     return out
+end
+
+--- Withdraw every session bound to a closed connection.
+function C:withdrawConnection(connectionId, reason)
+    for id, s in pairs(self.sessions) do
+        if s.connectionId == connectionId then self:withdrawSession(id, reason) end
+    end
+end
+
+--- Withdraw every session of one user (a farm change for that player).
+function C:withdrawUser(userId, reason)
+    for id, s in pairs(self.sessions) do
+        if s.userId == userId then self:withdrawSession(id, reason) end
+    end
 end
 
 function C:_advance(session, actor)
@@ -247,7 +266,9 @@ function C:_dispatch(session, actor, req)
         if action.admission ~= "DIRECT_DESIRED_STATE" then return result(session, req, "REFUSED", "QUOTE_REQUIRED") end
         local ok, outcome, detail = pcall(lease.spec.invoke, binding, copy(actor), copy(action), copy(req.arguments or {}))
         if not ok then return result(session, req, "UNAVAILABLE", "OWNER_ERROR") end
-        return C.ownerResult(session, req, outcome, detail)
+        local out = C.ownerResult(session, req, outcome, detail)
+        if out.outcome == "ACCEPTED_PENDING" then out.ownerId = lease.ownerId end
+        return out
     elseif req.phase == "QUOTE" then
         if action.admission ~= "QUOTED" then return result(session, req, "REFUSED", "NOT_QUOTABLE") end
         local t = now(self)
@@ -293,7 +314,9 @@ function C:_dispatch(session, actor, req)
             -- After dispatch an exception is not proof that nothing happened.
             return result(session, req, "UNAVAILABLE", "OWNER_ERROR_AFTER_DISPATCH")
         end
-        return C.ownerResult(session, req, outcome, detail)
+        local out = C.ownerResult(session, req, outcome, detail)
+        if out.outcome == "ACCEPTED_PENDING" then out.ownerId = lease.ownerId end
+        return out
     end
 end
 
@@ -315,11 +338,83 @@ function C.ownerResult(session, req, outcome, detail)
     return result(session, req, "UNAVAILABLE", "OWNER_OUTCOME_UNKNOWN")
 end
 
---- SG_CURRENT_TARGET_1 for a resolved target, or nil.
+--- SG_CURRENT_TARGET_1 for a resolved target: identity, availability and
+--- the current action revisions only. The owner's readTarget row is not
+--- sent to the client here; the private view carries the disclosed row.
 function C.currentTarget(lease, binding, actor, req)
     local ok, row = pcall(lease.spec.readTarget, binding)
     if not ok or type(row) ~= "table" then return { schemaVersion = 1, targetKind = req.targetKind, targetId = req.targetId, availability = "UNAVAILABLE", reasonCode = "TARGET_UNREADABLE", effects = { knowledge = "UNAVAILABLE", changes = {} } } end
-    return { schemaVersion = 1, targetKind = req.targetKind, targetId = req.targetId, availability = "READY", reasonCode = "", row = copy(row), effects = { knowledge = "KNOWN", changes = {} } }
+    local revisions = {}
+    local okG, list = pcall(lease.spec.getActions, binding, copy(actor))
+    if okG and type(list) == "table" then
+        for _, a in ipairs(list) do
+            if type(a) == "table" and a.actionId == req.actionId then
+                revisions.expectedRevision = a.expectedRevision
+                revisions.expectedGeneration = a.expectedGeneration
+            end
+        end
+    end
+    return { schemaVersion = 1, targetKind = req.targetKind, targetId = req.targetId, availability = "READY", reasonCode = "", currentRevision = revisions.expectedRevision, currentGeneration = revisions.expectedGeneration, effects = { knowledge = "KNOWN", changes = {} } }
+end
+
+-- ---------------------------------------------------------
+-- Pending completion: the only path that clears an outstanding command
+-- ---------------------------------------------------------
+--- Complete an outstanding ACCEPTED_PENDING command. The session's
+--- outstanding marker clears, its sequence advances, the completion result
+--- becomes the retained latest result. Returns true when a session matched.
+function C:onPendingComplete(pendingId, outcome, detail)
+    if not nonempty(pendingId, 128) then return false end
+    for _, session in pairs(self.sessions) do
+        if session.outstanding ~= nil and session.outstanding.pendingId == pendingId then
+            local req = session.latest and session.latest.request or nil
+            local out
+            if outcome == "APPLIED" or outcome == "PARTIAL_UNAVAILABLE" or outcome == "REFUSED" or outcome == "STALE" then
+                out = C.ownerResult(session, req, outcome, detail)
+            else
+                out = result(session, req, "UNAVAILABLE", tostring(type(detail) == "table" and detail.reasonCode or outcome or "PENDING_UNAVAILABLE"))
+            end
+            local sequence = session.outstanding.sequence
+            local ownerId = session.pendingOwner
+            session.outstanding = nil
+            session.pendingOwner = nil
+            self:_advance(session, { connectionId = session.connectionId, userId = session.userId, farmId = session.farmId, actorState = "RESOLVED" })
+            out.nextSequence = tostring(session.nextSequence)
+            out.sequence = tostring(sequence)
+            session.latest = { sequence = sequence, fingerprint = session.latest and session.latest.fingerprint or "", request = req, result = copy(out) }
+            local lease = ownerId and self.registry:get(SGRegistry.KIND_MANAGEMENT, ownerId) or nil
+            if lease ~= nil and type(lease.spec.onPendingComplete) == "function" then pcall(lease.spec.onPendingComplete, pendingId, outcome, copy(detail)) end
+            return true
+        end
+    end
+    return false
+end
+
+--- Poll every outstanding command through its owner's readPending; an owner
+--- without readPending leaves the command outstanding until it calls
+--- onPendingComplete itself. Called from the host's update tick.
+function C:pollPending()
+    local completed = 0
+    for _, session in pairs(self.sessions) do
+        local o = session.outstanding
+        if o ~= nil and session.pendingOwner ~= nil then
+            local lease = self.registry:get(SGRegistry.KIND_MANAGEMENT, session.pendingOwner)
+            if lease == nil then
+                self:onPendingComplete(o.pendingId, "UNAVAILABLE", { reasonCode = "OWNER_UNREGISTERED" })
+                completed = completed + 1
+            elseif type(lease.spec.readPending) == "function" then
+                local ok, status = pcall(lease.spec.readPending, o.pendingId)
+                if not ok then
+                    self:onPendingComplete(o.pendingId, "UNAVAILABLE", { reasonCode = "OWNER_ERROR" })
+                    completed = completed + 1
+                elseif type(status) == "table" and status.state ~= "PENDING" then
+                    self:onPendingComplete(o.pendingId, status.outcome or status.state, status.detail or { reasonCode = status.reasonCode })
+                    completed = completed + 1
+                end
+            end
+        end
+    end
+    return completed
 end
 
 --- SG_QUOTE_OFFER_1 validation.

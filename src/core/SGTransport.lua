@@ -9,7 +9,9 @@
 -- spectator/invalid farm, READY/FULL with the SG_VALUES_2 token array of
 -- the page (one NS7 STRING pair per token), and UNCHANGED when the previous
 -- descriptor still names the same view key and data revision. Non-READY
--- results carry no private values.
+-- results carry no private values. Selections are keyed by the connection
+-- OBJECT (NS-7 hands the producer context.connection; its own "c<serial>"
+-- ids are never assumed), "local" for the listen host.
 --
 -- Without NS-7 the dedicated pair SGViewRequestEvent (client to server:
 -- selection, paging tail) and SGViewStateEvent (server to one connection:
@@ -17,74 +19,85 @@
 -- identical application bytes and outcomes. Never both transports for one
 -- replica, never a public broadcast. SGCommandRequestEvent /
 -- SGCommandResultEvent carry SG_COMMAND_2 requests to the server and the
--- typed result back to the requesting connection only.
+-- typed result back to the requesting connection only. Every event checks
+-- its direction on the receiving side (Connection:getIsServer, network/
+-- Connection.lua:146-148): a result or state event is accepted only from
+-- the server, a request only on the server.
 --
--- The client replica applies a publication only after decoding, after the
--- route/schema gate (TERMINAL on an unsupported application version), and
--- only when the publication's selectionKey equals the client's own expected
--- key computed from its request through the same codec.
+-- A present NS-7 that refuses the module registration leaves the route
+-- UNAVAILABLE (reported), never a unilateral fallback that could split the
+-- server and its clients across two transports.
 -- =========================================================
 
 SGTransport = SGTransport or {}
-local T = SGTransport
-local SGTransport_mt = { __index = T }
+local TR = SGTransport
+local SGTransport_mt = { __index = TR }
 
-T.MODULE_ID = "stockGuard"
-T.PROTOCOL_VERSION = 1
-T.MAX_TOKENS = 4096
+TR.MODULE_ID = "stockGuard"
+TR.PROTOCOL_VERSION = 1
+TR.MAX_TOKENS = 4096
+TR.LOCAL = "local"
 
 local copy = SGValues.copy
 
-function T.new(views, commands)
+function TR.new(views, commands)
     local self = setmetatable({}, SGTransport_mt)
     self.views = views
     self.commands = commands
-    self.route = nil                 -- "NS7" or "FALLBACK"
-    self.selections = {}             -- connectionId -> { normalized, options, selectionKey }
-    self.client = { expectedKey = nil, replica = nil, state = "UNAVAILABLE", reason = "NOT_SUBSCRIBED", usable = false, credentials = nil }
+    self.route = nil                 -- "NS7", "FALLBACK" or "UNAVAILABLE"
+    self.routeReason = "WAITING"
+    self.selections = setmetatable({}, { __mode = "k" })   -- connection object (or TR.LOCAL) -> selection
+    self.client = { expectedKey = nil, replica = nil, state = "UNAVAILABLE", reason = "NOT_SUBSCRIBED", usable = false, credentials = nil, request = nil }
     self.registered = false
     self.stockGuard = nil            -- back pointer set by the host
     self.dirty = false
     return self
 end
 
+local function keyOf(connection)
+    if connection == nil then return TR.LOCAL end
+    return connection
+end
+TR.keyOf = keyOf
+
 -- ---------------------------------------------------------
 -- Selection per connection (server)
 -- ---------------------------------------------------------
-function T:selectionFor(connectionId)
-    local s = self.selections[connectionId]
+function TR:selectionFor(connection)
+    local key = keyOf(connection)
+    local s = self.selections[key]
     if s == nil then
         s = { normalized = { route = SGViews.ROUTE_STOCK, selectionKind = "FARM" }, options = {} }
         s.selectionKey = SGViews.selectionKey(s.normalized, s.options)
-        self.selections[connectionId] = s
+        self.selections[key] = s
     end
     return s
 end
 
 --- Validated selection change for a live connection; grants nothing.
-function T:setSelection(connectionId, selection, readOptions)
+function TR:setSelection(connection, selection, readOptions)
     local normalized, why = SGViews.normalizeSelection(selection and selection.route or SGViews.ROUTE_STOCK, selection)
     if normalized == nil then return false, why end
     local options, whyO = SGViews.normalizeReadOptions(normalized, readOptions, false)
     if options == nil then return false, whyO end
-    self.selections[connectionId] = { normalized = normalized, options = options, selectionKey = SGViews.selectionKey(normalized, options) }
+    self.selections[keyOf(connection)] = { normalized = normalized, options = options, selectionKey = SGViews.selectionKey(normalized, options) }
     self.dirty = true
     return true
 end
 
-function T:clearConnection(connectionId)
-    self.selections[connectionId] = nil
+function TR:clearConnection(connection)
+    self.selections[keyOf(connection)] = nil
 end
 
 -- ---------------------------------------------------------
 -- Producer (server): buildView(context, previous, forceFull)
 -- ---------------------------------------------------------
-function T:buildView(context, previous, forceFull)
+function TR:buildView(context, previous, forceFull)
     if type(context) ~= "table" then return { state = "ERROR", reason = "CONTEXT" } end
     local actor = { farmId = context.farmId, userId = context.userId, actorState = context.actorState, connectionId = context.connectionId }
     if context.actorState == "WAITING" then return { state = "WAITING", reason = "ACTOR_WAITING" } end
     if context.actorState == "SPECTATOR" or context.actorState == "INVALID" then return { state = "DENIED", reason = "ACTOR_" .. tostring(context.actorState) } end
-    local sel = self:selectionFor(context.connectionId or "local")
+    local sel = self:selectionFor(context.connection)
     local page = self.views:getManagementView(actor, { route = sel.normalized.route, selectionKind = sel.normalized.selectionKind, siteId = sel.normalized.siteId, groundFootprint = sel.normalized.groundFootprint, libraryId = sel.normalized.libraryId }, sel.options, false)
     if page.view == nil then return { state = "ERROR", reason = tostring(page.reason) } end
     local view = page.view
@@ -107,14 +120,14 @@ function T:buildView(context, previous, forceFull)
         return { state = "READY", viewKey = view.viewKey, dataRevision = dataRevision, mode = "UNCHANGED" }
     end
     local tokens = SGViews.encodeView(view)
-    if tokens == nil or #tokens > T.MAX_TOKENS then return { state = "ERROR", reason = "OVERSIZE" } end
+    if tokens == nil or #tokens > TR.MAX_TOKENS then return { state = "ERROR", reason = "OVERSIZE" } end
     return { state = "READY", viewKey = view.viewKey, dataRevision = dataRevision, mode = "FULL", values = tokens }
 end
 
 -- ---------------------------------------------------------
 -- Consumer (client): applyView(publication) / clearView(reason)
 -- ---------------------------------------------------------
-function T:applyView(publication)
+function TR:applyView(publication)
     if type(publication) ~= "table" then return { outcome = "RETRYABLE", reason = "APPLY_ERROR" } end
     local tokens = publication.values
     if not SGValues.isTokenArray(tokens) then return { outcome = "RETRYABLE", reason = "APPLY_ERROR", dataRevision = publication.dataRevision } end
@@ -137,11 +150,11 @@ function T:applyView(publication)
     return { outcome = "APPLIED", reason = nil, dataRevision = publication.dataRevision }
 end
 
-function T:clearView(reason)
+function TR:clearView(reason)
     self:clearReplica(reason)
 end
 
-function T:clearReplica(reason)
+function TR:clearReplica(reason)
     self.client.replica = nil
     self.client.usable = false
     self.client.credentials = nil
@@ -150,69 +163,91 @@ function T:clearReplica(reason)
 end
 
 --- The client computes its expected selectionKey from its own request.
-function T:expectSelection(selection, readOptions)
+function TR:expectSelection(selection, readOptions)
     local normalized, why = SGViews.normalizeSelection(selection and selection.route or SGViews.ROUTE_STOCK, selection)
     if normalized == nil then return nil, why end
     local options, whyO = SGViews.normalizeReadOptions(normalized, readOptions, false)
     if options == nil then return nil, whyO end
     self.client.expectedKey = SGViews.selectionKey(normalized, options)
+    self.client.request = { selection = copy(selection), readOptions = copy(readOptions or {}) }
     self:clearReplica("SELECTION_CHANGING")
     return self.client.expectedKey
+end
+
+--- Fallback client subscription: compute the expected key and send the
+--- request event to the server. Returns true when an event was sent.
+function TR:requestView(selection, readOptions, sender)
+    selection = selection or { route = "STOCK", selectionKind = "FARM" }
+    local key, why = self:expectSelection(selection, readOptions)
+    if key == nil then return false, why end
+    if self.route ~= "FALLBACK" then return false, "ROUTE" end
+    if SGViewRequestEvent == nil then return false, "EVENT_CLASS" end
+    local connection = sender
+    if connection == nil and g_client ~= nil and type(g_client.getServerConnection) == "function" then connection = g_client:getServerConnection() end
+    if connection == nil or type(connection.sendEvent) ~= "function" then return false, "NO_SERVER_CONNECTION" end
+    local ok = pcall(function() connection:sendEvent(SGViewRequestEvent.new(selection, readOptions)) end)
+    return ok, ok and nil or "SEND_FAILED"
 end
 
 -- ---------------------------------------------------------
 -- Route selection
 -- ---------------------------------------------------------
 --- Select NS-7 when its scoped capability is ready; WAITING keeps trying;
---- absent or unsupported selects the dedicated fallback once.
-function T:selectRoute(mission)
+--- absent or unsupported selects the dedicated fallback once; a present
+--- NS-7 that refuses the registration is UNAVAILABLE, never fallback.
+function TR:selectRoute(mission)
     if self.route ~= nil then return self.route end
     local ns = mission ~= nil and mission.networkSync or nil
     if type(ns) == "table" and type(ns.getScopedCapabilities) == "function" and type(ns.registerScopedModule) == "function" then
         local ok, caps = pcall(ns.getScopedCapabilities, ns)
         if ok and type(caps) == "table" then
             local supported = false
-            for _, v in ipairs(caps.protocolVersions or {}) do if v == T.PROTOCOL_VERSION then supported = true end end
+            for _, v in ipairs(caps.protocolVersions or {}) do if v == TR.PROTOCOL_VERSION then supported = true end end
             if caps.bootstrapVersion == 1 and supported then
                 if caps.ready == true then
                     local transport = self
-                    local okR, registered = pcall(ns.registerScopedModule, ns, T.MODULE_ID, {
+                    local okR, registered, whyR = pcall(ns.registerScopedModule, ns, TR.MODULE_ID, {
                         buildView = function(context, previous, forceFull) return transport:buildView(context, previous, forceFull) end,
                         applyView = function(publication) return transport:applyView(publication) end,
                         clearView = function(reason) return transport:clearView(reason) end,
                     })
                     if okR and registered == true then
                         self.route = "NS7"
+                        self.routeReason = "READY"
                         self.networkSync = ns
                         self.registered = true
                         return self.route
                     end
-                    self.route = "FALLBACK"
+                    self.route = "UNAVAILABLE"
+                    self.routeReason = "NS7_REGISTRATION_REFUSED:" .. tostring(okR and whyR or registered)
                     return self.route
                 end
+                self.routeReason = tostring(caps.reasonCode or "NS7_WAITING")
                 return nil -- compatible and initializing: WAITING, never unilateral fallback
             end
         end
     end
     self.route = "FALLBACK"
+    self.routeReason = "READY"
     return self.route
 end
 
-function T:markDirty()
+function TR:markDirty()
     self.dirty = true
     if self.route == "NS7" and self.networkSync ~= nil and type(self.networkSync.markDirty) == "function" then
-        pcall(self.networkSync.markDirty, self.networkSync, T.MODULE_ID)
+        pcall(self.networkSync.markDirty, self.networkSync, TR.MODULE_ID)
     end
 end
 
-function T:teardown()
+function TR:teardown()
     if self.route == "NS7" and self.networkSync ~= nil and type(self.networkSync.unregisterScopedModule) == "function" then
-        pcall(self.networkSync.unregisterScopedModule, self.networkSync, T.MODULE_ID)
+        pcall(self.networkSync.unregisterScopedModule, self.networkSync, TR.MODULE_ID)
     end
     self.route = nil
+    self.routeReason = "MISSION_END"
     self.networkSync = nil
     self.registered = false
-    self.selections = {}
+    self.selections = setmetatable({}, { __mode = "k" })
     self:clearReplica("MISSION_END")
 end
 
@@ -223,20 +258,52 @@ local function writeTokens(streamId, tokens)
     streamWriteInt32(streamId, #tokens)
     for i = 1, #tokens do streamWriteString(streamId, tokens[i]) end
 end
+
+--- Read a token array. An oversize count is refused without allocation
+--- and reported as OVERSIZE; the caller then disconnects the peer, because
+--- the remaining stream cannot be consumed safely.
 local function readTokens(streamId)
     local n = streamReadInt32(streamId)
-    if n == nil or n < 0 or n > T.MAX_TOKENS then return nil end
+    if n == nil or n < 0 or n > TR.MAX_TOKENS then return nil, "OVERSIZE" end
     local out = {}
-    for i = 1, n do out[i] = streamReadString(streamId) end
+    for i = 1, n do
+        local s = streamReadString(streamId)
+        if type(s) ~= "string" then return nil, "MALFORMED" end
+        if #s > SGValues.MAX_STRING_BYTES then return nil, "STRING_TOO_LONG" end
+        out[i] = s
+    end
     return out
 end
-T.writeTokens = writeTokens
-T.readTokens = readTokens
+TR.writeTokens = writeTokens
+TR.readTokens = readTokens
 
 local function hostOnServer()
-    local sg = g_currentMission ~= nil and g_currentMission.stockGuard or nil
+    local sg = StockGuard ~= nil and StockGuard.hostOf ~= nil and StockGuard.hostOf(g_currentMission) or nil
     if sg == nil or g_currentMission == nil or not g_currentMission:getIsServer() then return nil end
     return sg
+end
+
+local function hostOnClient()
+    local sg = StockGuard ~= nil and StockGuard.hostOf ~= nil and StockGuard.hostOf(g_currentMission) or nil
+    if sg == nil or (g_currentMission ~= nil and g_currentMission:getIsServer()) then return nil end
+    return sg
+end
+
+--- The sending side of a server-to-client event must be the server.
+local function fromServer(connection)
+    return type(connection) == "table" and type(connection.getIsServer) == "function" and connection:getIsServer() == true
+end
+TR.fromServer = fromServer
+
+--- A malformed or oversize event ends that peer's connection on the server.
+local function dropPeer(connection, why)
+    print("[StockGuard] transport: refusing " .. tostring(why) .. " event; closing the connection")
+    if type(connection) ~= "table" then return end
+    if g_server ~= nil and type(g_server.closeConnection) == "function" then
+        pcall(g_server.closeConnection, g_server, connection)
+    elseif type(connection.close) == "function" then
+        pcall(connection.close, connection)
+    end
 end
 
 -- SGViewRequestEvent: client -> server. Body: protocolVersion, route,
@@ -256,7 +323,7 @@ if Event ~= nil and Class ~= nil and InitEventClass ~= nil then
     end
     function SGViewRequestEvent:writeStream(streamId, connection)
         local s, o = self.selection, self.readOptions
-        streamWriteUInt8(streamId, T.PROTOCOL_VERSION)
+        streamWriteUInt8(streamId, TR.PROTOCOL_VERSION)
         streamWriteString(streamId, tostring(s.route or "STOCK"))
         streamWriteString(streamId, tostring(s.selectionKind or "FARM"))
         streamWriteString(streamId, tostring(s.siteId or ""))
@@ -290,7 +357,7 @@ if Event ~= nil and Class ~= nil and InitEventClass ~= nil then
     function SGViewRequestEvent:run(connection)
         local sg = hostOnServer()
         if sg == nil then return end
-        if self.protocolVersion ~= T.PROTOCOL_VERSION or self.pagingVersion ~= SGViews.PAGING_VERSION then return end
+        if self.protocolVersion ~= TR.PROTOCOL_VERSION or self.pagingVersion ~= SGViews.PAGING_VERSION then return end
         if (self.readOptions.pageCursor ~= nil and self.readOptions.pageCursor == "") or (self.readOptions.navigationCarrierId ~= nil and self.readOptions.navigationCarrierId == "") then return end
         sg:onViewRequest(connection, self.selection, self.readOptions)
     end
@@ -321,12 +388,16 @@ if Event ~= nil and Class ~= nil and InitEventClass ~= nil then
         self.publicationId = streamReadString(streamId)
         self.state = streamReadString(streamId)
         self.reason = streamReadString(streamId)
-        self.tokens = readTokens(streamId)
+        self.tokens, self.tokensError = readTokens(streamId)
         self:run(connection)
     end
     function SGViewStateEvent:run(connection)
-        local sg = g_currentMission ~= nil and g_currentMission.stockGuard or nil
-        if sg == nil or (g_currentMission ~= nil and g_currentMission:getIsServer()) then return end
+        local sg = hostOnClient()
+        if sg == nil or not fromServer(connection) then return end
+        if self.tokens == nil then
+            sg.transport:clearReplica("TRANSPORT_" .. tostring(self.tokensError))
+            return
+        end
         sg:onViewState(self)
     end
 
@@ -345,18 +416,22 @@ if Event ~= nil and Class ~= nil and InitEventClass ~= nil then
         writeTokens(streamId, tokens)
     end
     function SGCommandRequestEvent:readStream(streamId, connection)
-        self.tokens = readTokens(streamId)
+        self.tokens, self.tokensError = readTokens(streamId)
         self:run(connection)
     end
     function SGCommandRequestEvent:run(connection)
         local sg = hostOnServer()
-        if sg == nil or self.tokens == nil then return end
+        if sg == nil then return end
+        if self.tokens == nil then
+            dropPeer(connection, self.tokensError)
+            return
+        end
         local req = SGValues.decode(self.tokens)
         if type(req) ~= "table" then return end
         sg:onCommandRequest(connection, req)
     end
 
-    -- SGCommandResultEvent: server -> the requesting connection.
+    -- SGCommandResultEvent: server -> the requesting connection only.
     SGCommandResultEvent = SGCommandResultEvent or {}
     local SGCommandResultEvent_mt = Class(SGCommandResultEvent, Event)
     InitEventClass(SGCommandResultEvent, "SGCommandResultEvent")
@@ -370,12 +445,12 @@ if Event ~= nil and Class ~= nil and InitEventClass ~= nil then
         writeTokens(streamId, SGValues.encode(self.result) or {})
     end
     function SGCommandResultEvent:readStream(streamId, connection)
-        self.tokens = readTokens(streamId)
+        self.tokens, self.tokensError = readTokens(streamId)
         self:run(connection)
     end
     function SGCommandResultEvent:run(connection)
-        local sg = g_currentMission ~= nil and g_currentMission.stockGuard or nil
-        if sg == nil or self.tokens == nil then return end
+        local sg = hostOnClient()
+        if sg == nil or not fromServer(connection) or self.tokens == nil then return end
         local res = SGValues.decode(self.tokens)
         if type(res) == "table" then sg:onCommandResult(res) end
     end

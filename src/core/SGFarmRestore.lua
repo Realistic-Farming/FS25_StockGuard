@@ -190,7 +190,7 @@ function F.commit(s, key, rev, native, gen, ok)
     if p == nil or p.continuityLost or p.revision ~= rev or p.current ~= native or p.generation ~= gen or not ok then return false end
     local r = s.receipts[p.receiptId]
     if r == nil then return false end
-    local decoded = F.receiptMap(r.map, SGRecords.farmConstants().singleplayer)
+    local decoded = F.receiptMap(r.sourceToTarget or r.map, SGRecords.farmConstants().singleplayer)
     if decoded == nil then return false end
     local candidate = copy(s.data[key])
     if candidate == nil then return false end
@@ -338,9 +338,16 @@ end
 
 --- Farms loaded without the merge wrapper firing (defaults, or a host that
 --- never ran the merge): UNCHANGED with an empty map.
-function F:observeFarmsLoadedWithoutMerge()
+function F:observeFarmsLoadedWithoutMerge(loadOk)
     if self.farmsLoaded then return end
     self.farmsLoaded = true
+    if loadOk == false then
+        self.phase = F.PHASE_FAILED
+        self.sourceToTarget = {}
+        self.targetFarmId = nil
+        log("native farm data failed to load; metadata stays unavailable")
+        return
+    end
     self.phase = F.PHASE_UNCHANGED
     self.sourceToTarget = {}
     self.targetFarmId = (not self:isMultiplayer()) and SGRecords.farmConstants().singleplayer or nil
