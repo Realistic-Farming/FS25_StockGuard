@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard nemohl zajistit kapacitu materiálů pro toto sezení: %s. Načítání se zastaví, aby se žádné zboží nečetlo chybně. Zkontrolujte výběr modů a log."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: profil kapacity materiálů a mapy se liší od serveru. Opatřete si odpovídající sestavu a nahlédněte do logu hostitele."/>
+    </texts>
+</l10n>

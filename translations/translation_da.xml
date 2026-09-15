@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard kunne ikke klargøre materialekapaciteten for denne session: %s. Indlæsningen stopper, så ingen varer læses forkert. Tjek modvalget og loggen."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: materiale- og kortkapacitetsprofilen afviger fra serverens. Skaf den tilsvarende opsætning og se i værtens log."/>
+    </texts>
+</l10n>

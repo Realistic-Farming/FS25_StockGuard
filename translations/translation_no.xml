@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard kunne ikke klargjøre materialkapasiteten for denne økten: %s. Innlastingen stopper slik at ingen varer leses feil. Sjekk modvalget og loggen."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: material- og kartkapasitetsprofilen avviker fra serverens. Skaff det tilsvarende oppsettet og se i vertens logg."/>
+    </texts>
+</l10n>

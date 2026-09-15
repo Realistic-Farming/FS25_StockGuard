@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard 无法为本次会话安排物料容量：%s。为避免货物被误读，加载已停止。请检查模组选择和日志。"/>
+        <text name="sg6_profile_mismatch" text="StockGuard：物料和地图容量配置与服务器不同。请获取匹配的配置并查看主机日志。"/>
+    </texts>
+</l10n>

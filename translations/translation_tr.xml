@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard bu oturum için malzeme kapasitesini düzenleyemedi: %s. Hiçbir malın yanlış okunmaması için yükleme durduruldu. Mod seçimini ve günlüğü kontrol edin."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: malzeme ve harita kapasite profili sunucudan farklı. Eşleşen kurulumu edinin ve sunucu sahibinin günlüğüne bakın."/>
+    </texts>
+</l10n>

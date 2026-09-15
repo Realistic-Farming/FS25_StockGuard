@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard no pudo preparar la capacidad de materiales para esta sesión: %s. La carga se detiene para que ninguna mercancía se lea mal. Revisa la selección de mods y el registro."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: el perfil de capacidad de materiales y mapa difiere del servidor. Consigue la configuración correspondiente y consulta el registro del anfitrión."/>
+    </texts>
+</l10n>

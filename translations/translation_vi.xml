@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard không thể sắp xếp dung lượng vật liệu cho phiên này: %s. Quá trình tải dừng lại để không hàng hóa nào bị đọc sai. Hãy kiểm tra bộ mod và nhật ký."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: hồ sơ dung lượng vật liệu và bản đồ khác với máy chủ. Hãy lấy cấu hình phù hợp và xem nhật ký của máy chủ."/>
+    </texts>
+</l10n>

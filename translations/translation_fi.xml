@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard ei voinut järjestää materiaalikapasiteettia tälle istunnolle: %s. Lataus pysähtyy, jotta mitään tavaraa ei lueta väärin. Tarkista modivalinta ja loki."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: materiaali- ja karttakapasiteettiprofiili poikkeaa palvelimen profiilista. Hanki vastaava kokoonpano ja tarkista isännän loki."/>
+    </texts>
+</l10n>

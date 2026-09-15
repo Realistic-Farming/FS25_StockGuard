@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard はこのセッションの資材容量を用意できませんでした: %s。品物が誤って読まれないよう読み込みを中止します。MOD の選択とログを確認してください。"/>
+        <text name="sg6_profile_mismatch" text="StockGuard: 資材とマップの容量プロファイルがサーバーと異なります。一致する構成を用意し、ホストのログを確認してください。"/>
+    </texts>
+</l10n>
