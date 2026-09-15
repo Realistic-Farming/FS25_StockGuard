@@ -307,6 +307,18 @@ do
     local mix = ops:readPropertyMix(consumer, { { stockRef = ops:stockRef(s2), amount = 10, unit = "l" }, { capturedContribution = { properties = {}, knowledge = "UNKNOWN", materialRef = wheat }, amount = 10, unit = "l" } }, {})
     T.eq("E45 mix preview is detached and explicit about the unknown share", mix.state .. "/" .. mix.properties["sf.moisture"].knowledge .. "/" .. mix.properties["sf.moisture"].knownAmount, "READY/PARTIAL/0")
     T.eq("E46 mix preview did not change the store", ops.stocks[s2.stockId].observedAmount, 60)
+    -- An error inside settle never leaves the store locked (Sasha, #2 review).
+    local cap5 = ops:captureOperation(adapter, "TRANSFER", { { carrierId = c2.carrierId, expectedStockRef = ops:stockRef(s2) } })
+    local realSettle = ops._settle
+    ops._settle = function() error("adapter report blew up") end
+    local o5, why5 = ops:settleOperation(cap5.handle, { participantsAfter = { [c2.carrierId] = { materialRef = wheat, amount = 60, unit = "l" } } })
+    ops._settle = realSettle
+    T.eq("E26b an exception during settle is UNRESOLVED SETTLE_ERROR", o5 .. "/" .. why5, "UNRESOLVED/SETTLE_ERROR")
+    T.eq("E26c the store is not left busy and the handle is consumed", tostring(ops.busy) .. "/" .. tostring(cap5.handle.open), "false/false")
+    T.eq("E26d the captured stock is qualified, native quantity kept", ops.stocks[s2.stockId].knowledge .. "/" .. ops.stocks[s2.stockId].observedAmount, "UNAVAILABLE/60")
+    local cap6 = ops:captureOperation(adapter, "REMOVE", { { carrierId = c2.carrierId, expectedStockRef = ops:stockRef(s2) } })
+    T.eq("E26e a later settle still runs after the failed one", select(1, ops:settleOperation(cap6.handle, { participantsAfter = { [c2.carrierId] = { materialRef = wheat, amount = 60, unit = "l" } } })), "NO_OP")
+    T.eq("E26f publishProperties is not locked out either", ops:publishProperties(prop, { { stockRef = ops:stockRef(s2), expectedPropertyRevision = ops.stocks[s2.stockId].properties["sf.moisture"].propertyRevision, record = { propertyId = "sf.moisture", schemaVersion = 1, producerId = "soil", propertyRevision = 0, knowledge = "KNOWN", knownAmount = 60, basisAmount = 60, amountUnit = "LITRE", payload = { moisture = 0.11 } } } }), "APPLIED")
     -- Unregister withdraws the adapter's carriers only.
     local sgOps = ops
     registry.onUnregister = function(lease) if lease.kind == SGRegistry.KIND_CARRIER_ADAPTER then sgOps:withdrawAdapter(lease.ownerId, "ADAPTER_UNREGISTERED") end end

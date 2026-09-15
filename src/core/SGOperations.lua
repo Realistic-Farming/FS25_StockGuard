@@ -424,9 +424,19 @@ function O:settleOperation(handle, report)
         return O.OUTCOME_UNRESOLVED, "REPORT"
     end
     self.busy = true
-    local outcome, reason = self:_settle(handle, report)
+    -- A protected settle: adapter-supplied report data drives a long branch
+    -- and an unexpected error must never leave the store locked for the
+    -- mission. On an error the captured participants are qualified (native
+    -- goods are untouched) and the handle is consumed like any terminal path.
+    local ok, outcome, reason = pcall(self._settle, self, handle, report)
     self.busy = false
     closeHandle(self, handle)
+    if not ok then
+        local err = tostring(outcome)
+        pcall(self._qualifyCaptured, self, handle.before, "SETTLE_ERROR", type(report) == "table" and report.participantsAfter or nil)
+        print("[StockGuard] settleOperation " .. tostring(handle.operationId) .. " failed: " .. err)
+        return O.OUTCOME_UNRESOLVED, "SETTLE_ERROR"
+    end
     return outcome, reason
 end
 
