@@ -3,5 +3,6 @@
     <texts>
         <text name="sg6_capacity_refused" text="StockGuard nie mógł przygotować pojemności materiałów dla tej sesji: %s. Ładowanie zostaje przerwane, aby żadne towary nie zostały błędnie odczytane. Sprawdź wybór modów i dziennik."/>
         <text name="sg6_profile_mismatch" text="StockGuard: profil pojemności materiałów i mapy różni się od serwera. Zdobądź pasujący zestaw i sprawdź dziennik hosta."/>
+        <text name="sg_site_purpose_yard" text="Podworze StockGuard"/>
     </texts>
 </l10n>

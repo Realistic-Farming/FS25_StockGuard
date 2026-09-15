@@ -3,5 +3,6 @@
     <texts>
         <text name="sg6_capacity_refused" text="StockGuard 無法為本次工作階段安排物料容量：%s。為避免貨物被誤讀，載入已停止。請檢查模組選擇和記錄檔。"/>
         <text name="sg6_profile_mismatch" text="StockGuard：物料和地圖容量設定檔與伺服器不同。請取得相符的設定並查看主機記錄檔。"/>
+        <text name="sg_site_purpose_yard" text="StockGuard yard"/>
     </texts>
 </l10n>

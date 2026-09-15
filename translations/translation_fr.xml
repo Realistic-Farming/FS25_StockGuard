@@ -3,5 +3,6 @@
     <texts>
         <text name="sg6_capacity_refused" text="StockGuard n'a pas pu établir la capacité de matériaux pour cette session : %s. Le chargement s'arrête afin qu'aucune marchandise ne soit mal lue. Vérifiez la sélection de mods et le journal."/>
         <text name="sg6_profile_mismatch" text="StockGuard : le profil de capacité des matériaux et de la carte diffère de celui du serveur. Procurez-vous la configuration correspondante et consultez le journal de l'hôte."/>
+        <text name="sg_site_purpose_yard" text="Cour StockGuard"/>
     </texts>
 </l10n>
