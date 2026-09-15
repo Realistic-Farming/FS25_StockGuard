@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
 <l10n>
     <texts>
-        <text name="sg6_capacity_refused" text="StockGuard could not arrange material capacity for this session: %s. Loading stops so no goods are misread. Check the mods set and the log."/>
-        <text name="sg6_profile_mismatch" text="StockGuard: the material and map capacity profile differs from the server. Obtain the matching setup and consult the host log."/>
+        <text name="sg6_capacity_refused" text="StockGuard가 이 세션의 자재 용량을 준비하지 못했습니다: %s. 물품이 잘못 읽히지 않도록 로딩을 중단합니다. 모드 선택과 로그를 확인하세요."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: 자재 및 지도 용량 프로필이 서버와 다릅니다. 일치하는 구성을 준비하고 호스트 로그를 확인하세요."/>
     </texts>
 </l10n>

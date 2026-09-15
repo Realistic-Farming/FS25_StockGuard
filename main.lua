@@ -36,7 +36,8 @@ local function onMissionLoad(mission)
         mission.stockGuard.capacity = StockGuardCapacity
     end
 end
-if Mission00 ~= nil and Mission00.load ~= nil then
+if Mission00 ~= nil and Mission00.load ~= nil and not SGCapacity._missionLoadAppended then
+    SGCapacity._missionLoadAppended = true   -- once per process, even if this file is re-sourced
     Mission00.load = Utils.appendedFunction(Mission00.load, onMissionLoad)
 end
 

@@ -437,6 +437,9 @@ do
     T.eq("D13 consumer bound refuses beyond 16383", select(2, c:sizeFor(16384, 15)), "CAPACITY")
     c.phase = CAP.PHASE_READY
     T.eq("D14 late registration is FROZEN", select(2, c:sizeFor(3, 8)), "FROZEN")
+    local c2 = CAP.new()
+    T.eq("D15 a current width outside 8..15 is refused, not treated as eight", select(2, c2:sizeFor(3, 7)), "INVALID_WIDTH")
+    T.eq("D16 width 16 refused", select(2, c2:sizeFor(3, 16)), "INVALID_WIDTH")
 end
 
 -- (E) Epoch reset and the external floor.
@@ -459,6 +462,21 @@ do
     c:onMapDataEntry(13)
     T.eq("E7 next load is incompatible", c.phase, CAP.PHASE_FAILED)
     T.eq("E8 with the reason", c.reasonCode, "EXTERNAL_WIDTH_CHANGE")
+    -- Montana's temporary loading width is never promoted into the floor.
+    local m = CAP.new()
+    m.temporaryWidthWriter = 10
+    m:onMapDataEntry(10)
+    T.eq("E9 Montana's temporary 10 is not a floor", m.externalStartupFloor, 8)
+    m.namedFloor = 9
+    m:onMapDataEntry(10)
+    T.eq("E10 the named extender floor still applies beside Montana", m.externalStartupFloor, 9)
+    local raised
+    m:onMapDataEntry(8, function(w) raised = w end)
+    T.eq("E11 the native field is raised to the named floor before default registration", raised, 9)
+    -- Without a temporary writer an established larger width is retained as before.
+    local n = CAP.new()
+    n:onMapDataEntry(10)
+    T.eq("E12 an unexplained larger width without Montana is retained", n.externalStartupFloor, 10)
 end
 
 -- (F) Preflight: unbound adapters refuse, Soil protocol negotiated, absence supported.
@@ -468,9 +486,43 @@ do
     local ok, why, who = c:preflight({}, mods("FS25_ProductionControl"), function() return nil end)
     T.eq("F1 unbound ProductionControl refused", why, "UNBOUND_ADAPTER")
     T.eq("F2 offending package named", who, "FS25_ProductionControl")
-    T.eq("F3 realSilo refused", select(2, CAP.new():preflight({}, mods("FS25_realSilo"), nil)), "UNBOUND_ADAPTER")
-    T.eq("F4 UnlimitedFillTypes refused", select(2, CAP.new():preflight({}, mods("FS25_UnlimitedFillTypes"), nil)), "UNBOUND_ADAPTER")
+    local rs = CAP.new()
+    T.eq("F3 realSilo is admitted", (rs:preflight({}, mods("FS25_realSilo"), nil)), true)
+    T.eq("F3b realSilo sets the consumer bound", rs.consumerBound, 16383)
+    T.eq("F3c realSilo sets integration bit 2", rs.integrationFlags, 4)
+    T.eq("F4 UnlimitedFillTypes refused (accepted interim)", select(2, CAP.new():preflight({}, mods("FS25_UnlimitedFillTypes"), nil)), "UNBOUND_ADAPTER")
+    T.eq("F4b Distribution Redux refused (accepted interim)", select(2, CAP.new():preflight({}, mods("FS25_DistributionRedux"), nil)), "UNBOUND_ADAPTER")
+    T.eq("F4c a name merely containing 'distribution' is not refused", (CAP.new():preflight({}, mods("FS25_DistributionCenterMap"), nil)), true)
+    T.eq("F4d matching is case-insensitive whole-string", select(2, CAP.new():preflight({}, mods("fs25_unlimitedfilltypes"), nil)), "UNBOUND_ADAPTER")
+    T.eq("F4e a prefix of a refused name is not refused", (CAP.new():preflight({}, mods("FS25_UnlimitedFillTypesFix"), nil)), true)
     T.eq("F5 Pumps N Hoses pack refused", select(2, CAP.new():preflight({}, mods("pdlc_pumpsAndHosesPack"), nil)), "UNBOUND_ADAPTER")
+    -- Bound floor writers from the C: zips.
+    local fw = CAP.new()
+    T.eq("F5a fillTypeExtender admitted", (fw:preflight({}, mods("FS25_fillTypeExtender"), nil)), true)
+    T.eq("F5b extender floor 9", fw.namedFloor, 9)
+    T.eq("F5c extender recorded as a floor writer", fw.selectedFloorWriters[1].adapterKey .. "/" .. fw.selectedFloorWriters[1].nativeModName .. "/" .. fw.selectedFloorWriters[1].floorBits, "fillTypeExtender/FS25_fillTypeExtender/9")
+    local rl = CAP.new()
+    T.eq("F5d Realistic Livestock admitted", (rl:preflight({}, mods("FS25_RealisticLivestockRM", "FS25_fillTypeExtender"), nil)), true)
+    T.eq("F5e the larger named floor wins", rl.namedFloor, 10)
+    T.eq("F5f two floor writers recorded", #rl.selectedFloorWriters, 2)
+    local mo = CAP.new()
+    T.eq("F5g Montana admitted", (mo:preflight({}, mods("FS25_Montana_MF"), nil)), true)
+    T.eq("F5h Montana is the temporary width writer, not a floor", tostring(mo.temporaryWidthWriter) .. "/" .. tostring(mo.namedFloor), "10/nil")
+    T.eq("F5i floors never come from SEND_NUM_BITS", CAP.new().namedFloor, nil)
+    -- Selection identity: equal floors from different writers are different sets.
+    T.ok("F5j identity distinguishes writers at the same floor", CAP.writerIdentity({ { adapterKey = "distributionRedux", nativeModName = "x", floorBits = 10 } }) ~= CAP.writerIdentity({ { adapterKey = "realisticLivestock", nativeModName = "y", floorBits = 10 } }))
+    -- A changed selection after an ordinary unload is refused, never reused.
+    local sc = CAP.new()
+    sc:preflight({}, mods("FS25_fillTypeExtender"), nil)
+    sc:onEpochReset(9, function() end)
+    T.eq("F5k the records are retained across unload", sc.retainedFloorWriters[1].nativeModName, "FS25_fillTypeExtender")
+    local ok2, why2, who2 = sc:preflight({}, mods("FS25_fillTypeExtender", "FS25_RealisticLivestockRM"), nil)
+    T.eq("F5l a changed selection is refused", why2, "SELECTION_CHANGED")
+    T.eq("F5m naming the new package", who2, "FS25_RealisticLivestockRM")
+    local sc2 = CAP.new()
+    sc2:preflight({}, mods("FS25_fillTypeExtender"), nil)
+    sc2:onEpochReset(9, function() end)
+    T.eq("F5n the same selection is admitted again", (sc2:preflight({}, mods("FS25_fillTypeExtender"), nil)), true)
     T.eq("F6 Soil selected without protocol refused", select(2, CAP.new():preflight({}, mods("FS25_SoilFertilizer"), function() return nil end)), "SOIL_PROTOCOL")
     local incomplete = { protocolVersion = 2, beginCapacityLoad = function() return true end, prepareGroundTypes = function() end }
     T.eq("F7 incomplete Soil API refused", select(2, CAP.new():preflight({}, mods("FS25_SoilFertilizer"), function() return incomplete end)), "SOIL_PROTOCOL")
@@ -485,6 +537,9 @@ do
     T.eq("F10 compatible Soil admitted", (c2:preflight(mission, mods("FS25_SoilFertilizer", "FS25_StateLedger"), function() return good end)), true)
     T.eq("F11 begin received the mission", began[1], mission)
     T.eq("F12 Soil join sets integration bit 3", c2.integrationFlags, 8)
+    local both = CAP.new()
+    both:preflight(mission, mods("FS25_SoilFertilizer", "FS25_realSilo"), function() return good end)
+    T.eq("F12b Soil and realSilo bits combine", both.integrationFlags, 12)
     local c3 = CAP.new()
     T.eq("F13 absence of Soil is supported", (c3:preflight(mission, mods("FS25_StateLedger"), function() return nil end)), true)
     T.eq("F14 no Soil: no integration bits", c3.integrationFlags, 0)
@@ -545,6 +600,17 @@ do
     local c8 = CAP.new()
     T.eq("G17 accepted save without a mapping refused", c8:prepareGround(hm({ { "WHEAT", 100 } }, 0, 6), {}, channels, true), false)
     T.eq("G18 reason", c8.reasonCode, "SAVED_MAPPING_MISSING")
+    local c8b = CAP.new()
+    c8b:onSavedMappingLoaded(false, nil)
+    local m8b = hm({ { "WHEAT", 100 } }, 0, 6); m8b.tipTypeMappings = { wheat = 1 }
+    T.eq("G18b a failed native loadFromXMLFile refuses an accepted save", c8b:prepareGround(m8b, {}, channels, true), false)
+    T.eq("G18c naming the loader", c8b.offending, "loadFromXMLFile")
+    local c8c = CAP.new()
+    c8c:onSavedMappingLoaded(true, "wheat")
+    local m8c = hm({ { "WHEAT", 100 } }, 0, 6); m8c.tipTypeMappings = { wheat = 1 }
+    T.eq("G18d a duplicate name in the raw rows refuses", c8c:prepareGround(m8c, {}, channels, true), false)
+    T.eq("G18e reason", c8c.reasonCode, "SAVED_MAPPING_DUPLICATE")
+    T.eq("G18f naming the duplicate", c8c.offending, "wheat")
     local c9 = CAP.new()
     local m9 = hm({ { "WHEAT", 100 }, { "ZINC", 400 }, { "POLIFOSKA", 350 } }, 0, 6)
     m9.tipTypeMappings = { wheat = 1 }
@@ -581,12 +647,23 @@ do
     T.eq("H13 different width refused", ok, false)
     T.eq("H14 component named", comp, "width")
     T.eq("H15 malformed header refused", select(2, c:admit("conn-c", { version = 0, widthBits = 0, registeredCount = 0, formatFlags = 0, digest = {} })), "header")
-    -- Width changed between initialize and freeze.
+    -- The freeze reads the FINAL native field: wider than tracked is READY at that width
+    -- (Montana's restore, an ordinary writer), narrower than required fails.
     local c2 = CAP.new()
     c2.widthBits = 9
     c2.groundSignature = {}
-    T.eq("H16 width changed at freeze fails", c2:freeze(fm({ "UNKNOWN" }), hmOf({}), "map01", channels, 10), false)
-    T.eq("H17 reason", c2.reasonCode, "WIDTH_CHANGED")
+    T.eq("H16 a wider final field freezes READY", c2:freeze(fm({ "UNKNOWN" }), hmOf({}), "map01", channels, 10), true)
+    T.eq("H17 at the final width", c2.widthBits, 10)
+    local c2b = CAP.new()
+    c2b.externalStartupFloor = 10
+    c2b.groundSignature = {}
+    T.eq("H17b a field below the external floor fails", c2b:freeze(fm({ "UNKNOWN" }), hmOf({}), "map01", channels, 9), false)
+    T.eq("H17c reason", c2b.reasonCode, "INSUFFICIENT_WIDTH")
+    local c2c = CAP.new()
+    c2c.groundSignature = {}
+    local many = {} for i = 1, 300 do many[i] = "F" .. i end
+    T.eq("H17d a field too narrow for the registered count fails", c2c:freeze(fm(many), hmOf({}), "map01", channels, 8), false)
+    T.eq("H17e reason", c2c.reasonCode, "CAPACITY")
     -- Late Lua ground insertion after the initialize pass fails the freeze.
     local c3 = CAP.new()
     c3.widthBits = 8
@@ -597,6 +674,12 @@ do
     c4.widthBits = 8
     T.eq("H20 no initialized ground fails the freeze", c4:freeze(fm({ "UNKNOWN" }), hmOf({}), "map01", channels, 8), false)
     T.eq("H21 a FAILED controller never freezes READY", c4:freeze(fm({ "UNKNOWN" }), hmOf({}), "map01", channels, 8), false)
+    -- A map without a terrainDetailHeight layer never initializes ground: zero-ground layout.
+    local c5 = CAP.new()
+    c5.widthBits = 8
+    T.eq("H22 zero-ground layout freezes READY", c5:freeze(fm({ "UNKNOWN" }), hmOf({}), "map01", channels, 8, true), true)
+    T.eq("H23 with an empty ground signature", #c5.groundSignature, 0)
+    T.eq("H24 state ground capacity from the type channels", c5:getState().groundCapacity, 63)
 end
 
 -- (I) Installed hooks against engine stubs: sizing at registration, preflight
@@ -642,13 +725,13 @@ do
     -- Preflight refusal never reaches the delegate; one notice; repeated entry is quiet.
     local mission = { missionInfo = { mapId = "map01", isValid = false }, cancelLoading = false }
     g_currentMission = mission
-    Mission00.setMissionInfo(mission, {}, { mods = { { modName = "FS25_realSilo" } } })
+    Mission00.setMissionInfo(mission, {}, { mods = { { modName = "FS25_UnlimitedFillTypes" } } })
     T.eq("I6 unbound package: delegate not called", delegateCalls, 0)
     T.eq("I7 unbound package: cancelLoading set", mission.cancelLoading, true)
     T.eq("I8 unbound package: one notice", #shown, 1)
-    T.ok("I9 notice names the package", shown[1]:find("FS25_realSilo", 1, true) ~= nil)
+    T.ok("I9 notice names the package", shown[1]:find("FS25_UnlimitedFillTypes", 1, true) ~= nil)
     T.eq("I10 notice tore down once", quits, 1)
-    Mission00.setMissionInfo(mission, {}, { mods = { { modName = "FS25_realSilo" } } })
+    Mission00.setMissionInfo(mission, {}, { mods = { { modName = "FS25_UnlimitedFillTypes" } } })
     T.eq("I11 repeated refused entry issues no second notice", #shown, 1)
     T.eq("I12 and still no delegate", delegateCalls, 0)
     -- Finished loading on the FAILED path: original suppressed, once.
@@ -686,7 +769,13 @@ do
     local s = NewStream()
     BaseMissionFinishedLoadingEvent.writeStream(ev, s, nil)
     T.eq("I25 four native floats then the header", s.w, 4 + 37)
-    local conn = { sent = {}, sendEvent = function(self, e) self.sent[#self.sent + 1] = e end }
+    -- A joining connection is not yet ready for events (FSBaseMission.lua:742); only a forced send goes out.
+    local conn = { isConnected = true, isReadyForEvents = false, sent = {},
+        sendEvent = function(self, e, deleteEvent, force)
+            if not self.isReadyForEvents and not force then return end
+            self.sent[#self.sent + 1] = e
+            e.forced = force
+        end }
     g_server = { closed = {}, closeConnection = function(self, c) self.closed[#self.closed + 1] = c end }
     local rx = setmetatable({}, { __index = BaseMissionFinishedLoadingEvent })
     BaseMissionFinishedLoadingEvent.readStream(rx, s, conn)
@@ -700,7 +789,8 @@ do
     local rx2 = setmetatable({}, { __index = BaseMissionFinishedLoadingEvent })
     BaseMissionFinishedLoadingEvent.readStream(rx2, s2, conn)
     T.eq("I28 mismatched peer does not run", rx2.ran, nil)
-    T.eq("I29 mismatched peer got answer 8", conn.sent[1].answer, 8)
+    T.eq("I29 mismatched peer got answer 8", conn.sent[1] and conn.sent[1].answer, 8)
+    T.eq("I29b answer 8 is sent with force, as native refusals are", conn.sent[1] and conn.sent[1].forced, true)
     T.eq("I30 mismatched peer closed", g_server.closed[1], conn)
     -- Answer 8 on the client: message and one teardown, no native reconnect path.
     local before = quits
@@ -710,6 +800,171 @@ do
     T.eq("I33 answer 8 never reaches the native handler", mission2.answered, nil)
     FSBaseMission.onConnectionRequestAnswer(mission2, conn, 0)
     T.eq("I34 answer 0 reaches the native handler", mission2.answered, 0)
+
+    -- Outer guard accumulation: a foreign wrapper over addFillType appears once;
+    -- later freezes never stack another identical guard.
+    local installsBefore = SGCapacity._outerGuardInstalls or 0
+    T.eq("I35 no outer guard was needed while the sizing guard was current", installsBefore, 0)
+    local foreignCalls = 0
+    local inner = FillTypeManager.addFillType
+    FillTypeManager.addFillType = function(self, desc) foreignCalls = foreignCalls + 1 return inner(self, desc) end
+    local function nextMission(id)
+        ftm:unloadMapData()
+        ftm:loadMapData()
+        for i = 1, 3 do ftm:addFillType({ name = ({ "UNKNOWN", "WHEAT", "UREA" })[i] }) end
+        local m = { missionInfo = { mapId = "map01", isValid = false }, cancelLoading = false, terrainDetailHeightId = 0 }
+        g_currentMission = m
+        Mission00.setMissionInfo(m, {}, { mods = { { modName = "FS25_StateLedger" } } })
+        local h2 = setmetatable({ heightTypeFirstChannel = 0, heightTypeNumChannels = 6, heightTypes = { { index = 1, fillTypeName = "WHEAT", fillTypeIndex = 2, canBeTipped = true } },
+            sortHeightTypes = function() end, getTerrainDetailHeightUpdater = function() return {} end }, { __index = DensityMapHeightManager })
+        g_densityMapHeightManager = h2
+        h2:initialize(true)
+        return FSBaseMission.onFinishedLoading(m), m
+    end
+    nextMission(3)
+    T.eq("I36 READY again with the foreign wrapper present", ctl.phase, "READY")
+    T.eq("I37 one outer guard installed around the foreign wrapper", SGCapacity._outerGuardInstalls, 1)
+    T.eq("I38 the outer guard is the current callable", FillTypeManager.addFillType, SGCapacity._outerGuard)
+    T.eq("I39 late registration refused before the foreign wrapper runs", (ftm:addFillType({ name = "LATE2" })), false)
+    local foreignBefore = foreignCalls
+    nextMission(4)
+    T.eq("I40 a later mission installs no second identical guard", SGCapacity._outerGuardInstalls, 1)
+    T.eq("I41 still READY", ctl.phase, "READY")
+    T.ok("I42 the foreign wrapper kept running through the guard during LOADING", foreignCalls > foreignBefore)
+    FillTypeManager.addFillType = SGCapacity._addFillTypeGuard   -- restore for later blocks
+end
+
+-- (I2) Montana's temporary loading width, both wrap orders, and the bound floors in the hooks.
+do
+    local function fresh() local c = CAP.new() CAP.installHooks(c) return c end
+    -- installHooks is once per process: the controller is swapped, the wrappers stay.
+    local ctl = fresh()
+    local ftm = setmetatable({ fillTypes = {} }, { __index = FillTypeManager })
+    g_fillTypeManager = ftm
+    FillTypeManager.SEND_NUM_BITS = 8
+    -- Montana OUTER: its wrapper was installed after ours, so it sets 10, calls
+    -- our wrapper (which sees 10), registers, then restores max(required, old).
+    local sgLoad = FillTypeManager.loadMapData
+    FillTypeManager.loadMapData = function(self, ...)
+        local old = math.max(FillTypeManager.SEND_NUM_BITS, 8)
+        FillTypeManager.SEND_NUM_BITS = 10
+        local r = sgLoad(self, ...)
+        local needed = math.max(1, math.floor(math.log(#self.fillTypes) / math.log(2) + 1))
+        FillTypeManager.SEND_NUM_BITS = math.max(needed, old)
+        return r
+    end
+    local m = { missionInfo = { mapId = "map01", isValid = false }, cancelLoading = false, terrainDetailHeightId = 0 }
+    g_currentMission = m
+    ctl:onEpochReset(8, function(w) FillTypeManager.SEND_NUM_BITS = w end)
+    Mission00.setMissionInfo(m, {}, { mods = { { modName = "FS25_Montana_MF" } } })
+    T.eq("M1 Montana selected as the temporary writer", ctl.temporaryWidthWriter, 10)
+    ftm:loadMapData()
+    T.eq("M2 the temporary 10 was not captured as the floor", ctl.externalStartupFloor, 8)
+    T.eq("M3 after Montana's restore the field is eight again", FillTypeManager.SEND_NUM_BITS, 8)
+    for i = 1, 3 do ftm:addFillType({ name = ({ "UNKNOWN", "WHEAT", "UREA" })[i] }) end
+    local h = setmetatable({ heightTypeFirstChannel = 0, heightTypeNumChannels = 6, heightTypes = { { index = 1, fillTypeName = "WHEAT", fillTypeIndex = 2, canBeTipped = true } },
+        sortHeightTypes = function() end, getTerrainDetailHeightUpdater = function() return {} end }, { __index = DensityMapHeightManager })
+    g_densityMapHeightManager = h
+    h:initialize(true)
+    FSBaseMission.onFinishedLoading(m)
+    T.eq("M4 READY on the final native field, not WIDTH_CHANGED", ctl.phase .. "/" .. tostring(ctl.reasonCode), "READY/nil")
+    T.eq("M5 frozen at the restored width", ctl.widthBits, 8)
+    -- Registrations during the temporary 10 that need more than the restore gives are refused at freeze.
+    ctl:onEpochReset(8, function(w) FillTypeManager.SEND_NUM_BITS = w end)
+    ftm.fillTypes = {}
+    local m2 = { missionInfo = { mapId = "map01", isValid = false }, cancelLoading = false, terrainDetailHeightId = 0 }
+    g_currentMission = m2
+    Mission00.setMissionInfo(m2, {}, { mods = { { modName = "FS25_Montana_MF" } } })
+    ftm:loadMapData()
+    for i = 1, 300 do ftm:addFillType({ name = "F" .. i }) end
+    T.eq("M6 300 registrations after the restore sized the field to nine (the same value Montana's max(required, old) yields)", FillTypeManager.SEND_NUM_BITS, 9)
+    FillTypeManager.SEND_NUM_BITS = 8   -- a writer that restores below what the count needs
+    FSBaseMission.onFinishedLoading(m2)
+    T.eq("M7 a final field too narrow for the count fails", ctl.reasonCode, "CAPACITY")
+    FillTypeManager.loadMapData = sgLoad
+    -- Montana INNER: ours outer sees the pre-Montana width; the temporary 10 never reaches the floor.
+    local ctl2 = fresh()
+    ftm.fillTypes = {}
+    FillTypeManager.SEND_NUM_BITS = 9   -- extender at file load
+    ctl2:onEpochReset(9, function(w) FillTypeManager.SEND_NUM_BITS = w end)
+    local m3 = { missionInfo = { mapId = "map01", isValid = false }, cancelLoading = false, terrainDetailHeightId = 0 }
+    g_currentMission = m3
+    Mission00.setMissionInfo(m3, {}, { mods = { { modName = "FS25_Montana_MF" }, { modName = "FS25_fillTypeExtender" } } })
+    T.eq("M8 extender floor named beside Montana", ctl2.namedFloor, 9)
+    ftm:loadMapData()
+    T.eq("M9 floor is the named extender floor", ctl2.externalStartupFloor, 9)
+    for i = 1, 3 do ftm:addFillType({ name = ({ "UNKNOWN", "WHEAT", "UREA" })[i] }) end
+    T.eq("M10 registrations keep the extender width", FillTypeManager.SEND_NUM_BITS, 9)
+    FillTypeManager.SEND_NUM_BITS = 8
+    g_densityMapHeightManager = h
+    ctl2.groundSignature = nil
+    h:initialize(true)
+    FSBaseMission.onFinishedLoading(m3)
+    T.eq("M11 a field restored below the extender floor fails", ctl2.reasonCode, "INSUFFICIENT_WIDTH")
+    FillTypeManager.SEND_NUM_BITS = 8
+    CAP.installHooks(CAP.new())
+end
+
+-- (I3) Stream-hook detection at freeze: a foreign replacement after our install fails the load.
+do
+    local ctl = CAP.new()
+    CAP.installHooks(ctl)
+    SellingStation = { readStream = function() end, writeStream = function() end, readUpdateStream = function() end, writeUpdateStream = function() end, superClass = function() return { readStream = function() end, writeStream = function() end, readUpdateStream = function() end, writeUpdateStream = function() end } end }
+    ProductionPoint = { readStream = function() end, writeStream = function() end, superClass = function() return { readStream = function() end, writeStream = function() end } end, OUTPUT_MODE = { DIRECT_SELL = 1, AUTO_DELIVER = 2 }, PROD_STATUS_NUM_BITS = 2 }
+    Storage = { readStream = function() end, writeStream = function() end, readUpdateStream = function() end, writeUpdateStream = function() end, superClass = function() return { readStream = function() end, writeStream = function() end, readUpdateStream = function() end, writeUpdateStream = function() end } end }
+    SGWireFormats._installed = nil
+    T.eq("S1 nothing to verify before the first install", (WF.verifyInstalled()), true)
+    WF.install(ctl)
+    T.eq("S2 installed", WF.isInstalled(), true)
+    T.eq("S3 our pairs are current", (WF.verifyInstalled()), true)
+    local oursRead = Storage.readStream
+    Storage.readStream = function(...) return oursRead(...) end
+    local ok, what = WF.verifyInstalled()
+    T.eq("S4 a foreign replacement is detected", ok, false)
+    T.eq("S5 naming Class.method", what, "Storage.readStream")
+    Storage.readStream = oursRead
+    T.eq("S6 restored pairs verify", (WF.verifyInstalled()), true)
+    -- The freeze wrapper fails the load on a changed hook.
+    local ftm = setmetatable({ fillTypes = { { name = "UNKNOWN" } } }, { __index = FillTypeManager })
+    g_fillTypeManager = ftm
+    FillTypeManager.SEND_NUM_BITS = 8
+    ctl:onEpochReset(8, function(w) FillTypeManager.SEND_NUM_BITS = w end)
+    ctl.groundSignature = {}
+    ctl.groundTypeBits, ctl.groundCapacity = 6, 63
+    local m = { missionInfo = { mapId = "map01", isValid = false }, cancelLoading = false, terrainDetailHeightId = 0 }
+    g_currentMission = m
+    SellingStation.writeStream = function() end
+    FSBaseMission.onFinishedLoading(m)
+    T.eq("S7 a replaced stream pair fails the freeze", ctl.reasonCode, "STREAM_HOOK_CHANGED")
+    T.eq("S8 naming the method", ctl.offending, "SellingStation.writeStream")
+    -- READY immutability on the wire: a changed live width refuses the peer.
+    local ctl2 = CAP.new()
+    CAP.installHooks(ctl2)
+    WF.install(ctl2)
+    ctl2.phase, ctl2.widthBits, ctl2.registeredCount = "READY", 8, 1
+    g_server = { closed = {}, closeConnection = function(self, c) self.closed[#self.closed + 1] = c end }
+    local conn = { getIsServer = function() return false end }
+    T.eq("S9 live width equal: active", WF.liveState(conn, "x"), "active")
+    FillTypeManager.SEND_NUM_BITS = 9
+    T.eq("S10 live width changed after freeze: refused", WF.liveState(conn, "x"), "refused")
+    T.eq("S11 the peer was closed", g_server.closed[1], conn)
+    FillTypeManager.SEND_NUM_BITS = 8
+    ftm.fillTypes[2] = { name = "LATE" }
+    T.eq("S12 a registry change after freeze: refused", WF.liveState(conn, "x"), "refused")
+    ftm.fillTypes[2] = nil
+    ctl2.phase = "LOADING"
+    T.eq("S13 not READY: the native pair runs", WF.liveState(conn, "x"), "inactive")
+    -- A reader refusal on a client closes synchronization once.
+    g_server = nil
+    local quits = 0
+    OnInGameMenuMenu = function() quits = quits + 1 end
+    InfoDialog = nil
+    g_currentMission = { }
+    ctl2:refuseConnection("Storage payload", "SET_MISMATCH", conn)
+    ctl2:refuseConnection("Storage payload", "SET_MISMATCH", conn)
+    T.eq("S14 client refusal marks the connection closed", g_currentMission.connectionWasClosed, true)
+    T.eq("S15 and tears down once", quits, 1)
+    SellingStation, ProductionPoint, Storage = nil, nil, nil
 end
 
 -- (J) Wire validators (format 2).
@@ -729,5 +984,6 @@ do
     T.eq("J12 duplicate ids in a list refused", select(2, WF.validateIdList({ { id = 4 }, { id = 4 } }, 2, 9, 300)), "INVALID_ID")
     T.eq("J13 valid id list", (WF.validateIdList({ { id = 4 }, { id = 9 } }, 2, 9, 300)), true)
     T.eq("J14 adapter seam accepts a named tail", WF.registerTail("ProductionPoint", { read = function() end }), true)
-    T.eq("J15 no adapter is bound by default", (function() local n = 0 for _, a in ipairs(CAP.UNBOUND_ADAPTERS) do if a.bound then n = n + 1 end end return n end)(), 0)
+    T.eq("J15 four adapters are bound (realSilo, extender, Realistic Livestock, Montana)", (function() local n = 0 for _, a in ipairs(CAP.ADAPTERS) do if a.bound then n = n + 1 end end return n end)(), 4)
+    T.eq("J16 four stay refused (ProductionControl, Pumps N Hoses, UnlimitedFillTypes, Distribution Redux)", (function() local n = 0 for _, a in ipairs(CAP.ADAPTERS) do if not a.bound then n = n + 1 end end return n end)(), 4)
 end

@@ -20,8 +20,15 @@
 --     setFillLevel :287
 -- The adapter seam: SGWireFormats.registerTail(owner, spec) lets a named
 -- stream-tail adapter (ProductionControl and the Pumps N' Hoses sandbox
--- pairs) compose after the widened parent. No adapter is bound in this
--- build; see SGCapacity.UNBOUND_ADAPTERS.
+-- pairs) compose after the widened parent. No tail adapter is bound in this
+-- build; see SGCapacity.ADAPTERS.
+--
+-- READY immutability: every pair re-reads the live width and registry count
+-- before a frame and refuses the peer when either differs from the frozen
+-- profile. verifyInstalled() reports a stream method that another mod
+-- replaced after our install (checked at every freeze). A wrapper installed
+-- BEFORE our first install is indistinguishable from the native callable
+-- (Lua closures are opaque); that limit is reported to Design in the PR.
 -- =========================================================
 
 SGWireFormats = SGWireFormats or {}
@@ -77,32 +84,56 @@ end
 -- =========================================================
 -- Installation (native classes, once per process, active only when READY)
 -- =========================================================
-local installed = false
 local ctl = nil   -- the capacity controller (width and registry facts)
+local ours = {}   -- Class.method -> the function this module installed
 
 local function width() return ctl ~= nil and ctl:getFrozenWidth() or FillTypeManager.SEND_NUM_BITS end
 local function registered() return ctl ~= nil and ctl:getFrozenRegisteredCount() or nil end
-local function active() return ctl ~= nil and ctl:isReady() end
-local function refuse(what, why)
-    if ctl ~= nil then ctl:refuseConnection(what, why) end
+local function refuse(what, why, connection)
+    if ctl ~= nil then ctl:refuseConnection(what, why, connection) end
 end
 
---- Bind the controller and replace the native pairs. Safe to call once.
+--- READY, and the live width and registry still equal the frozen profile.
+--- Returns "active", "inactive" (not READY: the native pair runs) or
+--- "refused" (READY but changed: the peer was refused, nothing is written or
+--- applied).
+local function liveState(connection, what)
+    if ctl == nil or not ctl:isReady() then return "inactive" end
+    if FillTypeManager ~= nil and FillTypeManager.SEND_NUM_BITS ~= ctl.widthBits then
+        refuse(what, "WIDTH_CHANGED_AFTER_FREEZE", connection)
+        return "refused"
+    end
+    local count = g_fillTypeManager ~= nil and type(g_fillTypeManager.fillTypes) == "table" and #g_fillTypeManager.fillTypes or nil
+    if count ~= nil and count ~= ctl.registeredCount then
+        refuse(what, "REGISTRY_CHANGED_AFTER_FREEZE", connection)
+        return "refused"
+    end
+    return "active"
+end
+SGWireFormats.liveState = liveState
+
+--- Bind the controller and replace the native pairs. Safe to call once per
+--- process (the flag lives on the global table, so a re-source cannot stack).
 function SGWireFormats.install(controller)
     ctl = controller
-    if installed then return true end
+    if SGWireFormats._installed then return true end
     if SellingStation == nil or ProductionPoint == nil or Storage == nil then return false end
-    installed = true
+    SGWireFormats._installed = true
 
     -- ---------------- SellingStation ----------------
-    local function writePriceList(self, streamId)
+    local function writePriceList(self, streamId, connection)
         local rows = {}
         for fillType, _ in pairs(self.acceptedFillTypes) do
             if self.originalFillTypePrices[fillType] > 0 then rows[#rows + 1] = { id = fillType } end
         end
         table.sort(rows, function(a, b) return a.id < b.id end)
-        local ok = SGWireFormats.validateIdList(rows, #rows, width(), registered())
-        if not ok then rows = {} end
+        local ok, why = SGWireFormats.validateIdList(rows, #rows, width(), registered())
+        if not ok then
+            -- Never a truncated list: the peer is refused. The zero count that
+            -- follows only keeps the closed stream well-formed.
+            refuse("SellingStation price list (writer)", why, connection)
+            rows = {}
+        end
         streamWriteUInt16(streamId, #rows)
         for _, r in ipairs(rows) do
             streamWriteUIntN(streamId, r.id, width())
@@ -111,7 +142,7 @@ function SGWireFormats.install(controller)
             streamWriteUIntN(streamId, self:getCurrentPricingTrend(r.id), 6)
         end
     end
-    local function readPriceList(self, streamId)
+    local function readPriceList(self, streamId, connection)
         local count = streamReadUInt16(streamId)
         local rows = {}
         local safeCount = math.min(count, SGWireFormats.COUNT_BOUND)
@@ -119,69 +150,91 @@ function SGWireFormats.install(controller)
             rows[#rows + 1] = { id = streamReadUIntN(streamId, width()), price = streamReadUInt16(streamId) / 1000, info = streamReadUIntN(streamId, 6) }
         end
         local ok, why = SGWireFormats.validateIdList(rows, count, width(), registered())
-        if not ok then refuse("SellingStation price list", why) return end
+        if not ok then refuse("SellingStation price list", why, connection) return false end
         for _, r in ipairs(rows) do
             self.fillTypePrices[r.id] = r.price
             self.fillTypePriceInfo[r.id] = r.info
         end
+        return true
     end
     local sellRead, sellWrite = SellingStation.readStream, SellingStation.writeStream
     local sellReadU, sellWriteU = SellingStation.readUpdateStream, SellingStation.writeUpdateStream
     SellingStation.readStream = function(self, streamId, connection)
-        if not active() then return sellRead(self, streamId, connection) end
+        local st = liveState(connection, "SellingStation.readStream")
+        if st == "inactive" then return sellRead(self, streamId, connection) end
+        if st == "refused" then return end
         local moneyTypeId = streamReadUInt16(streamId)
         self.moneyChangeType = MoneyType.registerWithId(moneyTypeId, "soldMaterials", "finance_other")
         SellingStation:superClass().readStream(self, streamId, connection)
-        if connection:getIsServer() then readPriceList(self, streamId) end
+        if connection:getIsServer() then readPriceList(self, streamId, connection) end
     end
     SellingStation.writeStream = function(self, streamId, connection)
-        if not active() then return sellWrite(self, streamId, connection) end
+        local st = liveState(connection, "SellingStation.writeStream")
+        if st == "inactive" then return sellWrite(self, streamId, connection) end
+        if st == "refused" then return end
         streamWriteUInt16(streamId, self.moneyChangeType.id)
         SellingStation:superClass().writeStream(self, streamId, connection)
-        if not connection:getIsServer() then writePriceList(self, streamId) end
+        if not connection:getIsServer() then writePriceList(self, streamId, connection) end
     end
     SellingStation.readUpdateStream = function(self, streamId, timestamp, connection)
-        if not active() then return sellReadU(self, streamId, timestamp, connection) end
+        local st = liveState(connection, "SellingStation.readUpdateStream")
+        if st == "inactive" then return sellReadU(self, streamId, timestamp, connection) end
+        if st == "refused" then return end
         SellingStation:superClass().readUpdateStream(self, streamId, timestamp, connection)
-        if connection:getIsServer() and streamReadBool(streamId) then readPriceList(self, streamId) end
+        if connection:getIsServer() and streamReadBool(streamId) then readPriceList(self, streamId, connection) end
     end
     SellingStation.writeUpdateStream = function(self, streamId, connection, dirtyMask)
-        if not active() then return sellWriteU(self, streamId, connection, dirtyMask) end
+        local st = liveState(connection, "SellingStation.writeUpdateStream")
+        if st == "inactive" then return sellWriteU(self, streamId, connection, dirtyMask) end
+        if st == "refused" then return end
         SellingStation:superClass().writeUpdateStream(self, streamId, connection, dirtyMask)
         if not connection:getIsServer() then
             local flag = self.unloadingStationDirtyFlag
-            if streamWriteBool(streamId, bit32.band(dirtyMask, flag) ~= 0) then writePriceList(self, streamId) end
+            if streamWriteBool(streamId, bit32.band(dirtyMask, flag) ~= 0) then writePriceList(self, streamId, connection) end
         end
     end
+    ours["SellingStation.readStream"] = SellingStation.readStream
+    ours["SellingStation.writeStream"] = SellingStation.writeStream
+    ours["SellingStation.readUpdateStream"] = SellingStation.readUpdateStream
+    ours["SellingStation.writeUpdateStream"] = SellingStation.writeUpdateStream
 
     -- ---------------- ProductionPoint (two leading lists) ----------------
     local prodRead, prodWrite = ProductionPoint.readStream, ProductionPoint.writeStream
-    local function writeIdSet(streamId, set)
+    local function writeIdSet(streamId, set, connection, what)
         local rows = {}
         for id in pairs(set) do rows[#rows + 1] = { id = id } end
         table.sort(rows, function(a, b) return a.id < b.id end)
-        if not SGWireFormats.validateIdList(rows, #rows, width(), registered()) then rows = {} end
+        local ok, why = SGWireFormats.validateIdList(rows, #rows, width(), registered())
+        if not ok then
+            refuse(what .. " (writer)", why, connection)
+            rows = {}   -- alignment only; the peer has been refused
+        end
         streamWriteUInt16(streamId, #rows)
         for _, r in ipairs(rows) do streamWriteUIntN(streamId, r.id, width()) end
     end
-    local function readIdSet(streamId, what)
+    local function readIdSet(streamId, what, connection)
         local count = streamReadUInt16(streamId)
         local rows = {}
         for _ = 1, math.min(count, SGWireFormats.COUNT_BOUND) do rows[#rows + 1] = { id = streamReadUIntN(streamId, width()) } end
         local ok, why = SGWireFormats.validateIdList(rows, count, width(), registered())
-        if not ok then refuse(what, why) return nil end
+        if not ok then refuse(what, why, connection) return nil end
         return rows
     end
     ProductionPoint.readStream = function(self, streamId, connection)
-        if not active() then return prodRead(self, streamId, connection) end
+        local st = liveState(connection, "ProductionPoint.readStream")
+        if st == "inactive" then return prodRead(self, streamId, connection) end
+        if st == "refused" then return end
         ProductionPoint:superClass().readStream(self, streamId, connection)
         if connection:getIsServer() then
-            local sell = readIdSet(streamId, "ProductionPoint direct-sell list")
-            local deliver = readIdSet(streamId, "ProductionPoint auto-deliver list")
-            if sell ~= nil and deliver ~= nil then
-                for _, r in ipairs(sell) do self:setOutputDistributionMode(r.id, ProductionPoint.OUTPUT_MODE.DIRECT_SELL, true) end
-                for _, r in ipairs(deliver) do self:setOutputDistributionMode(r.id, ProductionPoint.OUTPUT_MODE.AUTO_DELIVER, true) end
-            end
+            -- A refused list stops the read here: nothing after it is applied
+            -- and the peer has been refused (a misaligned stream is never
+            -- decoded further).
+            local sell = readIdSet(streamId, "ProductionPoint direct-sell list", connection)
+            if sell == nil then return end
+            local deliver = readIdSet(streamId, "ProductionPoint auto-deliver list", connection)
+            if deliver == nil then return end
+            for _, r in ipairs(sell) do self:setOutputDistributionMode(r.id, ProductionPoint.OUTPUT_MODE.DIRECT_SELL, true) end
+            for _, r in ipairs(deliver) do self:setOutputDistributionMode(r.id, ProductionPoint.OUTPUT_MODE.AUTO_DELIVER, true) end
             local unloadingStationId = NetworkUtil.readNodeObjectId(streamId)
             self.unloadingStation:readStream(streamId, connection)
             g_client:finishRegisterObject(self.unloadingStation, unloadingStationId)
@@ -208,11 +261,13 @@ function SGWireFormats.install(controller)
         SGWireFormats.runTails("ProductionPoint", "read", self, streamId, connection)
     end
     ProductionPoint.writeStream = function(self, streamId, connection)
-        if not active() then return prodWrite(self, streamId, connection) end
+        local st = liveState(connection, "ProductionPoint.writeStream")
+        if st == "inactive" then return prodWrite(self, streamId, connection) end
+        if st == "refused" then return end
         ProductionPoint:superClass().writeStream(self, streamId, connection)
         if not connection:getIsServer() then
-            writeIdSet(streamId, self.outputFillTypeIdsDirectSell)
-            writeIdSet(streamId, self.outputFillTypeIdsAutoDeliver)
+            writeIdSet(streamId, self.outputFillTypeIdsDirectSell, connection, "ProductionPoint direct-sell list")
+            writeIdSet(streamId, self.outputFillTypeIdsAutoDeliver, connection, "ProductionPoint auto-deliver list")
             NetworkUtil.writeNodeObjectId(streamId, NetworkUtil.getObjectId(self.unloadingStation))
             self.unloadingStation:writeStream(streamId, connection)
             g_server:registerObjectInStream(connection, self.unloadingStation)
@@ -224,19 +279,21 @@ function SGWireFormats.install(controller)
             NetworkUtil.writeNodeObjectId(streamId, NetworkUtil.getObjectId(self.storage))
             self.storage:writeStream(streamId, connection)
             g_server:registerObjectInStream(connection, self.storage)
-            local activeRows = {}
-            for index, production in ipairs(self.productions) do
-                if self:getIsProductionEnabled(production.id) then activeRows[#activeRows + 1] = { index = index, id = production.id } end
-            end
-            streamWriteUInt8(streamId, math.min(#activeRows, 255))
-            for i = 1, math.min(#activeRows, 255) do
-                streamWriteUInt8(streamId, activeRows[i].index)
-                streamWriteUIntN(streamId, self:getProductionStatus(activeRows[i].id), ProductionPoint.PROD_STATUS_NUM_BITS)
+            -- Native order: activeProductions, index and status per entry
+            -- (objects/ProductionPoint.lua:471-476); the UInt8 count is the
+            -- native contract, not widened here.
+            local active = self.activeProductions or {}
+            streamWriteUInt8(streamId, math.min(#active, 255))
+            for i = 1, math.min(#active, 255) do
+                streamWriteUInt8(streamId, active[i].index)
+                streamWriteUIntN(streamId, active[i].status, ProductionPoint.PROD_STATUS_NUM_BITS)
             end
             streamWriteBool(streamId, self.palletLimitReached == true)
         end
         SGWireFormats.runTails("ProductionPoint", "write", self, streamId, connection)
     end
+    ours["ProductionPoint.readStream"] = ProductionPoint.readStream
+    ours["ProductionPoint.writeStream"] = ProductionPoint.writeStream
 
     -- ---------------- Storage ----------------
     local stRead, stWrite = Storage.readStream, Storage.writeStream
@@ -253,7 +310,7 @@ function SGWireFormats.install(controller)
             end
         end
     end
-    local function readStoragePayload(self, streamId)
+    local function readStoragePayload(self, streamId, connection)
         local count = streamReadUInt16(streamId)
         local entries = {}
         for _ = 1, math.min(count, SGWireFormats.COUNT_BOUND) do
@@ -262,33 +319,60 @@ function SGWireFormats.install(controller)
             entries[#entries + 1] = e
         end
         local ok, why = SGWireFormats.validateStorageFrame(entries, count, self.sortedFillTypes, width(), registered())
-        if not ok then refuse("Storage payload", why) return end
+        if not ok then refuse("Storage payload", why, connection) return false end
         for _, e in ipairs(entries) do self:setFillLevel(e.present and e.level or 0, e.id) end
+        return true
     end
     Storage.readStream = function(self, streamId, connection)
-        if not active() then return stRead(self, streamId, connection) end
+        local st = liveState(connection, "Storage.readStream")
+        if st == "inactive" then return stRead(self, streamId, connection) end
+        if st == "refused" then return end
         Storage:superClass().readStream(self, streamId, connection)
-        readStoragePayload(self, streamId)
+        readStoragePayload(self, streamId, connection)
     end
     Storage.writeStream = function(self, streamId, connection)
-        if not active() then return stWrite(self, streamId, connection) end
+        local st = liveState(connection, "Storage.writeStream")
+        if st == "inactive" then return stWrite(self, streamId, connection) end
+        if st == "refused" then return end
         Storage:superClass().writeStream(self, streamId, connection)
         writeStoragePayload(self, streamId)
     end
     Storage.readUpdateStream = function(self, streamId, timestamp, connection)
-        if not active() then return stReadU(self, streamId, timestamp, connection) end
+        local st = liveState(connection, "Storage.readUpdateStream")
+        if st == "inactive" then return stReadU(self, streamId, timestamp, connection) end
+        if st == "refused" then return end
         Storage:superClass().readUpdateStream(self, streamId, timestamp, connection)
-        if connection:getIsServer() and streamReadBool(streamId) then readStoragePayload(self, streamId) end
+        if connection:getIsServer() and streamReadBool(streamId) then readStoragePayload(self, streamId, connection) end
     end
     Storage.writeUpdateStream = function(self, streamId, connection, dirtyMask)
-        if not active() then return stWriteU(self, streamId, connection, dirtyMask) end
+        local st = liveState(connection, "Storage.writeUpdateStream")
+        if st == "inactive" then return stWriteU(self, streamId, connection, dirtyMask) end
+        if st == "refused" then return end
         Storage:superClass().writeUpdateStream(self, streamId, connection, dirtyMask)
         if not connection:getIsServer() then
             local flag = self.storageDirtyFlag
             if streamWriteBool(streamId, bit32.band(dirtyMask, flag) ~= 0) then writeStoragePayload(self, streamId) end
         end
     end
+    ours["Storage.readStream"] = Storage.readStream
+    ours["Storage.writeStream"] = Storage.writeStream
+    ours["Storage.readUpdateStream"] = Storage.readUpdateStream
+    ours["Storage.writeUpdateStream"] = Storage.writeUpdateStream
     return true
+end
+
+--- Every installed pair must still be the current callable; a replacement by
+--- another mod after our install is an unclassified stream hook. Returns
+--- true, or false and "Class.method". True before the first install.
+function SGWireFormats.verifyInstalled()
+    if not SGWireFormats._installed then return true, nil end
+    local classes = { SellingStation = SellingStation, ProductionPoint = ProductionPoint, Storage = Storage }
+    for name, fn in pairs(ours) do
+        local cls, method = name:match("^(%w+)%.(%w+)$")
+        local tbl = classes[cls]
+        if tbl ~= nil and tbl[method] ~= fn then return false, name end
+    end
+    return true, nil
 end
 
 -- =========================================================
@@ -312,4 +396,4 @@ function SGWireFormats.runTails(owner, direction, obj, streamId, connection)
         if type(fn) == "function" then pcall(fn, obj, streamId, connection) end
     end
 end
-function SGWireFormats.isInstalled() return installed end
+function SGWireFormats.isInstalled() return SGWireFormats._installed == true end

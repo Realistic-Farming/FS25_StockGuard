@@ -10,13 +10,20 @@
 -- Phases: LOADING (sizing open), READY (frozen, admitting), FAILED (first
 -- immutable reason retained, completion refused once).
 --
--- THE SPLIT (Tyson, 2026-09-15): this build binds only what the decompiled
--- engine scripts on D: supply. The brief's third-party adapters cite sources
--- on E: which is unreachable here, so they are declared as a seam and left
--- unbound: a selection that includes one of those packages is refused at
--- preflight, exactly as the brief's unknown-writer rule requires, and their
--- integrationFlags bits stay 0. See UNBOUND_ADAPTERS below; the follow-up
--- branch binds them by their real sources.
+-- SCOPE (Tyson through Operator, 2026-09-15, after Bob's cold review):
+-- the core is built from the decompiled engine scripts on D:. Of the brief's
+-- third-party packages, the startup-floor writers whose sources are in the
+-- Active Mods zips on C: are BOUND here as named floor writers (fixed
+-- extender 9, Realistic Livestock 10, Montana's temporary map-loading width),
+-- realSilo is bound as the consumer bound 16383 plus integration bit 2 (its
+-- events stay untouched; no source needed for that contract), and four
+-- packages are REFUSED at preflight: ProductionControl and Pumps N' Hoses
+-- because brief 4.7 requires their stream-tail adapters (build-now items
+-- before release), and UnlimitedFillTypes and Distribution Redux as the
+-- accepted interim scope. The brief's unknown-writer rule (line 277) covers
+-- writers of the changed formats only; floor owners are supported neighbours
+-- (line 276). Packages are matched by exact native modName, never substring.
+-- See ADAPTERS below.
 --
 -- Engine seams (D:\FS25_Decoded\dataS\scripts_decompiled):
 --   FillTypeManager SEND_NUM_BITS :6, loadMapData :65, unloadMapData :98,
@@ -48,21 +55,49 @@ SGCapacity.MAX_WIDTH         = 15
 SGCapacity.FRAMING_BOUND     = 32767
 SGCapacity.ANSWER_PROFILE_MISMATCH = 8
 
--- The adapter seam. Each record names a package family the brief binds by an
--- E:-sourced adapter. None is bound in this build (bound = false), so a
--- selection that includes one is refused at preflight with UNBOUND_ADAPTER
--- and the package name; the follow-up branch sets bound = true per record
--- and supplies its floor or stream tail through SGWireFormats.registerTail.
-SGCapacity.UNBOUND_ADAPTERS = {
-    { key = "productionControl", pattern = "productioncontrol", flagBit = 1, bound = false },
-    { key = "pumpsAndHoses",     pattern = "pumpsandhoses",     flagBit = 2, bound = false },
-    { key = "realSilo",          pattern = "realsilo",          flagBit = 4, bound = false },
-    { key = "unlimitedFillTypes", pattern = "unlimitedfilltypes", floorBits = 12, bound = false },
-    { key = "fillTypeExtender",  pattern = "filltypeextender",  floorBits = 9,  bound = false },
-    { key = "distributionRedux", pattern = "distribution",      floorBits = 10, bound = false },
-    { key = "realisticLivestock", pattern = "realisticlivestock", floorBits = 10, bound = false },
+-- The adapter records. modNames are exact native modName spellings (matched
+-- case-insensitively, whole string, never substring). role:
+--   floor      a named startup-floor writer (brief 4.5); bound records supply
+--              floorBits from their real source
+--   temporary  Montana's map-loading width (10 during loadMapData, restored
+--              to max(required, old) after): never a floor, never a refusal
+--   consumer   realSilo: an actual maximum registered id and a profile flag
+--   tail       a stream-tail adapter the brief requires (4.7); unbound here
+-- A selected record with bound = false is refused at preflight with
+-- UNBOUND_ADAPTER and the package name.
+SGCapacity.ADAPTERS = {
+    { key = "productionControl", modNames = { "FS25_ProductionControl" }, role = "tail", flagBit = 1, bound = false,
+      basis = "brief 4.7: the appended stream tail must be composed; build-now item" },
+    { key = "pumpsAndHoses", modNames = { "pdlc_pumpsAndHosesPack" }, role = "tail", flagBit = 2, bound = false,
+      basis = "brief 4.7: all four SandboxProductionPoint callbacks required; build-now item" },
+    { key = "realSilo", modNames = { "FS25_realSilo" }, role = "consumer", flagBit = 4, consumerBound = 16383, bound = true,
+      basis = "brief 4.5/4.7: maximum registered id 16383, flag bit 2, events untouched" },
+    { key = "unlimitedFillTypes", modNames = { "FS25_UnlimitedFillTypes" }, role = "floor", floorBits = 12, bound = false,
+      basis = "accepted interim (Tyson 2026-09-15): source not on C:" },
+    { key = "fillTypeExtender", modNames = { "FS25_fillTypeExtender" }, role = "floor", floorBits = 9, bound = true,
+      basis = "FS25_fillTypeExtender.zip src/fillTypeExtender.lua:3-6 (SEND_NUM_BITS < 9 -> 9 at file load)" },
+    { key = "distributionRedux", modNames = { "FS25_DistributionRedux", "FS25_Distribution_Redux" }, role = "floor", floorBits = 10, bound = false,
+      basis = "accepted interim (Tyson 2026-09-15): source not on C:" },
+    { key = "realisticLivestock", modNames = { "FS25_RealisticLivestockRM", "FS25_RealisticLivestock" }, role = "floor", floorBits = 10, bound = true,
+      basis = "FS25_RealisticLivestockRM.zip scripts/fillTypes/RealisticLivestock_FillTypeManager.lua:6 (SEND_NUM_BITS < 10 -> 10 at file load; :17 appends its fill types to loadMapData)" },
+    { key = "montana", modNames = { "FS25_Montana_MF" }, role = "temporary", temporaryWidth = 10, bound = true,
+      basis = "FS25_Montana_MF.zip multifruit/scripts/FillTypeLimitIncrease.lua:22-33 (10 during loadMapData, then max(getNumRequiredBits(#fillTypes), old), utils/MathUtil.lua:707)" },
 }
+SGCapacity.UNBOUND_ADAPTERS = SGCapacity.ADAPTERS   -- earlier name, same table
 SGCapacity.SOIL_MOD_NAME = "FS25_SoilFertilizer"
+
+--- The adapter record a native modName selects, or nil. Exact whole-string
+--- comparison, case-insensitive: "FS25_DistributionCenterMap" selects nothing.
+function SGCapacity.matchAdapter(modName)
+    if type(modName) ~= "string" then return nil end
+    local lower = string.lower(modName)
+    for _, a in ipairs(SGCapacity.ADAPTERS) do
+        for _, n in ipairs(a.modNames) do
+            if string.lower(n) == lower then return a end
+        end
+    end
+    return nil
+end
 
 local function log(msg) print("[StockGuard] capacity: " .. tostring(msg)) end
 local function isInt(n) return type(n) == "number" and n == math.floor(n) and n == n end
@@ -97,6 +132,13 @@ function SGCapacity.new()
     self.completionDone = false
     self.nextLoadIncompatible = nil
     self.lastWireRefusal = nil
+    self.namedFloor = nil                -- max floorBits of the selected bound floor writers
+    self.temporaryWidthWriter = nil      -- Montana's loading width when selected
+    self.selectedFloorWriters = nil      -- { {adapterKey, nativeModName, floorBits}, ... } for this mission
+    self.retainedFloorWriters = nil      -- the previous mission's records (brief 4.5)
+    self.savedMappingLoaded = nil        -- loadFromXMLFile result for the accepted save (nil = not observed)
+    self.savedMappingDuplicate = nil     -- first duplicate lowercase name in the raw XML rows
+    self.wireNoticeIssued = false
     return self
 end
 
@@ -124,7 +166,17 @@ function SGCapacity:getState()
         groundCapacity = self:isReady() and self.groundCapacity or nil,
         integrationFlags = self.integrationFlags, formatFlags = self.formatFlags,
         protocolVersion = SGCapacity.PROTOCOL_VERSION,
+        consumerBound = self.consumerBound,
+        selectedFloorWriters = self:copyFloorWriters(),
     }
+end
+
+function SGCapacity:copyFloorWriters()
+    local out = {}
+    for _, w in ipairs(self.selectedFloorWriters or {}) do
+        out[#out + 1] = { adapterKey = w.adapterKey, nativeModName = w.nativeModName, floorBits = w.floorBits }
+    end
+    return out
 end
 
 --- Detached availability for one canonical material name.
@@ -160,7 +212,10 @@ end
 function SGCapacity:sizeFor(nextIndex, currentWidth)
     if self.phase ~= SGCapacity.PHASE_LOADING then return nil, "FROZEN" end
     if not isInt(nextIndex) or nextIndex < 1 then return nil, "INVALID" end
-    local cur = (isInt(currentWidth) and currentWidth >= SGCapacity.MIN_WIDTH and currentWidth <= SGCapacity.MAX_WIDTH) and currentWidth or SGCapacity.MIN_WIDTH
+    if not isInt(currentWidth) or currentWidth < SGCapacity.MIN_WIDTH or currentWidth > SGCapacity.MAX_WIDTH then
+        return nil, "INVALID_WIDTH"   -- never silently treated as eight and overwritten
+    end
+    local cur = currentWidth
     local floor = self.externalStartupFloor or SGCapacity.MIN_WIDTH
     local b = math.max(cur, floor, SGCapacity.MIN_WIDTH, SGCapacity.requiredWidth(nextIndex))
     if nextIndex > 2 ^ b - 1 or b > SGCapacity.MAX_WIDTH then return nil, "CAPACITY" end
@@ -168,19 +223,34 @@ function SGCapacity:sizeFor(nextIndex, currentWidth)
     return b, "ADMITTED"
 end
 
---- Map-data entry: capture the external floor (valid 8..15) before growth.
-function SGCapacity:onMapDataEntry(currentWidth)
+--- Map-data entry: apply the named selected floors and capture an
+--- established larger valid width before growth. The floor is the maximum of
+--- the named bound floor writers (brief 4.5); a larger observed width is kept
+--- only when it cannot be Montana's temporary loading width (a temporary
+--- writer is selected and the observed width equals its value), so that
+--- width is never promoted into the floor. setWidth, when given, raises the
+--- native field to the floor before default registration.
+function SGCapacity:onMapDataEntry(currentWidth, setWidth)
     if self.nextLoadIncompatible ~= nil then
         self:fail(self.nextLoadIncompatible.reason, self.nextLoadIncompatible.offending)
         self.nextLoadIncompatible = nil
         return
     end
-    if isInt(currentWidth) and currentWidth >= SGCapacity.MIN_WIDTH and currentWidth <= SGCapacity.MAX_WIDTH then
-        if self.externalStartupFloor == nil or currentWidth > self.externalStartupFloor then
-            self.externalStartupFloor = currentWidth
+    local floor = math.max(SGCapacity.MIN_WIDTH, self.namedFloor or SGCapacity.MIN_WIDTH)
+    if isInt(currentWidth) and currentWidth >= SGCapacity.MIN_WIDTH and currentWidth <= SGCapacity.MAX_WIDTH and currentWidth > floor then
+        if self.temporaryWidthWriter ~= nil and currentWidth == self.temporaryWidthWriter then
+            log(string.format("map-data entry width %d is the selected temporary loading width; not a floor", currentWidth))
+        else
+            floor = currentWidth
         end
     end
-    self.widthBits = math.max(self.externalStartupFloor or SGCapacity.MIN_WIDTH, SGCapacity.MIN_WIDTH)
+    if self.externalStartupFloor == nil or floor > self.externalStartupFloor then
+        self.externalStartupFloor = floor
+    end
+    self.widthBits = math.max(self.externalStartupFloor, SGCapacity.MIN_WIDTH)
+    if setWidth ~= nil and isInt(currentWidth) and currentWidth < self.widthBits then
+        setWidth(self.widthBits)
+    end
 end
 
 --- Epoch reset at native unloadMapData entry. Restores the external floor
@@ -203,8 +273,14 @@ function SGCapacity:onEpochReset(currentWidth, setWidth)
     self.mission, self.mapId = nil, nil
     self.soilApi, self.soilJoined = nil, false
     self.integrationFlags = 0
+    self.consumerBound = 2 ^ SGCapacity.MAX_WIDTH - 1
     self.admitted = {}
-    self.noticeIssued, self.completionDone = false, false
+    self.noticeIssued, self.completionDone, self.wireNoticeIssued = false, false, false
+    self.savedMappingLoaded, self.savedMappingDuplicate = nil, nil
+    -- The adapter identities are retained across an ordinary unload (brief
+    -- 4.5); the next preflight resolves the new selection against them.
+    if self.selectedFloorWriters ~= nil then self.retainedFloorWriters = self.selectedFloorWriters end
+    self.selectedFloorWriters = nil
     self.widthBits = self.externalStartupFloor
 end
 
@@ -224,18 +300,61 @@ local function modNamesOf(missionDynamicInfo)
 end
 
 --- Returns ok, reason, offending. resolveSoil() returns the Soil API table or nil.
+local function writerIdentity(records)
+    local ids = {}
+    for _, w in ipairs(records or {}) do ids[#ids + 1] = w.adapterKey .. ":" .. w.nativeModName .. ":" .. tostring(w.floorBits) end
+    table.sort(ids)
+    return table.concat(ids, ",")
+end
+SGCapacity.writerIdentity = writerIdentity
+
 function SGCapacity:preflight(mission, missionDynamicInfo, resolveSoil)
     if type(mission) ~= "table" then return false, "INVALID_MISSION", nil end
     self.mission = mission
     local names = modNamesOf(missionDynamicInfo)
+    -- Selected adapter records, by exact native modName.
+    local floorWriters = {}
+    local namedFloor, temporary, consumerBound, flags = nil, nil, 2 ^ SGCapacity.MAX_WIDTH - 1, 0
     for _, n in ipairs(names) do
-        local lower = string.lower(n)
-        for _, a in ipairs(SGCapacity.UNBOUND_ADAPTERS) do
-            if not a.bound and lower:find(a.pattern, 1, true) ~= nil then
-                return false, "UNBOUND_ADAPTER", n
+        local a = SGCapacity.matchAdapter(n)
+        if a ~= nil then
+            if not a.bound then return false, "UNBOUND_ADAPTER", n end
+            if a.role == "floor" then
+                floorWriters[#floorWriters + 1] = { adapterKey = a.key, nativeModName = n, floorBits = a.floorBits }
+                if namedFloor == nil or a.floorBits > namedFloor then namedFloor = a.floorBits end
+            elseif a.role == "temporary" then
+                floorWriters[#floorWriters + 1] = { adapterKey = a.key, nativeModName = n, floorBits = nil }
+                temporary = a.temporaryWidth
+            elseif a.role == "consumer" then
+                if a.consumerBound ~= nil and a.consumerBound < consumerBound then consumerBound = a.consumerBound end
+                if a.flagBit ~= nil then flags = flags + a.flagBit end
             end
         end
     end
+    -- A changed selection after an ordinary unload requires the native full
+    -- reload path, never a stale selected set (brief 4.5). Equal floors do
+    -- not make different writers identical: identity is key and modName.
+    if self.retainedFloorWriters ~= nil and writerIdentity(self.retainedFloorWriters) ~= writerIdentity(floorWriters) then
+        local offending = nil
+        local seen = {}
+        for _, w in ipairs(self.retainedFloorWriters) do seen[w.adapterKey .. ":" .. w.nativeModName] = true end
+        for _, w in ipairs(floorWriters) do
+            if not seen[w.adapterKey .. ":" .. w.nativeModName] then offending = w.nativeModName break end
+        end
+        if offending == nil then
+            local now = {}
+            for _, w in ipairs(floorWriters) do now[w.adapterKey .. ":" .. w.nativeModName] = true end
+            for _, w in ipairs(self.retainedFloorWriters) do
+                if not now[w.adapterKey .. ":" .. w.nativeModName] then offending = w.nativeModName break end
+            end
+        end
+        return false, "SELECTION_CHANGED", offending
+    end
+    self.selectedFloorWriters = floorWriters
+    self.namedFloor = namedFloor
+    self.temporaryWidthWriter = temporary
+    self.consumerBound = consumerBound
+    self.integrationFlags = flags
     local soilSelected = false
     for _, n in ipairs(names) do if n == SGCapacity.SOIL_MOD_NAME then soilSelected = true end end
     if soilSelected then
@@ -250,9 +369,19 @@ function SGCapacity:preflight(mission, missionDynamicInfo, resolveSoil)
         end
         self.soilApi = api
         self.soilJoined = true
-        self.integrationFlags = SGCanonicalProfile.FLAG_SOIL_GROUND_PREP
+        self.integrationFlags = self.integrationFlags + SGCanonicalProfile.FLAG_SOIL_GROUND_PREP
     end
     return true, "OK", nil
+end
+
+--- The saved density-map mapping load, observed through the conditional
+--- loadFromXMLFile wrapper: whether the native loader succeeded and the first
+--- lowercase name that appears twice in the raw XML rows (the native loader
+--- collapses duplicates, DensityMapHeightManager.lua:158-164, so the collapsed
+--- table alone cannot show them).
+function SGCapacity:onSavedMappingLoaded(loaded, duplicateName)
+    self.savedMappingLoaded = loaded == true
+    self.savedMappingDuplicate = duplicateName
 end
 
 -- =========================================================
@@ -289,6 +418,8 @@ function SGCapacity:prepareGround(heightManager, fillManager, channels, savedAcc
     table.sort(sig, function(a, b) return a.index < b.index end)
     -- Saved mapping (lowercase keys) must reproduce at the same indices.
     if savedAccepted then
+        if self.savedMappingLoaded == false then return self:fail("SAVED_MAPPING_MISSING", "loadFromXMLFile") end
+        if self.savedMappingDuplicate ~= nil then return self:fail("SAVED_MAPPING_DUPLICATE", self.savedMappingDuplicate) end
         local saved = heightManager.tipTypeMappings
         if type(saved) ~= "table" or next(saved) == nil then return self:fail("SAVED_MAPPING_MISSING") end
         local byLower = {}
@@ -314,9 +445,14 @@ end
 -- Final freeze (first action of the onFinishedLoading wrapper)
 -- =========================================================
 --- Returns true when READY, false when the failure completion must run.
-function SGCapacity:freeze(fillManager, heightManager, mapId, channels, currentWidth)
+--- The freeze reads the FINAL native field and requires it to cover the
+--- realized registry, the external floor and the named floors; a temporary
+--- loading width (Montana) that was restored by now is therefore no failure,
+--- while a field too narrow for the registered count is. zeroGround marks a
+--- map without a terrainDetailHeight layer, where native initialize never
+--- runs (FSBaseMission.lua:1370) and an empty ground layout is the truth.
+function SGCapacity:freeze(fillManager, heightManager, mapId, channels, currentWidth, zeroGround)
     if self.phase == SGCapacity.PHASE_FAILED then return false end
-    if self.widthBits ~= nil and currentWidth ~= self.widthBits then return self:fail("WIDTH_CHANGED", tostring(currentWidth)) end
     if not isInt(currentWidth) or currentWidth < SGCapacity.MIN_WIDTH or currentWidth > SGCapacity.MAX_WIDTH then return self:fail("INVALID_WIDTH", tostring(currentWidth)) end
     if type(fillManager) ~= "table" or type(fillManager.fillTypes) ~= "table" then return self:fail("FILL_MANAGER") end
     local names = {}
@@ -327,6 +463,14 @@ function SGCapacity:freeze(fillManager, heightManager, mapId, channels, currentW
     end
     if #names < 1 then return self:fail("NO_FILL_TYPES") end
     if #names > 2 ^ currentWidth - 1 or #names > self.consumerBound then return self:fail("CAPACITY", tostring(#names)) end
+    local required = math.max(SGCapacity.MIN_WIDTH, self.externalStartupFloor or SGCapacity.MIN_WIDTH, SGCapacity.requiredWidth(#names))
+    if currentWidth < required then return self:fail("INSUFFICIENT_WIDTH", tostring(currentWidth) .. "<" .. tostring(required)) end
+    if self.groundSignature == nil and zeroGround == true then
+        self.groundSignature = {}
+        self.groundTypeBits = isInt(channels.typeNum) and channels.typeNum or 0
+        self.groundCapacity = self.groundTypeBits > 0 and (2 ^ self.groundTypeBits - 1) or 0
+        log("map without a terrainDetailHeight layer: zero-ground layout frozen")
+    end
     if self.groundSignature == nil then return self:fail("GROUND_NOT_INITIALIZED") end
     -- The live roster must still equal the initialized signature.
     local live = {}
@@ -374,9 +518,25 @@ function SGCapacity:admit(connection, header)
     return true, nil
 end
 
-function SGCapacity:refuseConnection(what, why)
+--- A refused material frame closes synchronization with that peer (brief
+--- 4.7: invalid data closes synchronization, never a partial list). On the
+--- server the offending connection is closed; on a client the session with
+--- the server ends through the same notice-and-teardown path as answer 8.
+function SGCapacity:refuseConnection(what, why, connection)
     self.lastWireRefusal = { what = what, why = why }
-    log(string.format("wire refusal: %s (%s); no partial material update applied", tostring(what), tostring(why)))
+    log(string.format("wire refusal: %s (%s); no partial material update applied; synchronization closed", tostring(what), tostring(why)))
+    if g_server ~= nil then
+        if connection ~= nil then pcall(function() g_server:closeConnection(connection) end) end
+        return
+    end
+    if self.wireNoticeIssued then return end
+    self.wireNoticeIssued = true
+    if g_currentMission ~= nil then g_currentMission.connectionWasClosed = true end
+    local key = "sg6_profile_mismatch"
+    local text = (g_i18n ~= nil and g_i18n:getText(key)) or key
+    if text == key or text == "" then text = "StockGuard: the material and map capacity profile differs from the server. Obtain the matching setup and consult the host log." end
+    local function teardown() if OnInGameMenuMenu ~= nil then OnInGameMenuMenu() end end
+    if InfoDialog ~= nil and InfoDialog.INSTANCE ~= nil and InfoDialog.show ~= nil then InfoDialog.show(text, teardown, nil) else teardown() end
 end
 
 -- =========================================================
@@ -409,7 +569,6 @@ end
 -- =========================================================
 -- Hook installation (once per process)
 -- =========================================================
-local hooksInstalled = false
 local controller = nil
 
 local function channelsNow()
@@ -433,8 +592,10 @@ end
 
 function SGCapacity.installHooks(ctl)
     controller = ctl
-    if hooksInstalled then return true end
-    hooksInstalled = true
+    -- The install-once flag lives on the global table so a re-sourced main.lua
+    -- (a mods-set change at the main menu) cannot stack a second set of hooks.
+    if SGCapacity._hooksInstalled then return true end
+    SGCapacity._hooksInstalled = true
 
     -- Registration sizing and the READY guard, one wrapper for the process.
     if FillTypeManager ~= nil and type(FillTypeManager.addFillType) == "function" then
@@ -462,7 +623,7 @@ function SGCapacity.installHooks(ctl)
         FillTypeManager.addFillType = SGCapacity._addFillTypeGuard
         local nativeLoad = FillTypeManager.loadMapData
         FillTypeManager.loadMapData = function(self, ...)
-            controller:onMapDataEntry(FillTypeManager.SEND_NUM_BITS)
+            controller:onMapDataEntry(FillTypeManager.SEND_NUM_BITS, function(w) FillTypeManager.SEND_NUM_BITS = w end)
             return nativeLoad(self, ...)
         end
         local nativeUnload = FillTypeManager.unloadMapData
@@ -482,6 +643,34 @@ function SGCapacity.installHooks(ctl)
                 return
             end
             return superFunc(mission, missionInfo, missionDynamicInfo)
+        end)
+    end
+
+    -- The saved mapping load: record the native result and scan the raw rows
+    -- for duplicate names before the native loader collapses them.
+    if DensityMapHeightManager ~= nil and type(DensityMapHeightManager.loadFromXMLFile) == "function" then
+        DensityMapHeightManager.loadFromXMLFile = Utils.overwrittenFunction(DensityMapHeightManager.loadFromXMLFile, function(hm, superFunc, xmlFilename)
+            local ok = superFunc(hm, xmlFilename)
+            local duplicate = nil
+            if ok == true and xmlFilename ~= nil and XMLFile ~= nil and type(XMLFile.load) == "function" then
+                local xmlFile = XMLFile.load("sg6DensityMapHeightScan", xmlFilename)
+                if xmlFile ~= nil then
+                    local seen = {}
+                    pcall(function()
+                        xmlFile:iterate("tipTypeMappings.tipTypeMapping", function(_, key)
+                            local name = xmlFile:getString(key .. "#fillType")
+                            if name ~= nil then
+                                local lower = string.lower(name)
+                                if seen[lower] and duplicate == nil then duplicate = lower end
+                                seen[lower] = true
+                            end
+                        end)
+                    end)
+                    xmlFile:delete()
+                end
+            end
+            controller:onSavedMappingLoaded(ok == true, duplicate)
+            return ok
         end)
     end
 
@@ -508,7 +697,13 @@ function SGCapacity.installHooks(ctl)
     if FSBaseMission ~= nil and type(FSBaseMission.onFinishedLoading) == "function" then
         FSBaseMission.onFinishedLoading = Utils.overwrittenFunction(FSBaseMission.onFinishedLoading, function(mission, superFunc, ...)
             local mapId = mission.missionInfo and mission.missionInfo.mapId or nil
-            local ready = controller:freeze(g_fillTypeManager, g_densityMapHeightManager, mapId, channelsNow(), FillTypeManager.SEND_NUM_BITS)
+            -- Another mod's hook on one of the SG-6 stream pairs after our
+            -- install would be skipped silently while READY; that is an
+            -- omitted adapter and fails the load naming Class.method.
+            local hooksOk, hookName = SGWireFormats.verifyInstalled()
+            if not hooksOk then controller:fail("STREAM_HOOK_CHANGED", hookName) end
+            local zeroGround = mission.terrainDetailHeightId == nil or mission.terrainDetailHeightId == 0
+            local ready = controller:freeze(g_fillTypeManager, g_densityMapHeightManager, mapId, channelsNow(), FillTypeManager.SEND_NUM_BITS, zeroGround)
             if not ready then
                 if not controller.completionDone then
                     controller.completionDone = true
@@ -516,16 +711,20 @@ function SGCapacity.installHooks(ctl)
                 end
                 return
             end
-            -- Outer READY guard around the CURRENT callable if it is not already ours.
-            if FillTypeManager.addFillType ~= SGCapacity._addFillTypeGuard then
+            -- Outer READY guard around the CURRENT callable when it is neither
+            -- the sizing guard nor an outer guard already installed (no
+            -- identical wrapper on later missions).
+            if FillTypeManager.addFillType ~= SGCapacity._addFillTypeGuard and FillTypeManager.addFillType ~= SGCapacity._outerGuard then
                 local current = FillTypeManager.addFillType
-                FillTypeManager.addFillType = function(self, desc)
+                SGCapacity._outerGuard = function(self, desc)
                     if controller:isReady() then
                         log("late fill type registration refused after freeze: " .. tostring(desc and desc.name))
                         return false
                     end
                     return current(self, desc)
                 end
+                SGCapacity._outerGuardInstalls = (SGCapacity._outerGuardInstalls or 0) + 1
+                FillTypeManager.addFillType = SGCapacity._outerGuard
             end
             SGWireFormats.install(controller)
             if mission.stockGuard ~= nil then mission.stockGuard.capacity = controller end
@@ -555,8 +754,12 @@ function SGCapacity.installHooks(ctl)
             local ok, component = controller:admit(connection, header)
             if not ok then
                 log("join refused before object synchronization: profile component '" .. tostring(component) .. "' differs")
+                -- force = true: a refused join never reached setIsReadyForEvents
+                -- (FSBaseMission.lua:742), and Connection:sendEvent sends only
+                -- when ready or forced (network/Connection.lua:75), as the native
+                -- refusals do (FSBaseMission.lua:473).
                 if connection ~= nil and connection.sendEvent ~= nil and ConnectionRequestAnswerEvent ~= nil then
-                    pcall(function() connection:sendEvent(ConnectionRequestAnswerEvent.new(SGCapacity.ANSWER_PROFILE_MISMATCH)) end)
+                    pcall(function() connection:sendEvent(ConnectionRequestAnswerEvent.new(SGCapacity.ANSWER_PROFILE_MISMATCH), nil, true) end)
                 end
                 if g_server ~= nil and connection ~= nil then pcall(function() g_server:closeConnection(connection) end) end
                 return
