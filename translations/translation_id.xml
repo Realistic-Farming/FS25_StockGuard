@@ -3,5 +3,6 @@
     <texts>
         <text name="sg6_capacity_refused" text="StockGuard tidak dapat menyiapkan kapasitas material untuk sesi ini: %s. Pemuatan dihentikan agar tidak ada barang yang salah dibaca. Periksa pilihan mod dan log."/>
         <text name="sg6_profile_mismatch" text="StockGuard: profil kapasitas material dan peta berbeda dari server. Dapatkan susunan yang cocok dan periksa log host."/>
+        <text name="sg_site_purpose_yard" text="Halaman StockGuard"/>
     </texts>
 </l10n>
