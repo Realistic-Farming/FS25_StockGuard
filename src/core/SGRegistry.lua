@@ -54,7 +54,16 @@ function G.new(epoch)
     self.leases = {}          -- leaseId -> lease
     self.byKindAndId = {}     -- kind -> ownerId -> lease
     self.onUnregister = nil   -- function(lease)
+    self.onRegister = nil     -- function(lease)
     return self
+end
+
+--- Registration never mutates the caller's spec: the lease holds a shallow
+--- copy (callbacks are shared by reference, derived flags land on the copy).
+local function shallow(spec)
+    local out = {}
+    for k, v in pairs(spec) do out[k] = v end
+    return out
 end
 
 local function issue(self, kind, ownerId, spec)
@@ -65,6 +74,7 @@ local function issue(self, kind, ownerId, spec)
     self.leases[lease.leaseId] = lease
     self.byKindAndId[kind] = self.byKindAndId[kind] or {}
     self.byKindAndId[kind][ownerId] = lease
+    if type(self.onRegister) == "function" then pcall(self.onRegister, lease) end
     return lease
 end
 
@@ -132,6 +142,7 @@ function G:registerProperty(propertyId, spec)
     if spec.applicability ~= nil and type(spec.applicability) ~= "table" then return nil, "APPLICABILITY" end
     if not isFn(spec.validate) or not isFn(spec.combine) or not isFn(spec.transform) or not isFn(spec.disclosure) then return nil, "CALLBACKS" end
     if spec.residency == "OWNER_RESOLVED" and (not isFn(spec.resolveResident) or not isFn(spec.getResidentRevision)) then return nil, "RESIDENT_CALLBACKS" end
+    spec = shallow(spec)
     local causal = spec.validateCause ~= nil or spec.transformCausalState ~= nil or spec.compactCausalState ~= nil or spec.causal == true
     if causal and not (isFn(spec.validateCause) and isFn(spec.transformCausalState) and isFn(spec.compactCausalState)) then
         -- Omission means the causal interpretation is unavailable, not
@@ -224,7 +235,9 @@ function G:registerSaveSection(sectionId, spec)
     if spec.dependencies ~= nil and not stringList(spec.dependencies) then return nil, "DEPENDENCIES" end
     if not isFn(spec.serialize) or not isFn(spec.stageLoad) or not isFn(spec.commitLoad) or not isFn(spec.clearReadiness) then return nil, "CALLBACKS" end
     if spec.farmRestorePolicy ~= nil and not G.FARM_RESTORE_POLICY[spec.farmRestorePolicy] then return nil, "FARM_RESTORE_POLICY" end
-    spec.farmRestorePolicy = spec.farmRestorePolicy or "INVARIANT"
+    -- An undeclared farm-restore policy stays undeclared: under an actual
+    -- conversion that section is retained until its owner supplies the contract.
+    spec = shallow(spec)
     spec.dependencies = spec.dependencies or {}
     return issue(self, G.KIND_SAVE_SECTION, sectionId, spec)
 end
@@ -238,6 +251,7 @@ function G:registerCarrierPending(ownerId, spec)
     if not nonempty(spec.sectionId, 64) or not nonempty(spec.collectionPath, 256) then return nil, "COLLECTION" end
     if not positiveInt(spec.schemaVersion) then return nil, "SCHEMA_VERSION" end
     if not isFn(spec.validatePending) or not isFn(spec.prepareCreationBinding) then return nil, "CALLBACKS" end
+    if not optFn(spec.disclosePending) then return nil, "OPTIONAL_CALLBACKS" end
     if self:count(G.KIND_CARRIER_PENDING) > 0 then return nil, "ONE_COLLECTION" end
     return issue(self, G.KIND_CARRIER_PENDING, ownerId, spec)
 end

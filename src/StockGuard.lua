@@ -1,19 +1,21 @@
 -- =========================================================
 -- FS25_StockGuard - the mission handle g_currentMission.stockGuard (SG-1)
 -- =========================================================
--- One StockGuard per mission: registry (leases), material store and
+-- One StockGuard host per mission: registry (leases), material store and
 -- operations, farm-restore coordinator, save backend, SITE_V1 binding,
--- views, command sessions and the private transport. The public methods on
--- the handle are dot-bound closures (no implicit self), matching the WT-8
--- provider convention Bob fixed for step 1.
+-- views, command sessions and the private transport. The PUBLIC handle on
+-- the mission is a separate table of dot-bound closures (no implicit self,
+-- the WT-8 provider convention); the host object itself is not reachable
+-- through it. Material mutators are server-only.
 --
 -- Lifecycle (server and client):
 --   attach(mission)            at Mission00.load: model, coordinator hooks,
 --                              handle published, StateLedger registration
 --                              (delivery may be immediate, so the model and
 --                              coordinator exist first)
---   onLoadMission00Finished    early: own-XML load when no ledger, NS-7 route
---                              selection attempt, SITE binding attempt
+--   onLoadMission00Finished    early: manifest read, own-XML load when no
+--                              ledger, NS-7 route and SITE binding attempts,
+--                              message subscriptions
 --   observer after            FSBaseMission.onFinishedLoading's original body
 --   onFinishedLoading:         the restore-complete barrier. Installed on the
 --                              mission instance AFTER SG-6's class wrapper is
@@ -22,22 +24,34 @@
 --                              this observer never bypasses it. Carrier
 --                              enumeration, staged metadata restore, SITE and
 --                              route retries, capacity publication.
+--   update(dt)                 route and SITE retries until resolved, pending
+--                              command completion polling, fallback republish
 --   delete()                   teardown: token withdrawn first, wrappers
---                              restored only when still ours, leases dead.
+--                              restored only when still ours, message
+--                              subscriptions removed, leases dead.
 -- =========================================================
 
 StockGuard = StockGuard or {}
 local SG = StockGuard
 local StockGuard_mt = { __index = SG }
 
-SG.VERSION = "0.2.0"
+SG.VERSION = "0.2.1"
 SG.PURPOSE_LABEL_KEY = "sg_site_purpose_yard"
+SG.RETRY_TICKS = 60
+
+-- mission -> host (weak keys); the public handle never exposes the host.
+SG._hosts = setmetatable({}, { __mode = "k" })
 
 local function log(msg) print("[StockGuard] " .. tostring(msg)) end
 
 local function serverTimeSec()
     if getTimeSec ~= nil then return getTimeSec() end
     return nil
+end
+
+function SG.hostOf(mission)
+    if mission == nil then return nil end
+    return SG._hosts[mission]
 end
 
 function SG.new(mission)
@@ -49,6 +63,7 @@ function SG.new(mission)
     self.operations = SGOperations.new(self.registry, self.loadEpoch)
     self.coordinator = SGFarmRestore.new(self.loadEpoch)
     self.save = SGSave.new(self.registry, self.operations, self.coordinator)
+    self.save.loadEpoch = self.loadEpoch
     self.sites = SGSiteBinding.new()
     self.views = SGViews.new(self.registry, self.operations, self.sites)
     self.views.loadEpoch = self.loadEpoch
@@ -58,14 +73,16 @@ function SG.new(mission)
     self.capacity = nil
     self.finishedLoadingObserved = false
     self.enumerated = false
-    self.serverSession = "1"
-    self.viewEpoch = "1"
+    self.serverSession = "s" .. self.loadEpoch
     self.publicationId = "0"
-    self.fallbackSubscribers = {}   -- connectionId -> connection (fallback route only)
+    self.fallbackSubscribers = setmetatable({}, { __mode = "k" })   -- connection -> actor (fallback route only)
+    self.clientOrder = { serverSession = nil, viewEpoch = "0", publicationId = "0" }
+    self.tick = 0
     local host = self
     self.coordinator.onStage = function(_, payload, context) host:onStagedRestore(payload, context) end
     self.operations.onChanged = function() host:onMaterialChanged() end
     self.registry.onUnregister = function(lease) host:onLeaseGone(lease) end
+    self.registry.onRegister = function(lease) host:onLeaseIssued(lease) end
     self.sites.onChanged = function(siteId, revision, kind, ownerFarmId) host:onSiteChanged(siteId, revision, kind, ownerFarmId) end
     return self
 end
@@ -78,10 +95,17 @@ end
 -- ---------------------------------------------------------
 -- Attach and the public handle
 -- ---------------------------------------------------------
---- Build the handle: every public method is a dot-bound closure.
+--- Build the handle: a separate table; every public method is a dot-bound
+--- closure. Material mutators refuse on a client.
 function SG:buildHandle()
     local host = self
-    local h = self
+    local h = {}
+    local function serverOnly(fn)
+        return function(...)
+            if not host:isServer() then return nil, "NOT_SERVER" end
+            return fn(...)
+        end
+    end
     -- Registrations
     h.registerCarrierAdapter = function(adapterId, spec) return host.registry:registerCarrierAdapter(adapterId, spec) end
     h.registerProperty = function(propertyId, spec) return host.registry:registerProperty(propertyId, spec) end
@@ -91,35 +115,43 @@ function SG:buildHandle()
     h.registerCarrierPending = function(ownerId, spec) return host.registry:registerCarrierPending(ownerId, spec) end
     h.unregisterOwner = function(lease) return host.registry:unregisterOwner(lease) end
     -- Server-local material services
-    h.bindCarrier = function(lease, binding, nativeState) return host.operations:bindCarrier(lease, binding, nativeState) end
-    h.observeCarrier = function(lease, carrierId, nativeState) if not host.registry:isLive(lease, SGRegistry.KIND_CARRIER_ADAPTER) then return nil, "LEASE" end return host.operations:reconcileCarrier(carrierId, nativeState, "ADAPTER_OBSERVATION") end
-    h.withdrawCarrier = function(lease, carrierId, reason) if not host.registry:isLive(lease, SGRegistry.KIND_CARRIER_ADAPTER) then return false, "LEASE" end return host.operations:withdrawCarrier(carrierId, reason) end
-    h.captureOperation = function(lease, kind, participants) return host.operations:captureOperation(lease, kind, participants) end
-    h.settleOperation = function(handle, report) return host.operations:settleOperation(handle, report) end
-    h.abandonOperation = function(handle, reason, participantsAfter) return host.operations:abandonOperation(handle, reason, participantsAfter) end
-    h.publishProperties = function(lease, results, cause) return host.operations:publishProperties(lease, results, cause) end
-    h.readMaterial = function(lease, query) return host.operations:readMaterial(lease, query) end
-    h.visitOwnedPropertyRecords = function(lease, cursor, limit) return host.operations:visitOwnedPropertyRecords(lease, cursor, limit) end
-    h.readPropertyMix = function(lease, contributions, context) return host.operations:readPropertyMix(lease, contributions, context) end
+    h.bindCarrier = serverOnly(function(lease, binding, nativeState) return host.operations:bindCarrier(lease, binding, nativeState) end)
+    h.observeCarrier = serverOnly(function(lease, carrierId, nativeState) if not host.registry:isLive(lease, SGRegistry.KIND_CARRIER_ADAPTER) then return nil, "LEASE" end return host.operations:reconcileCarrier(carrierId, nativeState, "ADAPTER_OBSERVATION") end)
+    h.withdrawCarrier = serverOnly(function(lease, carrierId, reason) if not host.registry:isLive(lease, SGRegistry.KIND_CARRIER_ADAPTER) then return false, "LEASE" end return host.operations:withdrawCarrier(carrierId, reason) end)
+    h.captureOperation = serverOnly(function(lease, kind, participants) return host.operations:captureOperation(lease, kind, participants) end)
+    h.settleOperation = serverOnly(function(handle, report) return host.operations:settleOperation(handle, report) end)
+    h.abandonOperation = serverOnly(function(handle, reason, participantsAfter) return host.operations:abandonOperation(handle, reason, participantsAfter) end)
+    h.publishProperties = serverOnly(function(lease, results, cause) return host.operations:publishProperties(lease, results, cause) end)
+    h.readMaterial = serverOnly(function(lease, query) return host.operations:readMaterial(lease, query) end)
+    h.visitOwnedPropertyRecords = serverOnly(function(lease, cursor, limit) return host.operations:visitOwnedPropertyRecords(lease, cursor, limit) end)
+    h.readPropertyMix = serverOnly(function(lease, contributions, context) return host.operations:readPropertyMix(lease, contributions, context) end)
+    h.readCarrierPending = serverOnly(function(lease, carrierKey, trustedActor) return host.operations:readCarrierPending(lease, carrierKey, trustedActor) end)
+    h.setCarrierPending = serverOnly(function(lease, carrierKey, expectedEmptyEpoch, expectedSelectionRevision, newTarget, trustedActor) return host.operations:setCarrierPending(lease, carrierKey, expectedEmptyEpoch, expectedSelectionRevision, newTarget, trustedActor) end)
+    h.onPendingComplete = serverOnly(function(pendingId, outcome, detail) local ok = host.commands:onPendingComplete(pendingId, outcome, detail) if ok then host.transport:markDirty() end return ok end)
     -- Views and capabilities
     h.getCapabilities = function() return host.views:getCapabilities() end
-    h.getManagementView = function(trustedActorContext, selection, readOptions) return host.views:getManagementView(trustedActorContext, selection, readOptions, true) end
+    h.getManagementView = serverOnly(function(trustedActorContext, selection, readOptions) return host.views:getManagementView(trustedActorContext, selection, readOptions, true) end)
     h.getRecipeLibraryView = function() return { state = "UNAVAILABLE", reason = "RECIPE_LIBRARY_OWNER_ABSENT" } end
-    h.resolveActor = function(connection) return SG.resolveActorFor(host, connection) end
+    h.resolveActor = serverOnly(function(connection) return SG.resolveActorFor(host, connection) end)
     h.farmRestoreContext = function() return host.coordinator:context() end
+    h.requestView = function(selection, readOptions) return host.transport:requestView(selection, readOptions) end
+    h.getClientView = function() local c = host.transport.client return { state = c.state, reason = c.reason, usable = c.usable, view = c.replica and SGValues.copy(c.replica) or nil, credentials = c.credentials and SGValues.copy(c.credentials) or nil } end
     h.getStatus = function() return SG.status(host) end
+    self.handle = h
     return h
 end
 
---- Create, wire and publish the handle on the mission.
+--- Create, wire and publish the handle on the mission. Returns the host.
 function SG.attach(mission)
     if mission == nil then return nil end
-    if mission.stockGuard ~= nil and getmetatable(mission.stockGuard) == StockGuard_mt then return mission.stockGuard end
+    local existing = SG._hosts[mission]
+    if existing ~= nil and mission.stockGuard == existing.handle then return existing end
     local self = SG.new(mission)
     self:buildHandle()
     SGFarmRestore.installHooks()
     SGFarmRestore.setCurrent(self.coordinator)
-    mission.stockGuard = self
+    SG._hosts[mission] = self
+    mission.stockGuard = self.handle
     if self:isServer() then
         self.save:registerBackend(mission)
     end
@@ -143,7 +175,7 @@ function SG:resolveActorFor(connection)
             actor.actorState = "INVALID"
             return actor
         end
-        actor.connectionId = "local"
+        actor.connectionId = SGTransport.LOCAL
         actor.userId = m.playerUserId
         actor.isMasterUser = true
         if m.getFarmId ~= nil then
@@ -151,7 +183,7 @@ function SG:resolveActorFor(connection)
             if ok then actor.farmId = id end
         end
     else
-        actor.connectionId = tostring(connection.streamId or tostring(connection))
+        actor.connectionId = SGTransport.connectionIdOf(connection)
         local user = nil
         if m.userManager ~= nil and m.userManager.getUserByConnection ~= nil then user = m.userManager:getUserByConnection(connection) end
         if user ~= nil then
@@ -176,11 +208,22 @@ end
 -- Lifecycle
 -- ---------------------------------------------------------
 function SG:onLoadMission00Finished()
-    if self:isServer() and self.save.backendId == SGSave.BACKEND_XML then
-        self.save:loadFromXML(self.mission.missionInfo)
+    if self:isServer() then
+        self.save:readManifest(self.mission.missionInfo)
+        if self.save.backendId == SGSave.BACKEND_XML then
+            self.save:loadFromXML(self.mission.missionInfo)
+        end
     end
+    self:subscribeMessages()
     self:tryRoute()
     self:trySites()
+end
+
+function SG:subscribeMessages()
+    if self.messagesSubscribed or g_messageCenter == nil or MessageType == nil then return end
+    self.messagesSubscribed = true
+    if MessageType.PLAYER_FARM_CHANGED ~= nil then g_messageCenter:subscribe(MessageType.PLAYER_FARM_CHANGED, self.onPlayerFarmChanged, self) end
+    if MessageType.FARM_DELETED ~= nil then g_messageCenter:subscribe(MessageType.FARM_DELETED, self.onFarmDeleted, self) end
 end
 
 --- Install the restore-complete observer on the mission instance after the
@@ -194,7 +237,7 @@ function SG:installFinishedLoadingObserver()
     local original = mission.onFinishedLoading
     local wrapper = function(m, ...)
         local results = { original(m, ...) }
-        if host.mission == m and m.stockGuard == host then pcall(host.onFinishedLoadingObserved, host) end
+        if host.mission == m and SG._hosts[m] == host then pcall(host.onFinishedLoadingObserved, host) end
         return unpack(results)
     end
     self.finishedLoadingWrapper = wrapper
@@ -260,11 +303,13 @@ function SG:enumerateAdapter(lease)
 end
 
 --- Staged metadata restore once payload, farms and native objects exist.
+--- The member context carries context.farmRestore (4.7.1).
 function SG:onStagedRestore(payload, context)
     if not self:isServer() then return end
-    local result = self.save:stageLoad(payload, context)
+    local result = self.save:stageLoad(payload, { farmRestore = context, backend = self.save.backendId, loadEpoch = self.loadEpoch })
     log(string.format("staged restore: %s (farm phase %s, core restored %s unknown %s historical %s)", tostring(result.state), tostring(context.phase),
         tostring(result.core and result.core.restored or 0), tostring(result.core and result.core.unknown or 0), tostring(result.core and result.core.historical or 0)))
+    if result.reason ~= nil then log("staged restore reason: " .. tostring(result.reason)) end
     self.transport:markDirty()
 end
 
@@ -272,7 +317,12 @@ function SG:tryRoute()
     local route = self.transport:selectRoute(self.mission)
     if route ~= nil and not self.routeLogged then
         self.routeLogged = true
-        log("private view route: " .. route)
+        log("private view route: " .. route .. (route == "UNAVAILABLE" and (" (" .. tostring(self.transport.routeReason) .. ")") or ""))
+        if route == "FALLBACK" and not self:isServer() then
+            -- A fallback client subscribes itself; the server never guesses a selection.
+            local ok, why = self.transport:requestView({ route = "STOCK", selectionKind = "FARM" }, {})
+            if not ok then log("fallback subscription not sent: " .. tostring(why)) end
+        end
     end
 end
 
@@ -285,7 +335,22 @@ function SG:trySites()
         log("SITE_V1 provider bound (WorkplaceTriggers), purpose stockguard.yard registered")
     elseif not ok and reason ~= "NO_PROVIDER" and not self.sitesReasonLogged then
         self.sitesReasonLogged = true
-        log("SITE_V1 provider not usable: " .. tostring(reason) .. "; FARM view remains")
+        log("SITE_V1 provider not usable: " .. tostring(reason) .. "; FARM view remains, retrying")
+    end
+end
+
+--- Per-frame host tick (appended to FSBaseMission.update): retries until
+--- the route and the site provider resolve, pending completion polling,
+--- fallback republish.
+function SG:update(dt)
+    self.tick = self.tick + 1
+    if self.tick % SG.RETRY_TICKS == 0 then
+        if self.transport.route == nil then self:tryRoute() end
+        if not self.sites.available then self:trySites() end
+    end
+    if self:isServer() then
+        if self.commands:pollPending() > 0 then self.transport:markDirty() end
+        self:publishAllFallback()
     end
 end
 
@@ -299,6 +364,12 @@ function SG:onMaterialChanged()
     self.transport:markDirty()
 end
 
+function SG:onLeaseIssued(lease)
+    if lease.kind == SGRegistry.KIND_SAVE_SECTION then self.save:onSectionRegistered(lease) end
+    if lease.kind == SGRegistry.KIND_CARRIER_ADAPTER and self.enumerated and self:isServer() then self:enumerateAdapter(lease) end
+    self.transport:markDirty()
+end
+
 function SG:onLeaseGone(lease)
     if lease.kind == SGRegistry.KIND_CARRIER_ADAPTER then self.operations:withdrawAdapter(lease.ownerId, "ADAPTER_UNREGISTERED") end
     if lease.kind == SGRegistry.KIND_MANAGEMENT then self.commands:withdrawAll("OWNER_UNREGISTERED") end
@@ -306,14 +377,32 @@ function SG:onLeaseGone(lease)
     self.transport:markDirty()
 end
 
---- Native local farm change: private state is revoked before replacement.
-function SG:onPlayerFarmChanged(player)
+--- Native farm change (PlayerSetFarmEvent publishes the player; the switch
+--- event publishes the old farm): only that player's private state is
+--- revoked; a client clears its replica only for the local player.
+function SG:onPlayerFarmChanged(subject)
+    local userId = nil
+    if type(subject) == "table" then
+        if type(subject.getUserId) == "function" then local ok, id = pcall(subject.getUserId, subject) if ok then userId = id end end
+        if userId == nil and subject.userId ~= nil then userId = subject.userId end
+    end
     if self:isServer() then
-        self.commands:withdrawAll("FARM_CHANGED")
-        self.views:resetDomain()
+        if userId ~= nil then
+            self.commands:withdrawUser(userId, "FARM_CHANGED")
+        else
+            -- Not a player (a farm object or unknown shape): the whole domain is revalidated.
+            self.commands:withdrawAll("FARM_CHANGED")
+            self.views:resetDomain()
+        end
         self.transport:markDirty()
     else
-        self.transport:clearReplica("FARM_CHANGED")
+        local isLocal = subject == nil or g_localPlayer == nil or subject == g_localPlayer or (userId ~= nil and g_localPlayer.userId == userId)
+        if isLocal then
+            self.transport:clearReplica("FARM_CHANGED")
+            if self.transport.route == "FALLBACK" and self.transport.client.request ~= nil then
+                self.transport:requestView(self.transport.client.request.selection, self.transport.client.request.readOptions)
+            end
+        end
     end
 end
 
@@ -325,32 +414,38 @@ function SG:onFarmDeleted(farmId)
 end
 
 function SG:onConnectionClosed(connection)
-    local id = connection ~= nil and tostring(connection.streamId or tostring(connection)) or nil
-    if id == nil then return end
-    self.transport:clearConnection(id)
-    self.fallbackSubscribers[id] = nil
+    if connection == nil then return end
+    self.commands:withdrawConnection(SGTransport.connectionIdOf(connection), "CONNECTION_CLOSED")
+    self.transport:clearConnection(connection)
+    self.fallbackSubscribers[connection] = nil
 end
 
 -- ---------------------------------------------------------
 -- Fallback route handlers (server)
 -- ---------------------------------------------------------
+--- A view request sets the connection's selection on either route. Only the
+--- FALLBACK route answers with a state event; on NS7 the scoped module
+--- publishes after the dirty mark, never both transports for one replica.
 function SG:onViewRequest(connection, selection, readOptions)
     if not self:isServer() then return end
     local actor = self:resolveActorFor(connection)
-    local id = actor.connectionId or "local"
-    local ok, why = self.transport:setSelection(id, selection, readOptions)
+    local ok, why = self.transport:setSelection(connection, selection, readOptions)
+    if self.transport.route == "NS7" then
+        self.transport:markDirty()
+        return
+    end
+    if self.transport.route ~= "FALLBACK" then return end
     if not ok then
         self:sendViewState(connection, "UNAVAILABLE", why, nil)
         return
     end
-    self.viewEpoch = SGValues.incrementDecimal(self.viewEpoch)
-    if connection ~= nil then self.fallbackSubscribers[id] = connection end
+    if connection ~= nil then self.fallbackSubscribers[connection] = true end
     self:publishTo(connection, actor)
 end
 
 function SG:publishTo(connection, actor)
     actor = actor or self:resolveActorFor(connection)
-    local context = { connection = connection, connectionId = actor.connectionId or "local", userId = actor.userId, farmId = actor.farmId, actorState = actor.actorState, serverSession = self.serverSession, subscriptionId = "1", modId = SGTransport.MODULE_ID }
+    local context = { connection = connection, connectionId = actor.connectionId or SGTransport.LOCAL, userId = actor.userId, farmId = actor.farmId, actorState = actor.actorState, serverSession = self.serverSession, subscriptionId = "1", modId = SGTransport.MODULE_ID }
     local result = self.transport:buildView(context, nil, true)
     if result.state ~= "READY" then
         self:sendViewState(connection, result.state, result.reason, nil)
@@ -362,7 +457,7 @@ end
 function SG:sendViewState(connection, state, reason, tokens)
     self.publicationId = SGValues.incrementDecimal(self.publicationId)
     if SGViewStateEvent == nil then return end
-    local event = SGViewStateEvent.new(self.serverSession, self.viewEpoch, self.publicationId, state, reason, tokens or {})
+    local event = SGViewStateEvent.new(self.serverSession, self.views.viewEpoch, self.publicationId, state, reason, tokens or {})
     if connection == nil then
         -- Listen-host projection: apply the detached bytes locally.
         self:onViewState(event)
@@ -372,18 +467,30 @@ function SG:sendViewState(connection, state, reason, tokens)
     pcall(function() connection:sendEvent(event) end)
 end
 
---- Republish every fallback subscriber after a dirty mark (called from the
---- host's update tick).
+--- Republish every fallback subscriber after a dirty mark (from update).
 function SG:publishAllFallback()
     if self.transport.route ~= "FALLBACK" or not self.transport.dirty or not self:isServer() then return end
     self.transport.dirty = false
-    for id, connection in pairs(self.fallbackSubscribers) do
-        if SGRecords.nonemptyString(id) and connection ~= nil and connection.isConnected ~= false then self:publishTo(connection) end
+    for connection in pairs(self.fallbackSubscribers) do
+        if connection ~= nil and connection.isConnected ~= false then self:publishTo(connection) end
     end
 end
 
--- Client side of the fallback route.
+-- Client side of the fallback route: publications are applied in order.
+-- A different server session replaces the ordering baseline; a lower view
+-- epoch or a publication not after the last applied one is ignored.
 function SG:onViewState(event)
+    local o = self.clientOrder
+    if o.serverSession ~= event.serverSession then
+        o.serverSession = event.serverSession
+        o.viewEpoch, o.publicationId = "0", "0"
+        self.transport:clearReplica("SERVER_SESSION_CHANGED")
+    end
+    local epochCmp = SGValues.compareDecimal(tostring(event.viewEpoch), o.viewEpoch)
+    if epochCmp < 0 then return end
+    if epochCmp == 0 and SGValues.compareDecimal(tostring(event.publicationId), o.publicationId) <= 0 then return end
+    o.viewEpoch = tostring(event.viewEpoch)
+    o.publicationId = tostring(event.publicationId)
     if event.state ~= "READY" then
         self.transport:clearReplica(event.reason)
         return
@@ -414,12 +521,14 @@ end
 function SG:onSaveToXML(missionInfo)
     if not self:isServer() then return end
     if self.save.backendId == SGSave.BACKEND_XML then self.save:saveToXML(missionInfo) end
+    self.save:writeManifest(missionInfo)
 end
 
 function SG:status()
     return {
-        version = SG.VERSION, epoch = self.loadEpoch, server = self:isServer(), route = self.transport.route or "WAITING",
+        version = SG.VERSION, epoch = self.loadEpoch, server = self:isServer(), route = self.transport.route or ("WAITING:" .. tostring(self.transport.routeReason)),
         backend = self.save.backendId or "NONE", farmPhase = self.coordinator.phase, staged = self.coordinator.staged,
+        loadState = self.save.loadResult and self.save.loadResult.state or "PENDING",
         carriers = (function() local n = 0 for _ in pairs(self.operations.carriers) do n = n + 1 end return n end)(),
         stocks = (function() local n = 0 for _ in pairs(self.operations.stocks) do n = n + 1 end return n end)(),
         sites = self.sites.available, sitesReason = self.sites.reasonCode, viewsReady = self.views.ready,
@@ -435,12 +544,19 @@ end
 function SG:delete()
     SGFarmRestore.setCurrent(nil)
     self:removeFinishedLoadingObserver()
+    if self.messagesSubscribed and g_messageCenter ~= nil and type(g_messageCenter.unsubscribeAll) == "function" then
+        pcall(g_messageCenter.unsubscribeAll, g_messageCenter, self)
+    end
+    self.messagesSubscribed = false
     self.sites:unbind()
     self.transport:teardown()
     self.commands:withdrawAll("MISSION_END")
     self.registry:clear()
     self.operations:clear()
     self.save:clear()
-    if self.mission ~= nil and self.mission.stockGuard == self then self.mission.stockGuard = nil end
+    if self.mission ~= nil then
+        if self.mission.stockGuard == self.handle then self.mission.stockGuard = nil end
+        if SG._hosts[self.mission] == self then SG._hosts[self.mission] = nil end
+    end
     self.mission = nil
 end

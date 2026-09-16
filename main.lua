@@ -63,9 +63,8 @@ if Mission00 ~= nil and Mission00.load ~= nil and not SGCapacity._missionLoadApp
 end
 
 local function stockGuardOf(mission)
-    local sg = mission ~= nil and mission.stockGuard or nil
-    if sg ~= nil and type(sg.onLoadMission00Finished) == "function" then return sg end
-    return nil
+    if StockGuard == nil or type(StockGuard.hostOf) ~= "function" then return nil end
+    return StockGuard.hostOf(mission)
 end
 
 StockGuardHooks = StockGuardHooks or {}
@@ -86,7 +85,7 @@ if not StockGuardHooks.installed then
     if FSBaseMission ~= nil and FSBaseMission.update ~= nil then
         FSBaseMission.update = Utils.appendedFunction(FSBaseMission.update, function(mission, dt)
             local sg = stockGuardOf(mission)
-            if sg ~= nil then pcall(sg.publishAllFallback, sg) end
+            if sg ~= nil then pcall(sg.update, sg, dt) end
         end)
     end
     if FSBaseMission ~= nil and FSBaseMission.onConnectionClosed ~= nil then
@@ -99,15 +98,6 @@ if not StockGuardHooks.installed then
         FSCareerMissionInfo.saveToXMLFile = Utils.appendedFunction(FSCareerMissionInfo.saveToXMLFile, function(missionInfo)
             local sg = stockGuardOf(g_currentMission)
             if sg ~= nil then pcall(sg.onSaveToXML, sg, missionInfo) end
-        end)
-    end
-    if Mission00 ~= nil and Mission00.loadMission00Finished ~= nil and g_messageCenter ~= nil and MessageType ~= nil then
-        Mission00.loadMission00Finished = Utils.appendedFunction(Mission00.loadMission00Finished, function(mission)
-            local sg = stockGuardOf(mission)
-            if sg == nil or sg.messagesSubscribed then return end
-            sg.messagesSubscribed = true
-            if MessageType.PLAYER_FARM_CHANGED ~= nil then g_messageCenter:subscribe(MessageType.PLAYER_FARM_CHANGED, sg.onPlayerFarmChanged, sg) end
-            if MessageType.FARM_DELETED ~= nil then g_messageCenter:subscribe(MessageType.FARM_DELETED, sg.onFarmDeleted, sg) end
         end)
     end
 end
