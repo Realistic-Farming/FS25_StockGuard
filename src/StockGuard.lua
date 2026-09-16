@@ -183,7 +183,7 @@ function SG:resolveActorFor(connection)
             if ok then actor.farmId = id end
         end
     else
-        actor.connectionId = tostring(connection.streamId or tostring(connection))
+        actor.connectionId = SGTransport.connectionIdOf(connection)
         local user = nil
         if m.userManager ~= nil and m.userManager.getUserByConnection ~= nil then user = m.userManager:getUserByConnection(connection) end
         if user ~= nil then
@@ -415,7 +415,7 @@ end
 
 function SG:onConnectionClosed(connection)
     if connection == nil then return end
-    self.commands:withdrawConnection(tostring(connection.streamId or tostring(connection)), "CONNECTION_CLOSED")
+    self.commands:withdrawConnection(SGTransport.connectionIdOf(connection), "CONNECTION_CLOSED")
     self.transport:clearConnection(connection)
     self.fallbackSubscribers[connection] = nil
 end

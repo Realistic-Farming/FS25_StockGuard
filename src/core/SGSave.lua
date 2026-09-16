@@ -589,9 +589,13 @@ function S:commitSets(staged, pending, out)
                 end
                 if failedId == nil then
                     for _, id in ipairs(members) do
+                        -- Guarded like every other sectionState read in this file; an
+                        -- unguarded index here threw instead of reporting.
                         local st = self.sectionState[id]
-                        st.ready, st.retained, st.reason = true, false, nil
-                        out[id] = "READY"
+                        if st ~= nil then
+                            st.ready, st.retained, st.reason = true, false, nil
+                            out[id] = "READY"
+                        end
                     end
                 else
                     -- Withdraw the set: already installed members are cleared,
@@ -604,10 +608,12 @@ function S:commitSets(staged, pending, out)
                     pcall(failedLease.spec.clearReadiness, "COMMIT_FAILED:" .. tostring(failedErr))
                     for _, id in ipairs(members) do
                         local st = self.sectionState[id]
-                        st.ready, st.retained = false, true
-                        if id == failedId then st.reason = "COMMIT_FAILED:" .. tostring(failedErr)
-                        else st.reason = "DEPENDENCY_NOT_READY" end
-                        out[id] = "RETAINED"
+                        if st ~= nil then
+                            st.ready, st.retained = false, true
+                            if id == failedId then st.reason = "COMMIT_FAILED:" .. tostring(failedErr)
+                            else st.reason = "DEPENDENCY_NOT_READY" end
+                            out[id] = "RETAINED"
+                        end
                     end
                 end
             end

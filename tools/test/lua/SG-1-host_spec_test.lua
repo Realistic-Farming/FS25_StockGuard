@@ -425,6 +425,42 @@ do
     sg:onViewRequest(remote, { route = "STOCK", selectionKind = "GROUND", groundFootprint = { x = 0, z = 0, radius = 5 } }, {})
     T.eq("L2 on NS7 a view request only sets the selection and marks dirty, never a state event", #sent .. "/" .. tostring(dirtyMarks > 0) .. "/" .. sg.transport:selectionFor(remote).normalized.selectionKind, "0/true/GROUND")
     T.eq("L2b the selection is keyed by the connection object NS-7 hands to the producer", sg.transport:buildView({ connection = remote, connectionId = "c77", userId = "u9", farmId = 1, actorState = "RESOLVED" }, nil, true).state, "READY")
+    -- [B16] ONE CONNECTION IDENTITY FOR BOTH ROUTES.
+    -- NS-7 builds its producer context with its OWN scoped connection id, "c" plus a
+    -- serial (NetworkSyncScoped:_scopedConnectionId). The command session must not be
+    -- minted under that: every command event rebuilds the actor from the connection
+    -- object, which yields the streamId string, so a session keyed on the scoped serial
+    -- refuses every command that player sends for the whole mission and the disconnect
+    -- withdraw never reaches it. FALLBACK was unaffected because it used the streamId
+    -- string on both sides, which is why only the NS7 route carried this.
+    local ns7Ctx = { connection = remote, connectionId = "c77", userId = "u9", farmId = 1, actorState = "RESOLVED", serverSession = "1", subscriptionId = "1", modId = "stockGuard" }
+    local ns7Res = sg.transport:buildView(ns7Ctx, nil, true)
+    local ns7View = SGViews.decodeView(ns7Res.values)
+    T.ok("L2c the NS-7 view advertises command credentials", ns7View ~= nil and type(ns7View.commandSessionId) == "string")
+    local minted = ns7View ~= nil and sg.commands.sessions[ns7View.commandSessionId] or nil
+    T.eq("L2d the session is keyed on the resolved connection identity", tostring(minted and minted.connectionId), SGTransport.connectionIdOf(remote))
+    T.ok("L2e DIFFERENCE: NS-7's scoped serial never reaches the session key", minted ~= nil and minted.actorKey:find("c77", 1, true) == nil)
+    T.eq("L2f DIFFERENCE: a session minted under the scoped serial would not match the real actor",
+        tostring(("c77|u9|1|STOCK") == (minted and minted.actorKey)), "false")
+    -- End to end through the real host entry, with the actor resolved from the
+    -- connection the way a live command does it, not hand built.
+    local prevResultEvent = SGCommandResultEvent
+    SGCommandResultEvent = { new = function(res) return { result = res } end }
+    local ns7Req = { protocolVersion = 2, route = "STOCK", commandSessionId = ns7View and ns7View.commandSessionId, sequence = tostring(ns7View and ns7View.nextSequence or 1), phase = "DIRECT", actionId = "SET_PRODUCTION_ENABLED", targetKind = "PROCESS", targetId = "p1", expectedRevision = "1", arguments = { enabled = true } }
+    sg:onCommandRequest(remote, ns7Req)
+    local delivered = sent[#sent] ~= nil and sent[#sent].result or nil
+    T.ok("L2g onCommandRequest on the NS7 route is answered at all", delivered ~= nil)
+    T.ok("L2h and it is NOT refused for the session, which is the whole blocker", delivered ~= nil and delivered.reasonCode ~= "SESSION_INVALID")
+    SGCommandResultEvent = prevResultEvent
+    -- The disconnect withdraw reaches an NS7-minted session. A separate connection, so
+    -- the fallback assertions below still have their own live one.
+    local remote2 = { user = MakeUser("u8", false), streamId = 8, isReadyForEvents = true, sendEvent = function() end }
+    mission._farms[remote2] = 1
+    local view2 = SGViews.decodeView(sg.transport:buildView({ connection = remote2, connectionId = "c78", userId = "u8", farmId = 1, actorState = "RESOLVED" }, nil, true).values)
+    T.ok("L2i a second connection gets its own session", view2 ~= nil and view2.commandSessionId ~= (ns7View and ns7View.commandSessionId))
+    sg:onConnectionClosed(remote2)
+    T.eq("L2j closing the connection withdraws the NS7-keyed session instead of leaking it", tostring(sg.commands.sessions[view2 and view2.commandSessionId]), "nil")
+    T.ok("L2k and the other connection's session is untouched", sg.commands.sessions[ns7View and ns7View.commandSessionId] ~= nil)
     -- Fallback publication ordering on the client side.
     local client = StockGuard.attach(setmetatable({ _server = false, _localFarm = 1, _farms = {}, missionDynamicInfo = { isMultiplayer = true }, missionInfo = {} }, Mission))
     local ch = client.mission.stockGuard

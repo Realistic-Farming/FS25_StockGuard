@@ -60,6 +60,26 @@ local function keyOf(connection)
 end
 TR.keyOf = keyOf
 
+--- THE ONE CONNECTION IDENTITY, for both routes.
+-- The selection map keys on the connection OBJECT (keyOf above). The command
+-- sessions cannot: their key is a string, it is compared against an actor rebuilt
+-- from a later command event, and it has to survive being carried in a session
+-- record. So sessions key on this string, and it is derived from the connection
+-- HERE and nowhere else.
+-- The bug this closes: NS-7 hands its producer a context whose connectionId is its
+-- own scoped serial, "c" plus a number (NetworkSyncScoped:_scopedConnectionId). The
+-- command session was minted under that, while every command event resolved the same
+-- player through the server's own actor, which carries tostring(connection.streamId).
+-- The two never matched, so on a listen host or a dedicated server with NS-7 present
+-- every client command was refused for the whole mission, and the disconnect withdraw
+-- missed the NS7-keyed session and leaked it. FALLBACK was unaffected because it used
+-- the streamId string on both sides, which is why this only showed on the NS7 route.
+-- The scoped serial stays NS-7's business: it never reaches a session key.
+function TR.connectionIdOf(connection)
+    if connection == nil then return TR.LOCAL end
+    return tostring(connection.streamId or tostring(connection))
+end
+
 -- ---------------------------------------------------------
 -- Selection per connection (server)
 -- ---------------------------------------------------------
@@ -94,7 +114,15 @@ end
 -- ---------------------------------------------------------
 function TR:buildView(context, previous, forceFull)
     if type(context) ~= "table" then return { state = "ERROR", reason = "CONTEXT" } end
-    local actor = { farmId = context.farmId, userId = context.userId, actorState = context.actorState, connectionId = context.connectionId }
+    -- The actor's connection identity is DERIVED from the connection object, never
+    -- taken from context.connectionId, so a producer context minted by another module
+    -- with its own connection naming (NS-7's scoped "c<serial>") cannot key a command
+    -- session under an id the command path will never reproduce. context.connectionId
+    -- is honoured only when there is no connection object to derive from, which is the
+    -- local host entry.
+    local connectionId = context.connection ~= nil and TR.connectionIdOf(context.connection)
+        or context.connectionId or TR.LOCAL
+    local actor = { farmId = context.farmId, userId = context.userId, actorState = context.actorState, connectionId = connectionId }
     if context.actorState == "WAITING" then return { state = "WAITING", reason = "ACTOR_WAITING" } end
     if context.actorState == "SPECTATOR" or context.actorState == "INVALID" then return { state = "DENIED", reason = "ACTOR_" .. tostring(context.actorState) } end
     local sel = self:selectionFor(context.connection)

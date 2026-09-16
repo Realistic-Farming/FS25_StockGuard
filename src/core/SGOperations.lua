@@ -210,17 +210,35 @@ local function newStock(self, carrier, ns, generation, knowledge, reason, stockI
     return stock
 end
 
+--- Bound the retired table, counting historical stocks SEPARATELY.
+-- A historical stock (carrier absent or mismatched at the last load) carries the
+-- dataRevision it was SAVED with, so it is always older than every ordinary
+-- retirement made this session. Sharing one budget meant the first 256 retirements
+-- of a long session evicted every historical stock before touching an ordinary one,
+-- which is exactly the data loss B10 was opened for, moved to a longer session.
+-- Each set now gets its own budget and each is evicted oldest-first within itself.
 local function pruneRetired(self)
-    local n = 0
-    for _ in pairs(self.retiredStocks) do n = n + 1 end
-    while n > self.retiredLimit do
+    local ordinary, historical = 0, 0
+    for _, s in pairs(self.retiredStocks) do
+        if s.historical then historical = historical + 1 else ordinary = ordinary + 1 end
+    end
+
+    local function evictOldest(wantHistorical)
         local oldest, oldestRev = nil, nil
         for id, s in pairs(self.retiredStocks) do
-            if oldestRev == nil or SGValues.compareDecimal(s.dataRevision, oldestRev) < 0 then oldest, oldestRev = id, s.dataRevision end
+            if (s.historical == true) == wantHistorical then
+                if oldestRev == nil or SGValues.compareDecimal(s.dataRevision, oldestRev) < 0 then
+                    oldest, oldestRev = id, s.dataRevision
+                end
+            end
         end
+        if oldest == nil then return false end
         self.retiredStocks[oldest] = nil
-        n = n - 1
+        return true
     end
+
+    while ordinary > self.retiredLimit and evictOldest(false) do ordinary = ordinary - 1 end
+    while historical > self.retiredLimit and evictOldest(true) do historical = historical - 1 end
 end
 
 local function retireStock(self, stock, reason)
@@ -571,6 +589,12 @@ local function interpretDestination(self, context, kind, contributions, destinat
     for _, c in ipairs(contributions) do if c.conversionBasisId ~= nil then useTransform = true end end
     local results = {}
     local causes = {}
+    -- Which propertyId's transform last claimed each cause key. The cause map is per
+    -- STOCK while the loop below is per PROPERTY, so two causal producers on one stock
+    -- both write into it and the later pid in sorted order silently overwrote the
+    -- earlier one's transformed keys. Ownership is tracked so a genuine collision is
+    -- refused rather than decided by sort order.
+    local causeOwner = {}
     for _, c in ipairs(contributions) do unionCauses(causes, c.acceptedCauses) end
     if destinationBefore ~= nil then unionCauses(causes, destinationBefore.acceptedCauses) end
     local pids = {}
@@ -631,7 +655,22 @@ local function interpretDestination(self, context, kind, contributions, destinat
                     if okC and transformed == nil then
                         -- The owner keeps the floor as carried.
                     elseif okC and validCauseMap(transformed) then
-                        for key, acc in pairs(transformed) do causes[key] = { sequence = acc.sequence, fingerprint = acc.fingerprint } end
+                        for key, acc in pairs(transformed) do
+                            local owner = causeOwner[key]
+                            local prev = causes[key]
+                            if owner ~= nil and owner ~= pid and prev ~= nil
+                                and (prev.sequence ~= acc.sequence or prev.fingerprint ~= acc.fingerprint) then
+                                -- Two causal producers claim the same stream key with
+                                -- DIFFERENT state. Neither claim is preferable, and
+                                -- letting the later pid win is deciding it on sort
+                                -- order, so the second one is refused instead.
+                                results[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId,
+                                    "CAUSAL_CONFLICT:" .. tostring(owner))
+                            else
+                                causes[key] = { sequence = acc.sequence, fingerprint = acc.fingerprint }
+                                causeOwner[key] = pid
+                            end
+                        end
                     else
                         results[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "CAUSAL_TRANSFORM_FAILED")
                     end
@@ -675,7 +714,9 @@ end
 function O:_settle(handle, st, report)
     local before = st.before
     local afterRaw = type(report.participantsAfter) == "table" and report.participantsAfter or {}
-    local allocations = type(report.allocations) == "table" and report.allocations or {}
+    -- COPIED, because step 2 stamps an allocationRef onto each entry. Writing that
+    -- into the caller's own table mutates the adapter's allocations behind its back.
+    local allocations = type(report.allocations) == "table" and copy(report.allocations) or {}
     local created = type(report.createdBindings) == "table" and report.createdBindings or {}
     local replacements = type(report.replacements) == "table" and report.replacements or {}
     local function fail(why)
@@ -738,7 +779,14 @@ function O:_settle(handle, st, report)
     end
 
     -- 4. No allocations: a proved no-op, or an unexplained change reconciled.
-    if #allocations == 0 and next(moves) == nil then
+    -- A NON-EMPTY CREATED SET IS WORK. Step 2 only checks the other direction (an
+    -- allocation must name a created binding), so a report that creates a birth
+    -- binding and allocates nothing used to take this exit and return NO_OP, leaving
+    -- the adapter holding a natively created carrier StockGuard never registered and
+    -- raising no error at all. A birth slot legitimately creates a carrier with no
+    -- source allocation, so this falls through to the install in step 8 rather than
+    -- refusing the report.
+    if #allocations == 0 and next(moves) == nil and next(created) == nil then
         local changed = false
         for carrierId, ns in pairs(after) do
             local b = before.carriers[carrierId]
@@ -847,7 +895,12 @@ function O:_settle(handle, st, report)
     for _, destKey in ipairs(order) do
         local c = candidates[destKey]
         local b = c.carrierId and before.carriers[c.carrierId] or nil
-        local state = c.carrierId and after[c.carrierId] or createdStates[c.slotId]
+        -- A candidate with neither a carrier nor a slot would index createdStates with
+        -- nil and throw into the settle pcall, reporting SETTLE_ERROR for what is
+        -- really a malformed candidate. Steps 5 and 6 make it unreachable today; a
+        -- truthful refusal is still better than an exception.
+        local state = c.carrierId and after[c.carrierId] or (c.slotId ~= nil and createdStates[c.slotId] or nil)
+        if state == nil then return fail("CANDIDATE_STATE_MISSING:" .. tostring(destKey)) end
         c.after = state
         c.amount = state.amount
         c.unit = state.unit
