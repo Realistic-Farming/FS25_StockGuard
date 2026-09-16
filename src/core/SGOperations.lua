@@ -655,18 +655,45 @@ local function interpretDestination(self, context, kind, contributions, destinat
                     if okC and transformed == nil then
                         -- The owner keeps the floor as carried.
                     elseif okC and validCauseMap(transformed) then
-                        for key, acc in pairs(transformed) do
+                        -- TWO PASSES, AND SORTED KEYS, BOTH ON PURPOSE.
+                        --
+                        -- A conflict refuses this producer's WHOLE transform, so the
+                        -- first pass only looks. Applying keys as we went and
+                        -- stopping at the conflict would let every key visited
+                        -- before it land while the producer's own property is
+                        -- unavailable, which is a half-accepted causal claim: part
+                        -- of an interpretation we just said we could not trust.
+                        --
+                        -- And `pairs` has no defined order, so WHICH keys landed
+                        -- would differ between two runs over identical input. Sorted
+                        -- keys make both the refusal and the accepted set the same
+                        -- every time, which also means the reason names the same
+                        -- owner every time when more than one key conflicts.
+                        local keys = {}
+                        for key in pairs(transformed) do keys[#keys + 1] = key end
+                        table.sort(keys)
+                        local conflictWith = nil
+                        for _, key in ipairs(keys) do
                             local owner = causeOwner[key]
                             local prev = causes[key]
+                            local acc = transformed[key]
                             if owner ~= nil and owner ~= pid and prev ~= nil
                                 and (prev.sequence ~= acc.sequence or prev.fingerprint ~= acc.fingerprint) then
                                 -- Two causal producers claim the same stream key with
                                 -- DIFFERENT state. Neither claim is preferable, and
                                 -- letting the later pid win is deciding it on sort
-                                -- order, so the second one is refused instead.
-                                results[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId,
-                                    "CAUSAL_CONFLICT:" .. tostring(owner))
-                            else
+                                -- order, so the second one is refused instead. An
+                                -- IDENTICAL claim is not a conflict and passes.
+                                conflictWith = owner
+                                break
+                            end
+                        end
+                        if conflictWith ~= nil then
+                            results[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId,
+                                "CAUSAL_CONFLICT:" .. tostring(conflictWith))
+                        else
+                            for _, key in ipairs(keys) do
+                                local acc = transformed[key]
                                 causes[key] = { sequence = acc.sequence, fingerprint = acc.fingerprint }
                                 causeOwner[key] = pid
                             end
@@ -994,6 +1021,24 @@ function O:_settle(handle, st, report)
     end
 
     -- 8. Install once: no external callback from here to the end.
+    --
+    -- A CREATED BINDING WITH NO ALLOCATION REGISTERS A CARRIER AND MINTS NO STOCK,
+    -- and that is the intended answer rather than an oversight. Candidates are
+    -- built only from allocations (step 6), so a birth slot that allocates nothing
+    -- produces no candidate, step 7 runs over an empty order, and the carrier lands
+    -- here holding its observed `native` state with `stockId` nil.
+    --
+    -- Minting a stock anyway was the other option and it is the wrong one. A stock
+    -- is a provenance record: it carries properties an owner interpreted and causes
+    -- an owner accepted. With no allocation there is no contribution, no source and
+    -- no interpretation callback ran, so the record would assert a history nobody
+    -- supplied. This codebase refuses to invent records everywhere else and it
+    -- refuses here too.
+    --
+    -- Nothing is lost by that choice: the carrier IS registered, its amount and
+    -- materialRef are known through `carrier.native`, and pendingOf below hands it
+    -- to the empty-carrier machinery. The first real operation on it reconciles a
+    -- stock into place. Unknown is a state, not an absence.
     local slotCarrier = {}
     for slotId, cb in pairs(created) do
         local carrierId = self:carrierIdOf(cb.binding)

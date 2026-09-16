@@ -773,3 +773,417 @@ do
     save9:stageLoad(SGValues.decode(SGValues.encode(env8)), {})
     T.eq("H10b the collection restores its tokens and target onto the empty carrier", (function() local r = ops9:readCarrierPending(pl8, key8) return r.emptyEpoch .. "/" .. r.selectionRevision .. "/" .. tostring(r.pendingTarget and r.pendingTarget.recipe) end)(), "1/2/R9")
 end
+
+-- (J) The three cases Bob ranked on the #4 re-check, plus the MINOR each one
+-- decides. Ordered as he ranked them: smallest fixture and highest value first.
+do
+    local function adapterSpec()
+        return { version = 1, carrierKinds = { "silo" }, resolveCarrier = function() end,
+                 readNativeState = function() end, enumerateCarriers = function() return {} end,
+                 hasAccess = function() return true end }
+    end
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    local function bind(owner, comp)
+        return { carrierKey = { adapterId = "sg2", nativeOwnerKey = owner, componentKey = comp },
+                 adapterVersion = 1, profileId = "silo", profileVersion = 1,
+                 quantityBasisKey = owner .. "/" .. comp }
+    end
+
+    -- ── J1: CAUSAL_CONFLICT ──────────────────────────────────────────────────
+    -- Two causal producers on one destination both claim the same stream key with
+    -- DIFFERENT state. Neither claim is preferable and letting the later pid win
+    -- would decide it on sort order, so the second is refused.
+    --
+    -- This also pins the MINOR: the refused producer must land NONE of its cause
+    -- keys. Before the repair the key loop continued past the conflict, so the
+    -- producer's OTHER keys still wrote into causes while its own property was
+    -- unavailable, which is half-accepting an interpretation we just said we could
+    -- not trust. Worse, `pairs` has no defined order, so WHICH keys survived
+    -- differed between runs on identical input.
+    local reg = SGRegistry.new("j")
+    local o = SGOperations.new(reg, "j")
+    local ad = reg:registerCarrierAdapter("sg2", adapterSpec())
+
+    -- Two causal producers. Names chosen so "aa" sorts before "zz": the
+    -- interpretation loop walks pids in sorted order, so "aa" claims first and
+    -- "zz" is the one that must be refused.
+    local function causalSpec(pid, producerId, claims)
+        return { schemaVersion = 1, producerId = producerId, residency = "STORED",
+            validate = function() return true end,
+            combine = function()
+                return { propertyId = pid, schemaVersion = 1, producerId = producerId,
+                         propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } }
+            end,
+            transform = function() return nil end,
+            disclosure = function(_, r) return r end,
+            validateCause = function() return true end,
+            transformCausalState = function() return claims end,
+            compactCausalState = function() end }
+    end
+
+    -- "aa" claims S1 at sequence 5. "zz" claims the SAME key at sequence 9, and
+    -- also claims a second key S2 that nobody else wants.
+    local pAA = reg:registerProperty("aa.stream", causalSpec("aa.stream", "aa", {
+        ["S1/1"] = { sequence = 5, fingerprint = "fpA" },
+    }))
+    local pZZ = reg:registerProperty("zz.stream", causalSpec("zz.stream", "zz", {
+        ["S1/1"] = { sequence = 9, fingerprint = "fpZ" },
+        ["S2/1"] = { sequence = 3, fingerprint = "fpS2" },
+    }))
+
+    local src = o:bindCarrier(ad, bind("silo", "a"), { materialRef = wheat, amount = 100, unit = "l" })
+    local srcStock = o.stocks[src.stockId]
+    local rec = function(pid, producerId)
+        return { propertyId = pid, schemaVersion = 1, producerId = producerId, propertyRevision = 0,
+                 knowledge = "KNOWN", payload = { p = 1 } }
+    end
+    o:publishProperties(pAA, { { stockRef = o:stockRef(srcStock), expectedPropertyRevision = 0,
+        record = rec("aa.stream", "aa") } }, { sourceStreamId = "S0", epoch = 1, sequence = 1, fingerprint = "f0" })
+    -- Revision 0 for BOTH: these are two DIFFERENT properties on the same stock,
+    -- so each carries its own property revision. Using 1 for the second reads as a
+    -- stale publish, it is refused, and the property never reaches the stock at
+    -- all, which silently removes it from the destination this case is about.
+    o:publishProperties(pZZ, { { stockRef = o:stockRef(srcStock), expectedPropertyRevision = 0,
+        record = rec("zz.stream", "zz") } }, { sourceStreamId = "S0", epoch = 1, sequence = 2, fingerprint = "f1" })
+
+    local dst = o:bindCarrier(ad, bind("cart", "1"), { amount = 0, unit = "l" })
+    local cap = o:captureOperation(ad, "TRANSFER", {
+        { carrierId = src.carrierId, expectedStockRef = o:stockRef(srcStock) },
+        { carrierId = dst.carrierId } })
+    local outcome = o:settleOperation(cap.handle, {
+        participantsAfter = { [src.carrierId] = { amount = 0, unit = "l" },
+                              [dst.carrierId] = { materialRef = wheat, amount = 100, unit = "l" } },
+        allocations = { { source = { carrierId = src.carrierId }, destination = { carrierId = dst.carrierId },
+                          sourceAmount = 100, sourceUnit = "l", destinationAmount = 100, destinationUnit = "l" } },
+    })
+    T.eq("J1 the settle commits despite the causal conflict", outcome, "COMMITTED")
+
+    local dstStock = o.stocks[o.carriers[dst.carrierId].stockId]
+    T.eq("J1b the FIRST claimant's property survives", dstStock.properties["aa.stream"].knowledge, "KNOWN")
+    T.eq("J1c the LATER claimant's property is unavailable", dstStock.properties["zz.stream"].knowledge, "UNAVAILABLE")
+    T.eq("J1d and the reason names the producer it conflicted with",
+         dstStock.properties["zz.stream"].reason, "CAUSAL_CONFLICT:aa.stream")
+    T.eq("J1e the accepted cause for the contested key is the FIRST claimant's",
+         dstStock.acceptedCauses["S1/1"].sequence, 5)
+    T.eq("J1f and its fingerprint too, not the later one's",
+         dstStock.acceptedCauses["S1/1"].fingerprint, "fpA")
+
+    -- THE MINOR. The refused producer's OTHER key must not land either. Before the
+    -- repair the loop continued and S2 was written while zz.stream was refused.
+    T.eq("J1g THE REFUSED PRODUCER LANDS NONE OF ITS KEYS, not just the contested one",
+         dstStock.acceptedCauses["S2/1"], nil)
+end
+
+do
+    -- ── J1h: an IDENTICAL claim is not a conflict ────────────────────────────
+    -- Two producers may legitimately agree about the same stream. Refusing that
+    -- would make agreement indistinguishable from disagreement.
+    local reg = SGRegistry.new("j2")
+    local o = SGOperations.new(reg, "j2")
+    local ad = reg:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" },
+        resolveCarrier = function() end, readNativeState = function() end,
+        enumerateCarriers = function() return {} end, hasAccess = function() return true end })
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    local function bind(owner, comp)
+        return { carrierKey = { adapterId = "sg2", nativeOwnerKey = owner, componentKey = comp },
+                 adapterVersion = 1, profileId = "silo", profileVersion = 1,
+                 quantityBasisKey = owner .. "/" .. comp }
+    end
+    local same = { ["S1/1"] = { sequence = 7, fingerprint = "identical" } }
+    local function spec(pid, producerId)
+        return { schemaVersion = 1, producerId = producerId, residency = "STORED",
+            validate = function() return true end,
+            combine = function() return { propertyId = pid, schemaVersion = 1, producerId = producerId,
+                propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } } end,
+            transform = function() return nil end, disclosure = function(_, r) return r end,
+            validateCause = function() return true end,
+            transformCausalState = function() return same end,
+            compactCausalState = function() end }
+    end
+    local pA = reg:registerProperty("aa.stream", spec("aa.stream", "aa"))
+    local pZ = reg:registerProperty("zz.stream", spec("zz.stream", "zz"))
+    local src = o:bindCarrier(ad, bind("silo", "a"), { materialRef = wheat, amount = 100, unit = "l" })
+    local s = o.stocks[src.stockId]
+    local r = function(pid, pr) return { propertyId = pid, schemaVersion = 1, producerId = pr,
+        propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } } end
+    o:publishProperties(pA, { { stockRef = o:stockRef(s), expectedPropertyRevision = 0, record = r("aa.stream", "aa") } },
+        { sourceStreamId = "S0", epoch = 1, sequence = 1, fingerprint = "f0" })
+    o:publishProperties(pZ, { { stockRef = o:stockRef(s), expectedPropertyRevision = 0, record = r("zz.stream", "zz") } },
+        { sourceStreamId = "S0", epoch = 1, sequence = 2, fingerprint = "f1" })
+    local dst = o:bindCarrier(ad, bind("cart", "1"), { amount = 0, unit = "l" })
+    local cap = o:captureOperation(ad, "TRANSFER", {
+        { carrierId = src.carrierId, expectedStockRef = o:stockRef(s) }, { carrierId = dst.carrierId } })
+    o:settleOperation(cap.handle, {
+        participantsAfter = { [src.carrierId] = { amount = 0, unit = "l" },
+                              [dst.carrierId] = { materialRef = wheat, amount = 100, unit = "l" } },
+        allocations = { { source = { carrierId = src.carrierId }, destination = { carrierId = dst.carrierId },
+            sourceAmount = 100, sourceUnit = "l", destinationAmount = 100, destinationUnit = "l" } } })
+    local ds = o.stocks[o.carriers[dst.carrierId].stockId]
+    T.eq("J1h an identical claim from a second producer is NOT a conflict",
+         ds.properties["zz.stream"].knowledge, "KNOWN")
+    T.eq("J1i and the first producer is unaffected", ds.properties["aa.stream"].knowledge, "KNOWN")
+    T.eq("J1j the agreed cause is recorded once", ds.acceptedCauses["S1/1"].sequence, 7)
+end
+
+do
+    -- ── J2: the no-allocation created-set fall-through ───────────────────────
+    -- A birth slot legitimately creates a carrier with no source allocation. That
+    -- used to take the no-op exit and return NO_OP, leaving the adapter holding a
+    -- natively created carrier StockGuard never registered.
+    --
+    -- THE DECISION, which was Bob's MINOR: the carrier is registered and NO STOCK
+    -- is minted. A stock is a provenance record carrying properties an owner
+    -- interpreted and causes an owner accepted; with no allocation there is no
+    -- contribution, no source and no interpretation callback, so minting one would
+    -- assert a history nobody supplied. The amount is not lost, it is on the
+    -- carrier's own native state.
+    local reg = SGRegistry.new("j3")
+    local o = SGOperations.new(reg, "j3")
+    local ad = reg:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" },
+        resolveCarrier = function() end, readNativeState = function() end,
+        enumerateCarriers = function() return {} end, hasAccess = function() return true end })
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    local binding = { carrierKey = { adapterId = "sg2", nativeOwnerKey = "bale", componentKey = "1" },
+        adapterVersion = 1, profileId = "silo", profileVersion = 1, quantityBasisKey = "bale/1" }
+
+    -- The slot has to be a captured PARTICIPANT: settle refuses a created binding
+    -- whose slot was not in the capture (before.slots), which is what stops an
+    -- adapter inventing a carrier after the fact.
+    local cap = o:captureOperation(ad, "BIRTH", {
+        { slotId = "slot1", nativeCreatorKey = "baler/chamber" } })
+    T.ok("J2pre the birth capture opened", cap ~= nil)
+    local outcome, why = o:settleOperation(cap.handle, {
+        participantsAfter = {},
+        allocations = {},
+        createdBindings = { ["slot1"] = { binding = binding, nativeCreatorKey = "baler/chamber",
+            nativeState = { materialRef = wheat, amount = 240, unit = "l" } } },
+    })
+    T.eq("J2 a created binding with no allocation COMMITS rather than reporting NO_OP", outcome, "COMMITTED")
+    T.eq("J2b and it is not the unexplained-change path", why, nil)
+
+    local carrierId = o:carrierIdOf(binding)
+    local carrier = o.carriers[carrierId]
+    -- Read through nil rather than indexing it. If the fall-through regresses to
+    -- NO_OP the carrier is never registered, and a bare carrier.native.amount
+    -- would throw and abort the whole FILE, taking every later case with it and
+    -- hiding which rule actually broke. A mutation should fail by name.
+    T.ok("J2c the carrier is registered", carrier ~= nil)
+    T.eq("J2d its observed amount is on the carrier's native state",
+         carrier and carrier.native and carrier.native.amount or nil, 240)
+    T.eq("J2e THE DECISION: no stock is minted, because nothing interpreted it",
+         carrier and carrier.stockId or nil, nil)
+end
+
+do
+    -- ── J3: pruneRetired, historical against ordinary ────────────────────────
+    -- Separate budgets per set, oldest first within each. The absence of this case
+    -- let B10 regress once already.
+    local reg = SGRegistry.new("j4")
+    local o = SGOperations.new(reg, "j4")
+    local ad = reg:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" },
+        resolveCarrier = function() end, readNativeState = function() end,
+        enumerateCarriers = function() return {} end, hasAccess = function() return true end })
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    o.retiredLimit = 2
+
+    -- One historical stock, which arrives through a save restore and must survive
+    -- an ordinary-side eviction storm. Its dataRevision is the oldest of all, so a
+    -- shared budget or a shared oldest-first sweep would take it FIRST.
+    o.retiredStocks["hist1"] = { stockId = "hist1", historical = true, dataRevision = "1" }
+
+    -- Retire more ordinary stocks than the limit, in order, so oldest-first is
+    -- observable by which ids survive.
+    local ids = {}
+    for i = 1, 5 do
+        local c = o:bindCarrier(ad, { carrierKey = { adapterId = "sg2", nativeOwnerKey = "s" .. i, componentKey = "a" },
+            adapterVersion = 1, profileId = "silo", profileVersion = 1, quantityBasisKey = "s" .. i .. "/a" },
+            { materialRef = wheat, amount = 10, unit = "l" })
+        ids[i] = c.stockId
+        o:withdrawCarrier(c.carrierId)
+    end
+
+    local ordinary, historical = 0, 0
+    for _, s in pairs(o.retiredStocks) do
+        if s.historical then historical = historical + 1 else ordinary = ordinary + 1 end
+    end
+    T.eq("J3 the ordinary set is pruned to its own budget", ordinary, 2)
+    T.eq("J3b THE HISTORICAL STOCK SURVIVES an ordinary eviction storm", historical, 1)
+    T.ok("J3c and it is still the same record", o.retiredStocks["hist1"] ~= nil)
+
+    -- Oldest first: the two most recently retired are the survivors.
+    T.eq("J3d the oldest ordinary retirement was evicted", o.retiredStocks[ids[1]], nil)
+    T.eq("J3e the second oldest too", o.retiredStocks[ids[2]], nil)
+    T.ok("J3f the two newest ordinary retirements survive",
+         o.retiredStocks[ids[4]] ~= nil and o.retiredStocks[ids[5]] ~= nil)
+
+    -- The historical budget is its own, so historical entries evict historical.
+    for i = 1, 4 do
+        o.retiredStocks["h" .. i] = { stockId = "h" .. i, historical = true, dataRevision = tostring(10 + i) }
+    end
+    local c = o:bindCarrier(ad, { carrierKey = { adapterId = "sg2", nativeOwnerKey = "trigger", componentKey = "a" },
+        adapterVersion = 1, profileId = "silo", profileVersion = 1, quantityBasisKey = "trigger/a" },
+        { materialRef = wheat, amount = 10, unit = "l" })
+    o:withdrawCarrier(c.carrierId)
+    local hist2 = 0
+    for _, s in pairs(o.retiredStocks) do if s.historical then hist2 = hist2 + 1 end end
+    T.eq("J3g the historical set is pruned to its OWN budget, not a shared one", hist2, 2)
+    T.eq("J3h and oldest-first took hist1, the oldest of them", o.retiredStocks["hist1"], nil)
+end
+
+do
+    -- ── J4: THE SORT ITSELF, which was the one part of the repair with no bar ──
+    --
+    -- Bob deleted table.sort(keys) outright, kept both passes, and the bench stayed
+    -- at 1105/0. J1g and J1h are both right and neither needs the sort, because
+    -- with ONE conflicting key the order cannot matter.
+    --
+    -- So this case uses TWO conflicting keys owned by two DIFFERENT prior
+    -- producers. Sorted order decides which conflict is found first, and the
+    -- refusal reason names that owner. Under `pairs` the reason could name either.
+    --
+    -- HOW THIS CASE DISCRIMINATES, and read both halves before touching the keys.
+    --
+    -- THE INVARIANT IS SIMPLE, AND IT IS NOT ABOUT HASHING. This bench runs on
+    -- fengari, whose pairs() over string keys is INSERTION ORDERED: a literal
+    -- {zebra, apple} traverses zebra then apple, {apple, zebra} traverses apple
+    -- then zebra, and assigning mm, bb, zz, aa in that order traverses mm, bb, zz,
+    -- aa. Verified directly, in both literal and assignment form, and in reverse.
+    --
+    -- So the only thing this case needs is that the literal below is NOT already
+    -- in sorted order, which is checkable by eye and survives a rename as long as
+    -- the later-sorting key stays first. That is why attempt two of this case
+    -- failed: the literal listed apple first, insertion order and sorted order
+    -- coincided, and deleting the sort changed nothing observable.
+    --
+    -- THE CEILING, which matters more and is why the sentence above is not the
+    -- whole story. Because fengari is insertion ordered, THIS BENCH CANNOT
+    -- REPRODUCE THE NONDETERMINISM THE REPAIR EXISTS TO FIX. In the shipped
+    -- runtime pairs order over string keys is hash dependent and genuinely
+    -- arbitrary between runs; here the pre-repair behaviour was not
+    -- nondeterministic at all, merely wrong in a fixed way.
+    --
+    -- So J4 proves the sort yields one SPECIFIC order. It does not, and no case on
+    -- this runtime can, prove the bench would have caught the original defect.
+    -- Do not read a green J4 as evidence that the nondeterminism is covered.
+    local reg = SGRegistry.new("j5")
+    local o = SGOperations.new(reg, "j5")
+    local ad = reg:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" },
+        resolveCarrier = function() end, readNativeState = function() end,
+        enumerateCarriers = function() return {} end, hasAccess = function() return true end })
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    local function bind(owner, comp)
+        return { carrierKey = { adapterId = "sg2", nativeOwnerKey = owner, componentKey = comp },
+                 adapterVersion = 1, profileId = "silo", profileVersion = 1,
+                 quantityBasisKey = owner .. "/" .. comp }
+    end
+    local function spec(pid, producerId, claims)
+        return { schemaVersion = 1, producerId = producerId, residency = "STORED",
+            validate = function() return true end,
+            combine = function() return { propertyId = pid, schemaVersion = 1, producerId = producerId,
+                propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } } end,
+            transform = function() return nil end, disclosure = function(_, r) return r end,
+            validateCause = function() return true end,
+            transformCausalState = function() return claims end,
+            compactCausalState = function() end }
+    end
+
+    -- "aa" owns the alphabetically FIRST contested key, "bb" owns the second.
+    -- "zz" sorts last, so it is the one refused, and it contests BOTH.
+    local pAA = reg:registerProperty("aa.p", spec("aa.p", "aa", { ["apple/1"] = { sequence = 5, fingerprint = "a" } }))
+    local pBB = reg:registerProperty("bb.p", spec("bb.p", "bb", { ["zebra/1"] = { sequence = 6, fingerprint = "b" } }))
+    local pZZ = reg:registerProperty("zz.p", spec("zz.p", "zz", {
+        -- ZEBRA IS WRITTEN FIRST ON PURPOSE. pairs follows insertion order for
+        -- this pair, so listing zebra first makes pairs yield it before apple,
+        -- the reverse of sorted order. Written apple-first the two coincide and
+        -- the delete-the-sort mutation survives; that was the second version of
+        -- this case and it proved nothing.
+        ["zebra/1"] = { sequence = 9, fingerprint = "zZ" },
+        ["apple/1"] = { sequence = 9, fingerprint = "zA" },
+    }))
+
+    local src = o:bindCarrier(ad, bind("silo", "a"), { materialRef = wheat, amount = 100, unit = "l" })
+    local s = o.stocks[src.stockId]
+    local function r(pid, pr) return { propertyId = pid, schemaVersion = 1, producerId = pr,
+        propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } } end
+    o:publishProperties(pAA, { { stockRef = o:stockRef(s), expectedPropertyRevision = 0, record = r("aa.p", "aa") } },
+        { sourceStreamId = "S0", epoch = 1, sequence = 1, fingerprint = "f0" })
+    o:publishProperties(pBB, { { stockRef = o:stockRef(s), expectedPropertyRevision = 0, record = r("bb.p", "bb") } },
+        { sourceStreamId = "S0", epoch = 1, sequence = 2, fingerprint = "f1" })
+    o:publishProperties(pZZ, { { stockRef = o:stockRef(s), expectedPropertyRevision = 0, record = r("zz.p", "zz") } },
+        { sourceStreamId = "S0", epoch = 1, sequence = 3, fingerprint = "f2" })
+
+    local dst = o:bindCarrier(ad, bind("cart", "1"), { amount = 0, unit = "l" })
+    local cap = o:captureOperation(ad, "TRANSFER", {
+        { carrierId = src.carrierId, expectedStockRef = o:stockRef(s) }, { carrierId = dst.carrierId } })
+    o:settleOperation(cap.handle, {
+        participantsAfter = { [src.carrierId] = { amount = 0, unit = "l" },
+                              [dst.carrierId] = { materialRef = wheat, amount = 100, unit = "l" } },
+        allocations = { { source = { carrierId = src.carrierId }, destination = { carrierId = dst.carrierId },
+            sourceAmount = 100, sourceUnit = "l", destinationAmount = 100, destinationUnit = "l" } } })
+
+    local ds = o.stocks[o.carriers[dst.carrierId].stockId]
+    T.eq("J4 the refused producer's reason names the owner of the SORTED-FIRST key",
+         ds.properties["zz.p"] and ds.properties["zz.p"].reason or nil, "CAUSAL_CONFLICT:aa.p")
+    local zzReason = ds.properties["zz.p"] and ds.properties["zz.p"].reason or nil
+    T.eq("J4b and it is NOT the owner of the later key, which pairs order could have picked",
+         (zzReason == "CAUSAL_CONFLICT:bb.p"), false)
+    T.eq("J4c both prior claimants keep their own properties",
+         (ds.properties["aa.p"] and ds.properties["aa.p"].knowledge or nil) .. "/" ..
+         (ds.properties["bb.p"] and ds.properties["bb.p"].knowledge or nil), "KNOWN/KNOWN")
+    T.eq("J4d both contested causes keep the FIRST claimant's state, not the refused one's",
+         (ds.acceptedCauses["apple/1"] and ds.acceptedCauses["apple/1"].fingerprint or nil) .. "/" ..
+         (ds.acceptedCauses["zebra/1"] and ds.acceptedCauses["zebra/1"].fingerprint or nil), "a/b")
+end
+
+do
+    -- ── J5: validCauseMap is the sort's ONLY precondition ────────────────────
+    -- table.sort over a mixed-type key array throws, and the sole reason it cannot
+    -- happen is that validCauseMap requires every key to be a string, three hundred
+    -- lines away from the sort. Relaxing that guard leaves the sort unprotected,
+    -- and a throw there is caught by settleOperation's pcall as SETTLE_ERROR, so
+    -- ONE producer returning a mixed key set would poison an entire settlement
+    -- rather than just its own transform. That is the opposite of what the
+    -- two-pass repair exists for.
+    local reg = SGRegistry.new("j6")
+    local o = SGOperations.new(reg, "j6")
+    local ad = reg:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" },
+        resolveCarrier = function() end, readNativeState = function() end,
+        enumerateCarriers = function() return {} end, hasAccess = function() return true end })
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    local function bind(owner, comp)
+        return { carrierKey = { adapterId = "sg2", nativeOwnerKey = owner, componentKey = comp },
+                 adapterVersion = 1, profileId = "silo", profileVersion = 1,
+                 quantityBasisKey = owner .. "/" .. comp }
+    end
+    -- An integer stream id, which is exactly the shape someone adds later.
+    local bad = reg:registerProperty("bad.p", { schemaVersion = 1, producerId = "bad", residency = "STORED",
+        validate = function() return true end,
+        combine = function() return { propertyId = "bad.p", schemaVersion = 1, producerId = "bad",
+            propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } } end,
+        transform = function() return nil end, disclosure = function(_, r) return r end,
+        validateCause = function() return true end,
+        transformCausalState = function() return { [1] = { sequence = 5, fingerprint = "int" } } end,
+        compactCausalState = function() end })
+
+    local src = o:bindCarrier(ad, bind("silo", "a"), { materialRef = wheat, amount = 100, unit = "l" })
+    local s = o.stocks[src.stockId]
+    o:publishProperties(bad, { { stockRef = o:stockRef(s), expectedPropertyRevision = 0,
+        record = { propertyId = "bad.p", schemaVersion = 1, producerId = "bad", propertyRevision = 0,
+                   knowledge = "KNOWN", payload = { p = 1 } } } },
+        { sourceStreamId = "S0", epoch = 1, sequence = 1, fingerprint = "f0" })
+
+    local dst = o:bindCarrier(ad, bind("cart", "1"), { amount = 0, unit = "l" })
+    local cap = o:captureOperation(ad, "TRANSFER", {
+        { carrierId = src.carrierId, expectedStockRef = o:stockRef(s) }, { carrierId = dst.carrierId } })
+    local outcome = o:settleOperation(cap.handle, {
+        participantsAfter = { [src.carrierId] = { amount = 0, unit = "l" },
+                              [dst.carrierId] = { materialRef = wheat, amount = 100, unit = "l" } },
+        allocations = { { source = { carrierId = src.carrierId }, destination = { carrierId = dst.carrierId },
+            sourceAmount = 100, sourceUnit = "l", destinationAmount = 100, destinationUnit = "l" } } })
+
+    T.eq("J5 a non-string cause key does NOT poison the whole settlement", outcome, "COMMITTED")
+    local ds = o.stocks[o.carriers[dst.carrierId].stockId]
+    T.eq("J5b it is refused as a failed transform, contained to its own producer",
+         ds.properties["bad.p"] and ds.properties["bad.p"].reason or nil, "CAUSAL_TRANSFORM_FAILED")
+    T.eq("J5c and none of its keys were accepted", ds.acceptedCauses[1], nil)
+end
