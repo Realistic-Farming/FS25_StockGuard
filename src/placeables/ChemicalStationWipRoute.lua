@@ -9,7 +9,8 @@
 -- Its LoadingStation keeps aiSupportedFillTypes empty.
 --
 -- Every increment goes through an SG-4 permit (prepareMaterialAddition) with a
--- positive finite maxCarrierLitres. The wrapper on the station's own
+-- positive finite maxCarrierLitres; the provider call is protected, an
+-- error inside it is no permit. The wrapper on the station's own
 -- addFillLevelToFillableObject validates that permit against the actual
 -- fillable object, fill unit and fill type, caps the request to
 -- min(source available, receiver free capacity, requested, maxCarrierLitres)
@@ -60,6 +61,9 @@ function WipRoute.applyTriggerFlags(trigger)
     trigger.requiresActiveVehicle = true
     trigger.automaticFillingTimer = 0
     trigger.autoStart = false
+    -- A rebuild of the station's AI list (LoadingStation.lua:140-148) starts
+    -- from supportsAILoading; cleared here so a recreation cannot re-advertise.
+    trigger.supportsAILoading = false
     return true, nil
 end
 
@@ -71,7 +75,8 @@ function WipRoute.verifyTriggerFlags(trigger)
     if trigger.automaticFilling ~= false
         or trigger.requiresActiveVehicle ~= true
         or trigger.automaticFillingTimer ~= 0
-        or trigger.autoStart ~= false then
+        or trigger.autoStart ~= false
+        or trigger.supportsAILoading == true then
         return false, WipRoute.REASON_FLAGS_WRONG
     end
     return true, nil
@@ -222,13 +227,18 @@ function WipRoute.installPermitWrapper(station, permitProvider)
         local provider = self._sgWipPermitProvider
         local permit = nil
         if provider ~= nil then
-            permit = provider:prepareMaterialAddition({
+            -- Protected: this runs inside the native loading increment, and an
+            -- error in the provider must be no permit, never a broken trigger.
+            local okP, result = pcall(provider.prepareMaterialAddition, provider, {
                 station = self,
                 fillableObject = fillableObject,
                 fillUnitIndex = fillUnitIndex,
                 fillTypeIndex = fillTypeIndex,
                 requested = fillDelta,
             })
+            if okP then
+                permit = result
+            end
         end
         local ok, reason = WipRoute.validatePermit(permit, fillableObject, fillUnitIndex, fillTypeIndex)
         if not ok then

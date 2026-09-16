@@ -130,12 +130,14 @@ do
 
     T.eq("A18 restore into own role admitted", (Roles.admitRestore(slots, { role = "WATER", index = 3 })), true)
     T.eq("A19 restore with wrong index refused", select(2, Roles.admitRestore(slots, { role = "WATER", index = 1 })), "ROLE_MISMATCH")
+    T.eq("A19b restore without an index is refused, never admitted by role name alone", select(2, Roles.admitRestore(slots, { role = "WATER" })), "ROLE_MISMATCH")
     T.eq("A20 restore into unavailable role refused", select(2, Roles.admitRestore(slots, { role = "PRODUCT_A", index = 1 })), "STORAGE_LOAD_FAILED")
     T.eq("A21 restore into unknown role refused", select(2, Roles.admitRestore(slots, { role = "COMPOST" })), "UNKNOWN_ROLE")
 
     T.eq("A22 withdraw keeps the slot", Roles.withdrawSlot(slots, "WATER", "TEARDOWN"), true)
     T.eq("A23 withdrawn slot is UNAVAILABLE at its index", slots[3].state, "UNAVAILABLE")
     T.eq("A24 withdrawn slot drops the route", slots[3].route, nil)
+    T.eq("A24b withdrawn slot drops its fill type too", slots[3].fillType, nil)
 end
 
 -- (B) Unordered ingredient matching.
@@ -161,10 +163,25 @@ do
     local single = { ingredients = { { ingredientId = "SULFUR", kind = "PRODUCT" }, { ingredientId = "WATER", kind = "DILUENT" } } }
     local ok3, r3, b3 = Roles.matchIngredients(single, { PRODUCT_A = "SULFUR", PRODUCT_B = "SULFUR", WATER = "WATER" })
     T.eq("B14 single product across both bays matches", ok3, true)
-    T.eq("B15 single product takes A before B", b3.SULFUR, "PRODUCT_A")
+    T.eq("B15 single product held in both bays binds the ordered draw list, A first then B", type(b3.SULFUR) .. "/" .. b3.SULFUR[1] .. "/" .. b3.SULFUR[2] .. "/" .. #b3.SULFUR, "table/PRODUCT_A/PRODUCT_B/2")
+    T.eq("B15b drawOrder exposes the same order", table.concat(Roles.drawOrder(b3, "SULFUR"), ","), "PRODUCT_A,PRODUCT_B")
+    T.eq("B15c the dual-bay binding revalidates each role", (Roles.revalidateBindings(b3, { PRODUCT_A = "SULFUR", PRODUCT_B = "SULFUR", WATER = "WATER" })), true)
+    -- CORRECTED after Bob's re-check of #5. An ordered draw list is satisfied by ANY
+    -- ONE of its roles, not by all of them. Requiring all of them defeated the exact
+    -- case this binding exists for: with one product in both bays, draining A made the
+    -- nil bay read as a shortage and the draw stopped before it ever reached B.
+    T.eq("B15d draining the SECOND bay leaves the list satisfied by the first", (Roles.revalidateBindings(b3, { PRODUCT_A = "SULFUR", WATER = "WATER" })), true)
+    T.eq("B15d2 DRAINING THE LEADING BAY IS PROGRESS, NOT A SHORTAGE: the draw continues on B", (Roles.revalidateBindings(b3, { PRODUCT_B = "SULFUR", WATER = "WATER" })), true)
+    T.eq("B15d3 only when EVERY role of the list is drained is it a shortage", select(2, Roles.revalidateBindings(b3, { WATER = "WATER" })), "INGREDIENT_SHORTAGE")
+    T.eq("B15e swapping the second bay makes it incompatible", select(2, Roles.revalidateBindings(b3, { PRODUCT_A = "SULFUR", PRODUCT_B = "UREA", WATER = "WATER" })), "INGREDIENT_INCOMPATIBLE")
+    T.eq("B15e2 a role holding something else refuses even while another still holds", select(2, Roles.revalidateBindings(b3, { PRODUCT_A = "UREA", PRODUCT_B = "SULFUR", WATER = "WATER" })), "INGREDIENT_INCOMPATIBLE")
+    T.eq("B15e3 an unreadable bay refuses even while another still holds", select(2, Roles.revalidateBindings(b3, { PRODUCT_A = {}, PRODUCT_B = "SULFUR", WATER = "WATER" })), "SOURCE_UNAVAILABLE")
+    T.eq("B15e4 a single-role binding is unchanged: its one drained bay is still a shortage", select(2, Roles.revalidateBindings({ SULFUR = "PRODUCT_A" }, { WATER = "WATER" })), "INGREDIENT_SHORTAGE")
+    local ok3b, r3b, b3b = Roles.matchIngredients(single, { PRODUCT_A = "SULFUR", PRODUCT_B = "COPPER_HYDROXIDE", WATER = "WATER" })
+    T.eq("B15f a single product with another chemical in B binds A only", tostring(ok3b) .. "/" .. tostring(b3b.SULFUR) .. "/" .. table.concat(Roles.drawOrder(b3b, "SULFUR"), ","), "true/PRODUCT_A/PRODUCT_A")
     local ok4, r4, b4 = Roles.matchIngredients(single, { PRODUCT_B = "SULFUR", WATER = "WATER" })
     T.eq("B16 single product in B alone matches", ok4, true)
-    T.eq("B17 single product in B binds B", b4.SULFUR, "PRODUCT_B")
+    T.eq("B17 single product in B binds B", b4.SULFUR .. "/" .. table.concat(Roles.drawOrder(b4, "SULFUR"), ","), "PRODUCT_B/PRODUCT_B")
     T.eq("B18 one chemical does not become two partners", select(2, Roles.matchIngredients(pair, { PRODUCT_A = "SULFUR", WATER = "WATER" })), "INGREDIENT_SHORTAGE")
 
     T.eq("B19 empty definition invalid", select(2, Roles.matchIngredients({ ingredients = {} }, {})), "INVALID_DEFINITION")
@@ -283,9 +300,13 @@ do
     T.eq("E3 requiresActiveVehicle true", trigger.requiresActiveVehicle, true)
     T.eq("E4 timer reset", trigger.automaticFillingTimer, 0)
     T.eq("E5 autoStart false", trigger.autoStart, false)
+    T.eq("E5b supportsAILoading cleared so a station rebuild cannot re-advertise", trigger.supportsAILoading, false)
     T.eq("E6 verify passes after apply", (WipRoute.verifyTriggerFlags(trigger)), true)
     trigger.automaticFilling = true
     T.eq("E7 verify catches a recreated trigger", select(2, WipRoute.verifyTriggerFlags(trigger)), "TRIGGER_FLAGS_WRONG")
+    trigger.automaticFilling = false
+    trigger.supportsAILoading = true
+    T.eq("E7b verify catches a re-advertised AI approach", select(2, WipRoute.verifyTriggerFlags(trigger)), "TRIGGER_FLAGS_WRONG")
     T.eq("E8 missing trigger refused", select(2, WipRoute.applyTriggerFlags(nil)), "TRIGGER_MISSING")
 
     local station = { aiSupportedFillTypes = { [FT_RF] = true } }
@@ -381,6 +402,12 @@ do
     T.eq("G24 receiver without capacity getter: zero", station:addFillLevelToFillableObject(blind, 1, FT_RF, 100, nil, nil), 0)
     T.eq("G25 receiver reason", WipRoute.getLastReason(station), "RECEIVER_UNAVAILABLE")
 
+    -- A provider that throws inside the increment is no permit, and the trigger survives.
+    local before = #nativeCalls
+    sg4.prepareMaterialAddition = function() error("provider blew up") end
+    T.eq("G25b a throwing permit provider returns zero with no native call", station:addFillLevelToFillableObject(receiver, 1, FT_RF, 100, nil, nil) .. "/" .. (#nativeCalls - before), "0/0")
+    T.eq("G25c the reason is NO_PERMIT", WipRoute.getLastReason(station), "NO_PERMIT")
+    function sg4:prepareMaterialAddition(request) self.requests = self.requests + 1; self.lastRequest = request; return self.permit end
     -- Reinstall keeps the first captured native.
     local firstNative = station._sgWipNative
     T.eq("G26 second install ok", (WipRoute.installPermitWrapper(station, sg4)), true)

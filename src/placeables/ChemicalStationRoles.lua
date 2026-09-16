@@ -11,8 +11,9 @@
 -- Ingredient matching (brief, "physical operation closure"): PRODUCT_A and
 -- PRODUCT_B are physical slots, not first/second chemical identities. A pair
 -- recipe matches its two ingredients to whichever bay holds each, unordered.
--- A single-product recipe may be satisfied from A then B in fixed order.
--- Water stays the separate DILUENT role.
+-- A single-product recipe held in both bays binds the ordered draw list
+-- {PRODUCT_A, PRODUCT_B}: A is drawn first, then B; each bound role is
+-- revalidated on every increment. Water stays the separate DILUENT role.
 --
 -- No engine call is made at load. The physical binding (Storage.new/load,
 -- station registration) is the held facility Lua; this module only decides.
@@ -158,6 +159,7 @@ function Roles.withdrawSlot(slots, role, reason)
     slot.state = Roles.UNAVAILABLE
     slot.reason = reason or Roles.REASON_STORAGE_MISSING
     slot.storage = nil
+    slot.fillType = nil
     slot.route = nil
     return true
 end
@@ -204,7 +206,7 @@ function Roles.admitRestore(slots, payload)
         return false, Roles.REASON_UNKNOWN_ROLE
     end
     local slot = Roles.getSlot(slots, payload.role)
-    if payload.index ~= nil and payload.index ~= slot.index then
+    if payload.index ~= slot.index then
         return false, Roles.REASON_ROLE_MISMATCH
     end
     if slot.state ~= Roles.READY then
@@ -238,11 +240,12 @@ end
 -- definition.ingredients: array of { ingredientId = <canonical name>, kind = "PRODUCT" | "DILUENT" }
 -- bays: { PRODUCT_A = <canonical name or nil>, PRODUCT_B = ..., WATER = ... }
 --   A bay value of nil means empty; a non-string, non-nil value means unreadable.
--- Returns ok, reason, bindings where bindings maps ingredientId -> role.
--- Pair recipes match unordered (SULFUR in B and COPPER_HYDROXIDE in A is the
--- same pair as the reverse). A single product may sit in A or B, checked A then
--- B. Each bay serves at most one ingredient. Wrong, missing or unreadable
--- sources refuse before any debit.
+-- Returns ok, reason, bindings where bindings maps ingredientId -> role, or,
+-- for a single product held in both bays, -> the ordered draw list
+-- { "PRODUCT_A", "PRODUCT_B" } (A first, then B; one chemical, never two
+-- partners). Pair recipes match unordered (SULFUR in B and COPPER_HYDROXIDE in
+-- A is the same pair as the reverse). Each bay serves at most one ingredient.
+-- Wrong, missing or unreadable sources refuse before any debit.
 function Roles.matchIngredients(definition, bays)
     if type(definition) ~= "table" or type(definition.ingredients) ~= "table" or #definition.ingredients == 0 then
         return false, Roles.MATCH_INVALID_DEFINITION, nil
@@ -313,6 +316,11 @@ function Roles.matchIngredients(definition, bays)
         return false, Roles.MATCH_SHORTAGE, nil
     end
 
+    -- A single product present in both bays draws from both, A then B.
+    if #products == 1 and bays[Roles.PRODUCT_A] == products[1] and bays[Roles.PRODUCT_B] == products[1] then
+        bindings[products[1]] = { Roles.PRODUCT_A, Roles.PRODUCT_B }
+    end
+
     -- Diluent: WATER must actually be water. Any other content is incompatible.
     for _, id in ipairs(diluents) do
         if bays[Roles.WATER] == nil then
@@ -328,12 +336,13 @@ function Roles.matchIngredients(definition, bays)
 end
 
 --- Revalidate a frozen ingredient -> role binding against the current bays.
--- Every bound role must still hold exactly its bound ingredient. Returns ok, reason.
+-- Every bound role (each role of an ordered draw list) must still hold exactly
+-- its bound ingredient. Returns ok, reason.
 function Roles.revalidateBindings(bindings, bays)
     if type(bindings) ~= "table" or type(bays) ~= "table" then
         return false, Roles.MATCH_SOURCE_UNAVAILABLE
     end
-    for id, role in pairs(bindings) do
+    local function check(id, role)
         local v = bays[role]
         if v == nil then
             return false, Roles.MATCH_SHORTAGE
@@ -344,6 +353,61 @@ function Roles.revalidateBindings(bindings, bays)
         if v ~= id then
             return false, Roles.MATCH_INCOMPATIBLE
         end
+        return true
+    end
+    for id, role in pairs(bindings) do
+        if type(role) == "table" then
+            if #role == 0 then
+                return false, Roles.MATCH_SOURCE_UNAVAILABLE
+            end
+            -- AN ORDERED DRAW LIST IS SATISFIED BY ANY ONE OF ITS ROLES, NOT BY ALL.
+            -- Requiring every role to still hold the ingredient defeated the exact case
+            -- the dual-bay binding exists for (brief:160): with one product in bays A
+            -- and B, drawing A to empty made the nil bay read as MATCH_SHORTAGE and the
+            -- draw stopped before it ever reached B. Exhausting a LEADING role is
+            -- progress, not a shortage. So a drained role is skipped, a role still
+            -- holding the ingredient satisfies the binding, and only a role holding
+            -- something ELSE (or a bay that cannot be read at all) refuses.
+            local holding, hardWhy = false, nil
+            for _, r in ipairs(role) do
+                local v = bays[r]
+                if v == nil then
+                    -- Drained. The caller drops it from the head of the list.
+                elseif not isMaterialName(v) then
+                    hardWhy = hardWhy or Roles.MATCH_SOURCE_UNAVAILABLE
+                elseif v ~= id then
+                    hardWhy = hardWhy or Roles.MATCH_INCOMPATIBLE
+                else
+                    holding = true
+                end
+            end
+            if hardWhy ~= nil then
+                return false, hardWhy
+            end
+            if not holding then
+                -- Every role of the list is drained: now it really is a shortage.
+                return false, Roles.MATCH_SHORTAGE
+            end
+        else
+            local ok, why = check(id, role)
+            if not ok then
+                return false, why
+            end
+        end
     end
     return true, Roles.MATCH_OK
+end
+
+--- The ordered list of roles an ingredient is drawn from (a single role or
+-- the A-then-B draw list). Returns a fresh array.
+function Roles.drawOrder(bindings, ingredientId)
+    local role = type(bindings) == "table" and bindings[ingredientId] or nil
+    if type(role) == "table" then
+        local out = {}
+        for i, r in ipairs(role) do out[i] = r end
+        return out
+    elseif role ~= nil then
+        return { role }
+    end
+    return {}
 end
