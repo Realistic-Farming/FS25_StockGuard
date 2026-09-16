@@ -166,8 +166,17 @@ do
     T.eq("B15 single product held in both bays binds the ordered draw list, A first then B", type(b3.SULFUR) .. "/" .. b3.SULFUR[1] .. "/" .. b3.SULFUR[2] .. "/" .. #b3.SULFUR, "table/PRODUCT_A/PRODUCT_B/2")
     T.eq("B15b drawOrder exposes the same order", table.concat(Roles.drawOrder(b3, "SULFUR"), ","), "PRODUCT_A,PRODUCT_B")
     T.eq("B15c the dual-bay binding revalidates each role", (Roles.revalidateBindings(b3, { PRODUCT_A = "SULFUR", PRODUCT_B = "SULFUR", WATER = "WATER" })), true)
-    T.eq("B15d emptying the second bay makes the dual-bay binding a shortage", select(2, Roles.revalidateBindings(b3, { PRODUCT_A = "SULFUR", WATER = "WATER" })), "INGREDIENT_SHORTAGE")
+    -- CORRECTED after Bob's re-check of #5. An ordered draw list is satisfied by ANY
+    -- ONE of its roles, not by all of them. Requiring all of them defeated the exact
+    -- case this binding exists for: with one product in both bays, draining A made the
+    -- nil bay read as a shortage and the draw stopped before it ever reached B.
+    T.eq("B15d draining the SECOND bay leaves the list satisfied by the first", (Roles.revalidateBindings(b3, { PRODUCT_A = "SULFUR", WATER = "WATER" })), true)
+    T.eq("B15d2 DRAINING THE LEADING BAY IS PROGRESS, NOT A SHORTAGE: the draw continues on B", (Roles.revalidateBindings(b3, { PRODUCT_B = "SULFUR", WATER = "WATER" })), true)
+    T.eq("B15d3 only when EVERY role of the list is drained is it a shortage", select(2, Roles.revalidateBindings(b3, { WATER = "WATER" })), "INGREDIENT_SHORTAGE")
     T.eq("B15e swapping the second bay makes it incompatible", select(2, Roles.revalidateBindings(b3, { PRODUCT_A = "SULFUR", PRODUCT_B = "UREA", WATER = "WATER" })), "INGREDIENT_INCOMPATIBLE")
+    T.eq("B15e2 a role holding something else refuses even while another still holds", select(2, Roles.revalidateBindings(b3, { PRODUCT_A = "UREA", PRODUCT_B = "SULFUR", WATER = "WATER" })), "INGREDIENT_INCOMPATIBLE")
+    T.eq("B15e3 an unreadable bay refuses even while another still holds", select(2, Roles.revalidateBindings(b3, { PRODUCT_A = {}, PRODUCT_B = "SULFUR", WATER = "WATER" })), "SOURCE_UNAVAILABLE")
+    T.eq("B15e4 a single-role binding is unchanged: its one drained bay is still a shortage", select(2, Roles.revalidateBindings({ SULFUR = "PRODUCT_A" }, { WATER = "WATER" })), "INGREDIENT_SHORTAGE")
     local ok3b, r3b, b3b = Roles.matchIngredients(single, { PRODUCT_A = "SULFUR", PRODUCT_B = "COPPER_HYDROXIDE", WATER = "WATER" })
     T.eq("B15f a single product with another chemical in B binds A only", tostring(ok3b) .. "/" .. tostring(b3b.SULFUR) .. "/" .. table.concat(Roles.drawOrder(b3b, "SULFUR"), ","), "true/PRODUCT_A/PRODUCT_A")
     local ok4, r4, b4 = Roles.matchIngredients(single, { PRODUCT_B = "SULFUR", WATER = "WATER" })

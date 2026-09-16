@@ -360,11 +360,33 @@ function Roles.revalidateBindings(bindings, bays)
             if #role == 0 then
                 return false, Roles.MATCH_SOURCE_UNAVAILABLE
             end
+            -- AN ORDERED DRAW LIST IS SATISFIED BY ANY ONE OF ITS ROLES, NOT BY ALL.
+            -- Requiring every role to still hold the ingredient defeated the exact case
+            -- the dual-bay binding exists for (brief:160): with one product in bays A
+            -- and B, drawing A to empty made the nil bay read as MATCH_SHORTAGE and the
+            -- draw stopped before it ever reached B. Exhausting a LEADING role is
+            -- progress, not a shortage. So a drained role is skipped, a role still
+            -- holding the ingredient satisfies the binding, and only a role holding
+            -- something ELSE (or a bay that cannot be read at all) refuses.
+            local holding, hardWhy = false, nil
             for _, r in ipairs(role) do
-                local ok, why = check(id, r)
-                if not ok then
-                    return false, why
+                local v = bays[r]
+                if v == nil then
+                    -- Drained. The caller drops it from the head of the list.
+                elseif not isMaterialName(v) then
+                    hardWhy = hardWhy or Roles.MATCH_SOURCE_UNAVAILABLE
+                elseif v ~= id then
+                    hardWhy = hardWhy or Roles.MATCH_INCOMPATIBLE
+                else
+                    holding = true
                 end
+            end
+            if hardWhy ~= nil then
+                return false, hardWhy
+            end
+            if not holding then
+                -- Every role of the list is drained: now it really is a shortage.
+                return false, Roles.MATCH_SHORTAGE
             end
         else
             local ok, why = check(id, role)
