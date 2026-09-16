@@ -1041,22 +1041,30 @@ do
     -- producers. Sorted order decides which conflict is found first, and the
     -- refusal reason names that owner. Under `pairs` the reason could name either.
     --
-    -- HOW THIS CASE DISCRIMINATES, and read this before touching the key names.
+    -- HOW THIS CASE DISCRIMINATES, and read both halves before touching the keys.
     --
-    -- Lua's pairs order over a fixed key set is deterministic within a run but is
-    -- NOT sorted order. For MOST key pairs it happens to coincide with sorted
-    -- order, and against those the delete-the-sort mutation SURVIVES and this case
-    -- proves nothing. The first version of it used "AAA/1" and "ZZZ/1" and did
-    -- exactly that.
+    -- THE INVARIANT IS SIMPLE, AND IT IS NOT ABOUT HASHING. This bench runs on
+    -- fengari, whose pairs() over string keys is INSERTION ORDERED: a literal
+    -- {zebra, apple} traverses zebra then apple, {apple, zebra} traverses apple
+    -- then zebra, and assigning mm, bb, zz, aa in that order traverses mm, bb, zz,
+    -- aa. Verified directly, in both literal and assignment form, and in reverse.
     --
-    -- "apple/1" and "zebra/1" are chosen because pairs yields zebra FIRST here,
-    -- the reverse of sorted order, so removing the sort names bb.p instead of
-    -- aa.p and J4 fails. That was established by probing pairs order over a dozen
-    -- candidate pairs, not by reasoning about it.
+    -- So the only thing this case needs is that the literal below is NOT already
+    -- in sorted order, which is checkable by eye and survives a rename as long as
+    -- the later-sorting key stays first. That is why attempt two of this case
+    -- failed: the literal listed apple first, insertion order and sorted order
+    -- coincided, and deleting the sort changed nothing observable.
     --
-    -- SO: if these key names ever change, re-run the delete-the-sort mutation and
-    -- confirm it still dies. A key set that hashes into sorted order turns this
-    -- case back into decoration.
+    -- THE CEILING, which matters more and is why the sentence above is not the
+    -- whole story. Because fengari is insertion ordered, THIS BENCH CANNOT
+    -- REPRODUCE THE NONDETERMINISM THE REPAIR EXISTS TO FIX. In the shipped
+    -- runtime pairs order over string keys is hash dependent and genuinely
+    -- arbitrary between runs; here the pre-repair behaviour was not
+    -- nondeterministic at all, merely wrong in a fixed way.
+    --
+    -- So J4 proves the sort yields one SPECIFIC order. It does not, and no case on
+    -- this runtime can, prove the bench would have caught the original defect.
+    -- Do not read a green J4 as evidence that the nondeterminism is covered.
     local reg = SGRegistry.new("j5")
     local o = SGOperations.new(reg, "j5")
     local ad = reg:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" },
