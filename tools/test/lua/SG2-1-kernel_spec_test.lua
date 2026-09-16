@@ -317,15 +317,24 @@ end
 
 do
     local saved = g_server
+    local savedMission = g_currentMission
+    -- A PERMISSIVE access handler, deliberately installed. Without one, hasAccess
+    -- refuses for the handler's own reasons and D22 below passes whether the
+    -- server gate exists or not: the fixture cannot reach the branch it names.
+    -- Mutation M22 survived on exactly that until this line was added.
+    g_currentMission = { accessHandler = { canFarmAccess = function() return true end } }
     local st = { fillLevels = { [1] = 5 }, getUniqueId = function() return "s" end }
     local spec = NA.storageAdapterSpec(function() return { st } end)
     T.eq("D18 the server enumerates", #spec.enumerateCarriers(), 1)
+    T.eq("D18b and grants access while the handler says yes", spec.hasAccess(1, st), true)
     g_server = nil
     T.eq("D19 a client enumerates nothing", #spec.enumerateCarriers(), 0)
     T.eq("D20 a client resolves nothing", spec.resolveCarrier({ carrierKey = { nativeOwnerKey = "s" } }), nil)
     T.eq("D21 and reads no native state", spec.readNativeState(st), nil)
-    T.eq("D22 access is refused on a client", spec.hasAccess(1, st), false)
+    T.eq("D22 access is refused on a client EVEN THOUGH the handler would grant it",
+         spec.hasAccess(1, st), false)
     g_server = saved
+    g_currentMission = savedMission
 end
 
 do
@@ -337,4 +346,125 @@ do
     g_currentMission = { accessHandler = { canFarmAccess = function() return true end } }
     T.eq("D24 and a working handler is honoured", spec.hasAccess(1, {}), true)
     g_currentMission = saved
+end
+
+-- ── E: rules nothing checked until a mutation said so ───────────────────────
+-- Every case below exists because a mutation SURVIVED the suite above. The
+-- suite was green at 86 assertions before any of these were written, and green
+-- was not evidence: six rules these modules claim in their own header comments
+-- were unpinned, including the one the Storage bracket exists for. Each block
+-- names the mutation it kills.
+
+do
+    -- M5. The wrapper must forward the native return EXACTLY, count included.
+    -- addFillUnitFillLevel returns a single value today, so collapsing the list
+    -- looks harmless. It is the same defect class as WorkArea.lua:183, where a
+    -- second return IS read and a wrapper returning fewer values throws inside
+    -- the per-frame loop with no pcall around it.
+    local v = { spec_fillUnit = { fillUnits = { [1] = { fillLevel = 0, capacity = 500 } } } }
+    v.addFillUnitFillLevel = function() return 40, "reason", nil end
+    T.eq("E1 the observer installs", (FO.install(v, function() end)), true)
+    local a, b = v:addFillUnitFillLevel(1, 1, 40, 2)
+    T.eq("E2 the first return survives the wrapper", a, 40)
+    T.eq("E3 and so does the second", b, "reason")
+    T.eq("E4 and a TRAILING NIL is still a return, so the count is preserved",
+         select("#", v:addFillUnitFillLevel(1, 1, 40, 2)), 3)
+end
+
+do
+    -- M7. A setFillLevel that changes nothing is not a change. Without the
+    -- before-equals-after skip the bracket invents a movement on every no-op
+    -- write, and the record then settles quantities that never moved. The
+    -- native function early-returns on an unchanged value, so the bracket sees
+    -- the call and must decide for itself that nothing happened.
+    local S = newStorageClass()
+    local seen = {}
+    SB.install(S, function() seen[#seen + 1] = true end)
+    local st = S.new({ [1] = 100 })
+    st:setFillLevel(100, 1)
+    T.eq("E5 writing the level it already holds reports nothing", #seen, 0)
+    st:setFillLevel(101, 1)
+    T.eq("E6 and the twin proves the fixture reaches the bracket at all", #seen, 1)
+    SB.uninstall(S)
+end
+
+do
+    -- M8. THE CENTRAL CLAIM OF THIS BRACKET, and it was unchecked. The clamp to
+    -- capacity lives inside the native function, so the requested level is not
+    -- what landed. Reading the level back out of fillLevels is the entire reason
+    -- this is a bracket rather than a listener on the request. B3 and B4 above
+    -- pass either way because their request happens to fit under the capacity.
+    local S = newStorageClass()
+    local seen = {}
+    SB.install(S, function(_st, _ft, before, after) seen[#seen + 1] = { before = before, after = after } end)
+    local st = S.new({ [1] = 100 }, 1000)
+    st:setFillLevel(5000, 1)
+    T.eq("E7 one change is observed", #seen, 1)
+    T.eq("E8 the level before is the real one", seen[1].before, 100)
+    T.eq("E9 and the level AFTER is what the clamp left", seen[1].after, 1000)
+    T.ok("E10 which is emphatically not what was requested", seen[1].after ~= 5000)
+    SB.uninstall(S)
+end
+
+do
+    -- M16 and M25. A closed frame accepts nothing further.
+    -- SAID PLAINLY: the public API cannot produce a closed frame as the CURRENT
+    -- frame, because close pops what it closes and unwinds what sits above it.
+    -- This state is therefore built directly. That means these two assertions
+    -- prove the guard holds, NOT that the situation arises in play. The guard is
+    -- defence in depth against a future caller that reaches into the stack, and
+    -- is worth keeping on those terms rather than on invented ones.
+    local stack = C.new()
+    local frame = C.open(stack, { id = "x" }, "PRIMITIVE")
+    T.eq("E11 a live frame accepts observations", C.observe(stack, { n = 1 }), true)
+    frame.closed = true
+    T.eq("E12 a closed frame refuses them", C.observe(stack, { n = 2 }), false)
+    T.eq("E13 and refuses published outputs too", C.publish(stack, { n = 3 }), false)
+    T.eq("E14 nothing was appended", #frame.observations, 1)
+end
+
+do
+    -- M18 and M26. An access handler that exists but cannot answer is not
+    -- permission. Refusing here is the same rule as refusing when the handler is
+    -- absent: a reader that opens up when it cannot check is worse than one that
+    -- closes. D23 covered only the absent-handler case.
+    local savedMission = g_currentMission
+    local spec = NA.storageAdapterSpec(function() return {} end)
+
+    g_currentMission = { accessHandler = {} }
+    T.eq("E15 a handler with no canFarmAccess refuses", spec.hasAccess(1, {}), false)
+
+    g_currentMission = { accessHandler = { canFarmAccess = function() error("boom") end } }
+    T.eq("E16 a handler that throws refuses rather than propagating", spec.hasAccess(1, {}), false)
+
+    g_currentMission = { accessHandler = { canFarmAccess = function() return 1 end } }
+    T.eq("E17 a truthy non-boolean is not permission", spec.hasAccess(1, {}), false)
+
+    g_currentMission = { accessHandler = { canFarmAccess = function() return true end } }
+    T.eq("E18 and the twin proves the call path reaches the handler at all",
+         spec.hasAccess(1, {}), true)
+    g_currentMission = savedMission
+end
+
+do
+    -- M27. The fill-unit adapter is server only on every entry point, not just
+    -- the ones the storage adapter happened to get tested on.
+    local saved = g_server
+    local savedMission = g_currentMission
+    g_currentMission = { accessHandler = { canFarmAccess = function() return true end } }
+    local veh = { getUniqueId = function() return "vehicle:9" end,
+                  spec_fillUnit = { fillUnits = { [1] = { fillLevel = 30, capacity = 200 } } } }
+    local spec = NA.fillUnitAdapterSpec(function() return { veh } end)
+    local key = { carrierKey = { nativeOwnerKey = "vehicle:9", componentKey = "1" } }
+
+    T.ok("E19 the server resolves", spec.resolveCarrier(key) ~= nil)
+    T.eq("E20 and grants access", spec.hasAccess(1, { vehicle = veh }), true)
+    g_server = nil
+    T.eq("E21 a client resolves nothing", spec.resolveCarrier(key), nil)
+    T.eq("E22 enumerates nothing", #spec.enumerateCarriers(), 0)
+    T.eq("E23 reads no native state", spec.readNativeState({ vehicle = veh, fillUnitIndex = 1 }), nil)
+    T.eq("E24 and is refused access though the handler would grant it",
+         spec.hasAccess(1, { vehicle = veh }), false)
+    g_server = saved
+    g_currentMission = savedMission
 end
