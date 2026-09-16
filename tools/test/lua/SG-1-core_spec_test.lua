@@ -1029,3 +1029,153 @@ do
     T.eq("J3g the historical set is pruned to its OWN budget, not a shared one", hist2, 2)
     T.eq("J3h and oldest-first took hist1, the oldest of them", o.retiredStocks["hist1"], nil)
 end
+
+do
+    -- ── J4: THE SORT ITSELF, which was the one part of the repair with no bar ──
+    --
+    -- Bob deleted table.sort(keys) outright, kept both passes, and the bench stayed
+    -- at 1105/0. J1g and J1h are both right and neither needs the sort, because
+    -- with ONE conflicting key the order cannot matter.
+    --
+    -- So this case uses TWO conflicting keys owned by two DIFFERENT prior
+    -- producers. Sorted order decides which conflict is found first, and the
+    -- refusal reason names that owner. Under `pairs` the reason could name either.
+    --
+    -- HOW THIS CASE DISCRIMINATES, and read this before touching the key names.
+    --
+    -- Lua's pairs order over a fixed key set is deterministic within a run but is
+    -- NOT sorted order. For MOST key pairs it happens to coincide with sorted
+    -- order, and against those the delete-the-sort mutation SURVIVES and this case
+    -- proves nothing. The first version of it used "AAA/1" and "ZZZ/1" and did
+    -- exactly that.
+    --
+    -- "apple/1" and "zebra/1" are chosen because pairs yields zebra FIRST here,
+    -- the reverse of sorted order, so removing the sort names bb.p instead of
+    -- aa.p and J4 fails. That was established by probing pairs order over a dozen
+    -- candidate pairs, not by reasoning about it.
+    --
+    -- SO: if these key names ever change, re-run the delete-the-sort mutation and
+    -- confirm it still dies. A key set that hashes into sorted order turns this
+    -- case back into decoration.
+    local reg = SGRegistry.new("j5")
+    local o = SGOperations.new(reg, "j5")
+    local ad = reg:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" },
+        resolveCarrier = function() end, readNativeState = function() end,
+        enumerateCarriers = function() return {} end, hasAccess = function() return true end })
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    local function bind(owner, comp)
+        return { carrierKey = { adapterId = "sg2", nativeOwnerKey = owner, componentKey = comp },
+                 adapterVersion = 1, profileId = "silo", profileVersion = 1,
+                 quantityBasisKey = owner .. "/" .. comp }
+    end
+    local function spec(pid, producerId, claims)
+        return { schemaVersion = 1, producerId = producerId, residency = "STORED",
+            validate = function() return true end,
+            combine = function() return { propertyId = pid, schemaVersion = 1, producerId = producerId,
+                propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } } end,
+            transform = function() return nil end, disclosure = function(_, r) return r end,
+            validateCause = function() return true end,
+            transformCausalState = function() return claims end,
+            compactCausalState = function() end }
+    end
+
+    -- "aa" owns the alphabetically FIRST contested key, "bb" owns the second.
+    -- "zz" sorts last, so it is the one refused, and it contests BOTH.
+    local pAA = reg:registerProperty("aa.p", spec("aa.p", "aa", { ["apple/1"] = { sequence = 5, fingerprint = "a" } }))
+    local pBB = reg:registerProperty("bb.p", spec("bb.p", "bb", { ["zebra/1"] = { sequence = 6, fingerprint = "b" } }))
+    local pZZ = reg:registerProperty("zz.p", spec("zz.p", "zz", {
+        -- ZEBRA IS WRITTEN FIRST ON PURPOSE. pairs follows insertion order for
+        -- this pair, so listing zebra first makes pairs yield it before apple,
+        -- the reverse of sorted order. Written apple-first the two coincide and
+        -- the delete-the-sort mutation survives; that was the second version of
+        -- this case and it proved nothing.
+        ["zebra/1"] = { sequence = 9, fingerprint = "zZ" },
+        ["apple/1"] = { sequence = 9, fingerprint = "zA" },
+    }))
+
+    local src = o:bindCarrier(ad, bind("silo", "a"), { materialRef = wheat, amount = 100, unit = "l" })
+    local s = o.stocks[src.stockId]
+    local function r(pid, pr) return { propertyId = pid, schemaVersion = 1, producerId = pr,
+        propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } } end
+    o:publishProperties(pAA, { { stockRef = o:stockRef(s), expectedPropertyRevision = 0, record = r("aa.p", "aa") } },
+        { sourceStreamId = "S0", epoch = 1, sequence = 1, fingerprint = "f0" })
+    o:publishProperties(pBB, { { stockRef = o:stockRef(s), expectedPropertyRevision = 0, record = r("bb.p", "bb") } },
+        { sourceStreamId = "S0", epoch = 1, sequence = 2, fingerprint = "f1" })
+    o:publishProperties(pZZ, { { stockRef = o:stockRef(s), expectedPropertyRevision = 0, record = r("zz.p", "zz") } },
+        { sourceStreamId = "S0", epoch = 1, sequence = 3, fingerprint = "f2" })
+
+    local dst = o:bindCarrier(ad, bind("cart", "1"), { amount = 0, unit = "l" })
+    local cap = o:captureOperation(ad, "TRANSFER", {
+        { carrierId = src.carrierId, expectedStockRef = o:stockRef(s) }, { carrierId = dst.carrierId } })
+    o:settleOperation(cap.handle, {
+        participantsAfter = { [src.carrierId] = { amount = 0, unit = "l" },
+                              [dst.carrierId] = { materialRef = wheat, amount = 100, unit = "l" } },
+        allocations = { { source = { carrierId = src.carrierId }, destination = { carrierId = dst.carrierId },
+            sourceAmount = 100, sourceUnit = "l", destinationAmount = 100, destinationUnit = "l" } } })
+
+    local ds = o.stocks[o.carriers[dst.carrierId].stockId]
+    T.eq("J4 the refused producer's reason names the owner of the SORTED-FIRST key",
+         ds.properties["zz.p"] and ds.properties["zz.p"].reason or nil, "CAUSAL_CONFLICT:aa.p")
+    local zzReason = ds.properties["zz.p"] and ds.properties["zz.p"].reason or nil
+    T.eq("J4b and it is NOT the owner of the later key, which pairs order could have picked",
+         (zzReason == "CAUSAL_CONFLICT:bb.p"), false)
+    T.eq("J4c both prior claimants keep their own properties",
+         (ds.properties["aa.p"] and ds.properties["aa.p"].knowledge or nil) .. "/" ..
+         (ds.properties["bb.p"] and ds.properties["bb.p"].knowledge or nil), "KNOWN/KNOWN")
+    T.eq("J4d both contested causes keep the FIRST claimant's state, not the refused one's",
+         (ds.acceptedCauses["apple/1"] and ds.acceptedCauses["apple/1"].fingerprint or nil) .. "/" ..
+         (ds.acceptedCauses["zebra/1"] and ds.acceptedCauses["zebra/1"].fingerprint or nil), "a/b")
+end
+
+do
+    -- ── J5: validCauseMap is the sort's ONLY precondition ────────────────────
+    -- table.sort over a mixed-type key array throws, and the sole reason it cannot
+    -- happen is that validCauseMap requires every key to be a string, three hundred
+    -- lines away from the sort. Relaxing that guard leaves the sort unprotected,
+    -- and a throw there is caught by settleOperation's pcall as SETTLE_ERROR, so
+    -- ONE producer returning a mixed key set would poison an entire settlement
+    -- rather than just its own transform. That is the opposite of what the
+    -- two-pass repair exists for.
+    local reg = SGRegistry.new("j6")
+    local o = SGOperations.new(reg, "j6")
+    local ad = reg:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" },
+        resolveCarrier = function() end, readNativeState = function() end,
+        enumerateCarriers = function() return {} end, hasAccess = function() return true end })
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    local function bind(owner, comp)
+        return { carrierKey = { adapterId = "sg2", nativeOwnerKey = owner, componentKey = comp },
+                 adapterVersion = 1, profileId = "silo", profileVersion = 1,
+                 quantityBasisKey = owner .. "/" .. comp }
+    end
+    -- An integer stream id, which is exactly the shape someone adds later.
+    local bad = reg:registerProperty("bad.p", { schemaVersion = 1, producerId = "bad", residency = "STORED",
+        validate = function() return true end,
+        combine = function() return { propertyId = "bad.p", schemaVersion = 1, producerId = "bad",
+            propertyRevision = 0, knowledge = "KNOWN", payload = { p = 1 } } end,
+        transform = function() return nil end, disclosure = function(_, r) return r end,
+        validateCause = function() return true end,
+        transformCausalState = function() return { [1] = { sequence = 5, fingerprint = "int" } } end,
+        compactCausalState = function() end })
+
+    local src = o:bindCarrier(ad, bind("silo", "a"), { materialRef = wheat, amount = 100, unit = "l" })
+    local s = o.stocks[src.stockId]
+    o:publishProperties(bad, { { stockRef = o:stockRef(s), expectedPropertyRevision = 0,
+        record = { propertyId = "bad.p", schemaVersion = 1, producerId = "bad", propertyRevision = 0,
+                   knowledge = "KNOWN", payload = { p = 1 } } } },
+        { sourceStreamId = "S0", epoch = 1, sequence = 1, fingerprint = "f0" })
+
+    local dst = o:bindCarrier(ad, bind("cart", "1"), { amount = 0, unit = "l" })
+    local cap = o:captureOperation(ad, "TRANSFER", {
+        { carrierId = src.carrierId, expectedStockRef = o:stockRef(s) }, { carrierId = dst.carrierId } })
+    local outcome = o:settleOperation(cap.handle, {
+        participantsAfter = { [src.carrierId] = { amount = 0, unit = "l" },
+                              [dst.carrierId] = { materialRef = wheat, amount = 100, unit = "l" } },
+        allocations = { { source = { carrierId = src.carrierId }, destination = { carrierId = dst.carrierId },
+            sourceAmount = 100, sourceUnit = "l", destinationAmount = 100, destinationUnit = "l" } } })
+
+    T.eq("J5 a non-string cause key does NOT poison the whole settlement", outcome, "COMMITTED")
+    local ds = o.stocks[o.carriers[dst.carrierId].stockId]
+    T.eq("J5b it is refused as a failed transform, contained to its own producer",
+         ds.properties["bad.p"] and ds.properties["bad.p"].reason or nil, "CAUSAL_TRANSFORM_FAILED")
+    T.eq("J5c and none of its keys were accepted", ds.acceptedCauses[1], nil)
+end
