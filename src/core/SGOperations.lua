@@ -1853,13 +1853,25 @@ function O:restoreCore(core, context)
     local saved = {}
     for _, s in ipairs(core.stocks) do saved[#saved + 1] = s end
     for _, s in ipairs(core.historical or {}) do saved[#saved + 1] = s end
+    -- ONE CLAIM PER CARRIER PER LOAD (SG2-1 re-review BLOCKER). Saved live stocks
+    -- are walked before history rows. The first saved stock that reattaches to, or
+    -- is judged against, a carrier's live record claims that record for this load.
+    -- Any later saved stock on the same carrier stays history as
+    -- RESTORE_SUPERSEDED: it must never take over the live identity (an older
+    -- history row at today's amount did exactly that) nor reset its knowledge to
+    -- UNKNOWN (an older row at another amount did that on every load).
+    local claimed, superseded = {}, 0
     for _, s in ipairs(saved) do
         local carrier = nil
         if refused[s.carrierId] == nil then carrier = self.carriers[target[s.carrierId] or s.carrierId] end
         local live = carrier and carrier.stockId and self.stocks[carrier.stockId] or nil
         local nativeAmount = carrier and carrier.native and carrier.native.amount or nil
         local nativeMaterial = carrier and carrier.native and carrier.native.materialRef or nil
-        if carrier ~= nil and live ~= nil and self.stocks[s.stockId] == nil and nativeAmount == s.observedAmount and SGValues.equal(nativeMaterial, s.materialRef) then
+        if carrier ~= nil and live ~= nil and claimed[carrier.carrierId] then
+            retainHistorical(self, s, "RESTORE_SUPERSEDED", bindingOf[s.carrierId])
+            superseded = superseded + 1
+        elseif carrier ~= nil and live ~= nil and self.stocks[s.stockId] == nil and nativeAmount == s.observedAmount and SGValues.equal(nativeMaterial, s.materialRef) then
+            claimed[carrier.carrierId] = true
             -- Reattach: identity, generation, properties and causes carried; native quantity stands.
             self.stocks[live.stockId] = nil
             live.stockId = s.stockId
@@ -1877,6 +1889,7 @@ function O:restoreCore(core, context)
             self.retiredStocks[s.stockId] = nil
             restored = restored + 1
         elseif carrier ~= nil and live ~= nil then
+            claimed[carrier.carrierId] = true
             live.knowledge = "UNKNOWN"
             live.reason = "RESTORE_MISMATCH"
             if s.contentsGeneration >= live.contentsGeneration then
@@ -1901,7 +1914,7 @@ function O:restoreCore(core, context)
             if carrier ~= nil then carrier.lastGeneration = math.max(carrier.lastGeneration or 0, sc.lastGeneration or 0) end
         end
     end
-    return { restored = restored, unknown = unknown, historical = historical, refused = refusedCount }
+    return { restored = restored, unknown = unknown, historical = historical, refused = refusedCount, superseded = superseded }
 end
 
 --- Mission teardown.

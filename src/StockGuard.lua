@@ -335,8 +335,9 @@ end
 function SG:onStagedRestore(payload, context)
     if not self:isServer() then return end
     local result = self.save:stageLoad(payload, { farmRestore = context, backend = self.save.backendId, loadEpoch = self.loadEpoch })
-    log(string.format("staged restore: %s (farm phase %s, core restored %s unknown %s historical %s)", tostring(result.state), tostring(context.phase),
-        tostring(result.core and result.core.restored or 0), tostring(result.core and result.core.unknown or 0), tostring(result.core and result.core.historical or 0)))
+    log(string.format("staged restore: %s (farm phase %s, core restored %s unknown %s historical %s superseded %s)", tostring(result.state), tostring(context.phase),
+        tostring(result.core and result.core.restored or 0), tostring(result.core and result.core.unknown or 0), tostring(result.core and result.core.historical or 0),
+        tostring(result.core and result.core.superseded or 0)))
     if result.reason ~= nil then log("staged restore reason: " .. tostring(result.reason)) end
     self.transport:markDirty()
 end

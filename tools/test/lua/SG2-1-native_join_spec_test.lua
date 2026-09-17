@@ -446,6 +446,64 @@ group("R", function()
     local forged = SGValues.decode(SGValues.encode(env2))
     for _, h in ipairs(forged.coreValues.historical) do if h.binding ~= nil then h.binding.carrierKey.nativeOwnerKey = "silo:ELSEWHERE" end end
     T.eq("R24 a history binding for another carrier id is refused at validation", select(2, SGOperations.validateCore(forged.coreValues)), "CORE_HISTORICAL_BINDING:1")
+
+    -- R25-R34: ONE CLAIM PER CARRIER PER LOAD (SG2-1 re-review BLOCKER, Bob's probe).
+    -- A trailer saved full, loaded short, refilled to full, saved, reloaded: the saved
+    -- live stock reattaches, and the older mismatch history row on the same carrier
+    -- must neither take over the live identity nor reset it to UNKNOWN.
+    local both = function() return { { binding = old1 }, { binding = old2 } } end
+    local key2 = SGRecords.carrierKeyString(old2.carrierKey)
+    world = { ["silo:OLD|1"] = 60, ["silo:OLD|2"] = 71 }
+    local sgB, mB = restoreInto(env, worldSpec({ enumerateCarriers = both }))
+    local liveB = stockOf(sgB, old2)
+    T.ok("R25 [reached] load B keeps old2's saved stock as mismatch history beside a new live stock",
+        liveB ~= nil and liveB.stockId ~= ids[2] and sgB.operations.retiredStocks[ids[2]] ~= nil and sgB.operations.retiredStocks[ids[2]].retireReason == "RESTORE_MISMATCH")
+    local liveId = liveB and liveB.stockId
+    local leaseB = sgB.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, "fake")
+    -- Refill to the history row's 70 L, give the live stock known facts, save.
+    world["silo:OLD|2"] = 70
+    mB.stockGuard.observeCarrier(leaseB, key2, nil)
+    liveB = stockOf(sgB, old2)
+    T.eq("R26 [reached] the live stock now holds 70 L under the same identity", tostring(liveB and liveB.stockId == liveId) .. "/" .. tostring(liveB and liveB.observedAmount), "true/70")
+    liveB.knowledge, liveB.reason = "KNOWN", "FIXTURE_KNOWN"
+    sgB.save.backendId = SGSave.BACKEND_XML
+    local envEqual = SGValues.decode(SGValues.encode(sgB.save:buildEnvelope({})))
+    -- The unequal twin, from the same mission: back to 71 L, save again.
+    world["silo:OLD|2"] = 71
+    mB.stockGuard.observeCarrier(leaseB, key2, nil)
+    liveB = stockOf(sgB, old2)
+    liveB.knowledge, liveB.reason = "KNOWN", "FIXTURE_KNOWN"
+    local envUnequal = SGValues.decode(SGValues.encode(sgB.save:buildEnvelope({})))
+    shutdown(sgB, nil)
+
+    -- Equal amount: the history row (70 L) also passes the reattach check.
+    world["silo:OLD|2"] = 70
+    sg = restoreInto(envEqual, worldSpec({ enumerateCarriers = both }))
+    local liveD = stockOf(sg, old2)
+    T.eq("R27 equal amount: the live identity is kept, not replaced by the older history row", liveD and liveD.stockId, liveId)
+    T.eq("R28 and its known facts are kept", liveD and (liveD.knowledge .. "/" .. liveD.reason), "KNOWN/FIXTURE_KNOWN")
+    T.eq("R29 the live id is still in the store", sg.operations.stocks[liveId] ~= nil, true)
+    T.eq("R30 the older history row stays history, superseded", sg.operations.retiredStocks[ids[2]] and sg.operations.retiredStocks[ids[2]].retireReason, "RESTORE_SUPERSEDED")
+    T.eq("R31 restored counts old1 and old2 once each", sg.save.loadResult.core.restored .. "/" .. sg.save.loadResult.core.superseded, "2/1")
+    shutdown(sg, nil)
+
+    -- Unequal amount: the history row (70 L) mismatches today's 71 L.
+    world["silo:OLD|2"] = 71
+    sg = restoreInto(envUnequal, worldSpec({ enumerateCarriers = both }))
+    liveD = stockOf(sg, old2)
+    T.eq("R32 unequal amount: the live identity is kept", liveD and liveD.stockId, liveId)
+    T.eq("R33 and its knowledge and reason are unchanged, not reset by the older row", liveD and (liveD.knowledge .. "/" .. liveD.reason), "KNOWN/FIXTURE_KNOWN")
+    T.eq("R34 the older row is superseded, and the load reports no unknown", tostring(sg.operations.retiredStocks[ids[2]] and sg.operations.retiredStocks[ids[2]].retireReason) .. "/" .. sg.save.loadResult.core.unknown, "RESTORE_SUPERSEDED/0")
+    shutdown(sg, nil)
+
+    -- A saved live stock that MISMATCHES also claims the carrier: today's 70 L matches
+    -- only the older history row, which must not reattach its older identity.
+    world["silo:OLD|2"] = 70
+    sg = restoreInto(envUnequal, worldSpec({ enumerateCarriers = both }))
+    liveD = stockOf(sg, old2)
+    T.eq("R35 [reached] the saved live stock (71 L) mismatches today's 70 L and is kept as history", sg.operations.retiredStocks[liveId] and sg.operations.retiredStocks[liveId].retireReason, "RESTORE_MISMATCH")
+    T.eq("R36 the older history row at 70 L does not reattach its identity, it is superseded", tostring(liveD and liveD.stockId == ids[2]) .. "/" .. tostring(sg.operations.retiredStocks[ids[2]] and sg.operations.retiredStocks[ids[2]].retireReason), "false/RESTORE_SUPERSEDED")
+    shutdown(sg, nil)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
