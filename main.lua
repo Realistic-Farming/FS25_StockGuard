@@ -44,6 +44,16 @@ source(modDirectory .. "src/core/SGCommands.lua")
 source(modDirectory .. "src/core/SGTransport.lua")
 source(modDirectory .. "src/StockGuard.lua")
 
+-- SG2-1 native kernel: operation context, captured work-area installer, Storage
+-- brackets, FillUnit observer, the Storage and FillUnit carrier adapters and the
+-- server host that wires them to the mission handle.
+source(modDirectory .. "src/native/SGOperationContext.lua")
+source(modDirectory .. "src/native/SGWorkAreaInstaller.lua")
+source(modDirectory .. "src/native/SGStorageBracket.lua")
+source(modDirectory .. "src/native/SGFillUnitObserver.lua")
+source(modDirectory .. "src/native/SGNativeAdapters.lua")
+source(modDirectory .. "src/native/SGNativeHost.lua")
+
 -- One controller for the process; the unload hook resets it per mission.
 StockGuardCapacity = StockGuardCapacity or SGCapacity.new()
 SGCapacity.installHooks(StockGuardCapacity)
@@ -67,17 +77,36 @@ local function stockGuardOf(mission)
     return StockGuard.hostOf(mission)
 end
 
+--- SG2-1: the native kernel host, server only. Adapters register before the
+--- restore-complete barrier, which enumerates them; the class hooks install once
+--- per process and dispatch to the current host.
+local function installNativeKernel(mission)
+    if mission == nil or mission.stockGuard == nil or type(mission.getIsServer) ~= "function" or not mission:getIsServer() then return end
+    SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem })
+    local host = SGNativeHost.new(mission.stockGuard, {
+        placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
+        vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,
+    })
+    local ok, why = host:install()
+    print("[StockGuard] native kernel " .. (ok and "installed: Storage and FillUnit adapters registered" or ("not installed: " .. tostring(why))))
+end
+
 StockGuardHooks = StockGuardHooks or {}
 if not StockGuardHooks.installed then
     StockGuardHooks.installed = true
     if Mission00 ~= nil and Mission00.loadMission00Finished ~= nil then
         Mission00.loadMission00Finished = Utils.appendedFunction(Mission00.loadMission00Finished, function(mission)
             local sg = stockGuardOf(mission)
-            if sg ~= nil then pcall(sg.onLoadMission00Finished, sg) end
+            if sg ~= nil then
+                pcall(sg.onLoadMission00Finished, sg)
+                local ok, err = pcall(installNativeKernel, mission)
+                if not ok then print("[StockGuard] native kernel install failed: " .. tostring(err)) end
+            end
         end)
     end
     if FSBaseMission ~= nil and FSBaseMission.delete ~= nil then
         FSBaseMission.delete = Utils.prependedFunction(FSBaseMission.delete, function(mission)
+            if SGNativeHost ~= nil and SGNativeHost.current ~= nil then pcall(SGNativeHost.current.teardown, SGNativeHost.current) end
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.delete, sg) end
         end)
@@ -86,6 +115,7 @@ if not StockGuardHooks.installed then
         FSBaseMission.update = Utils.appendedFunction(FSBaseMission.update, function(mission, dt)
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.update, sg, dt) end
+            if SGNativeHost ~= nil and SGNativeHost.current ~= nil and sg ~= nil then pcall(SGNativeHost.current.update, SGNativeHost.current, dt) end
         end)
     end
     if FSBaseMission ~= nil and FSBaseMission.onConnectionClosed ~= nil then

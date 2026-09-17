@@ -332,8 +332,10 @@ do
     T.ok("K1 a separate handle is published on the mission; the host is not reachable through it", mission.stockGuard ~= sg and StockGuard.hostOf(mission) == sg and type(mission.stockGuard.registerCarrierAdapter) == "function" and mission.stockGuard.operations == nil and mission.stockGuard.registry == nil)
     T.eq("K2 attach is idempotent", StockGuard.attach(mission), sg)
     local h = mission.stockGuard
-    local lease = h.registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" }, resolveCarrier = function() end, readNativeState = function() end,
-        enumerateCarriers = function() return { { binding = binding("bin", "1"), nativeState = { materialRef = wheat, amount = 10, unit = "l" } } } end, hasAccess = function() return true end })
+    -- SG2-1 join: enumeration names a binding and the core reads the carrier
+    -- through resolveCarrier and readNativeState; the entry carries no state.
+    local lease = h.registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" }, resolveCarrier = function() return { bin = true } end, readNativeState = function() return { materialRef = wheat, amount = 10, unit = "l" } end,
+        enumerateCarriers = function() return { { binding = binding("bin", "1") } } end, hasAccess = function() return true end })
     T.ok("K3 dot-bound registration works without self", lease ~= nil and lease.ownerId == "sg2")
     T.eq("K4 a colon call is refused by the first bound parameter", select(2, h:registerCarrierAdapter("sg2", {})), "INVALID_ID")
     sg:installFinishedLoadingObserver()
@@ -402,8 +404,8 @@ do
         stageLoad = function(payload, context) stagedPhase = context.farmRestore and context.farmRestore.phase return { ok = true } end,
         commitLoad = function() committedIds[#committedIds + 1] = "own" end, clearReadiness = function() end })
     h.registerSaveSection("plain", { schemaVersion = 1, serialize = function() return { n = 2 } end, stageLoad = function() return { ok = true } end, commitLoad = function() committedIds[#committedIds + 1] = "plain" end, clearReadiness = function() end })
-    local adapterLease = h.registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" }, resolveCarrier = function() end, readNativeState = function() end,
-        enumerateCarriers = function() return { { binding = binding("bin", "1"), nativeState = { materialRef = wheat, amount = 10, unit = "l" } } } end, hasAccess = function() return true end })
+    local adapterLease = h.registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" }, resolveCarrier = function() return { bin = true } end, readNativeState = function() return { materialRef = wheat, amount = 10, unit = "l" } end,
+        enumerateCarriers = function() return { { binding = binding("bin", "1") } } end, hasAccess = function() return true end })
     sg.save.backendId = SGSave.BACKEND_XML
     local env = sg.save:buildEnvelope({})
     sg:installFinishedLoadingObserver()

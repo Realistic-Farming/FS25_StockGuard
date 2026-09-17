@@ -116,7 +116,8 @@ function SG:buildHandle()
     h.unregisterOwner = function(lease) return host.registry:unregisterOwner(lease) end
     -- Server-local material services
     h.bindCarrier = serverOnly(function(lease, binding, nativeState) return host.operations:bindCarrier(lease, binding, nativeState) end)
-    h.observeCarrier = serverOnly(function(lease, carrierId, nativeState) if not host.registry:isLive(lease, SGRegistry.KIND_CARRIER_ADAPTER) then return nil, "LEASE" end return host.operations:reconcileCarrier(carrierId, nativeState, "ADAPTER_OBSERVATION") end)
+    h.observeCarrier = serverOnly(function(lease, carrierId, nativeState) return SG.observeCarrier(host, lease, carrierId, nativeState) end)
+    h.refreshCarrier = serverOnly(function(lease, binding, reason) return host.operations:refreshCarrier(lease, binding, reason) end)
     h.withdrawCarrier = serverOnly(function(lease, carrierId, reason) if not host.registry:isLive(lease, SGRegistry.KIND_CARRIER_ADAPTER) then return false, "LEASE" end return host.operations:withdrawCarrier(carrierId, reason) end)
     h.captureOperation = serverOnly(function(lease, kind, participants) return host.operations:captureOperation(lease, kind, participants) end)
     h.settleOperation = serverOnly(function(handle, report) return host.operations:settleOperation(handle, report) end)
@@ -286,20 +287,47 @@ function SG:enumerateCarriers()
     self.enumerated = true
 end
 
+--- Enumeration names bindings; the core reads each carrier through the join
+--- (resolveCarrier then readNativeState). A state the adapter put in the entry
+--- is not trusted: the adapter's read is the one path. An entry that cannot be
+--- bound is counted and logged, never silently dropped.
 function SG:enumerateAdapter(lease)
     local ok, list = pcall(lease.spec.enumerateCarriers)
     if not ok or type(list) ~= "table" then
         log("adapter " .. tostring(lease.ownerId) .. " enumeration failed; its carriers stay unavailable")
         return 0
     end
-    local n = 0
+    local n, refused, firstWhy = 0, 0, nil
     for _, entry in ipairs(list) do
-        if type(entry) == "table" and entry.binding ~= nil then
-            local c = self.operations:bindCarrier(lease, entry.binding, entry.nativeState)
-            if c ~= nil then n = n + 1 end
+        local binding = type(entry) == "table" and entry.binding or nil
+        local c, why = nil, "ENTRY"
+        if binding ~= nil then c, why = self.operations:refreshCarrier(lease, binding, "INITIAL_OBSERVATION") end
+        if c ~= nil then
+            n = n + 1
+        else
+            refused = refused + 1
+            firstWhy = firstWhy or why
         end
     end
+    if refused > 0 then
+        log(string.format("adapter %s: %d of %d enumerated carriers not bound (first reason %s); they stay unavailable",
+            tostring(lease.ownerId), refused, n + refused, tostring(firstWhy)))
+    end
     return n
+end
+
+--- An adapter observation. With a state, the pushed state reconciles as
+--- before. Without one, the core reads the carrier through the join, so an
+--- observer that only knows "this carrier changed" never has to guess what it
+--- now holds.
+function SG:observeCarrier(lease, carrierId, nativeState)
+    if not self.registry:isLive(lease, SGRegistry.KIND_CARRIER_ADAPTER) then return nil, "LEASE" end
+    local carrier = self.operations.carriers[carrierId]
+    if carrier == nil then return nil, "UNKNOWN_CARRIER" end
+    -- One adapter never observes another adapter's carrier, pushed or read.
+    if carrier.adapterId ~= lease.ownerId then return nil, "ADAPTER_MISMATCH" end
+    if nativeState ~= nil then return self.operations:reconcileCarrier(carrierId, nativeState, "ADAPTER_OBSERVATION") end
+    return self.operations:refreshCarrier(lease, carrier.binding, "ADAPTER_OBSERVATION")
 end
 
 --- Staged metadata restore once payload, farms and native objects exist.
@@ -307,8 +335,9 @@ end
 function SG:onStagedRestore(payload, context)
     if not self:isServer() then return end
     local result = self.save:stageLoad(payload, { farmRestore = context, backend = self.save.backendId, loadEpoch = self.loadEpoch })
-    log(string.format("staged restore: %s (farm phase %s, core restored %s unknown %s historical %s)", tostring(result.state), tostring(context.phase),
-        tostring(result.core and result.core.restored or 0), tostring(result.core and result.core.unknown or 0), tostring(result.core and result.core.historical or 0)))
+    log(string.format("staged restore: %s (farm phase %s, core restored %s unknown %s historical %s superseded %s)", tostring(result.state), tostring(context.phase),
+        tostring(result.core and result.core.restored or 0), tostring(result.core and result.core.unknown or 0), tostring(result.core and result.core.historical or 0),
+        tostring(result.core and result.core.superseded or 0)))
     if result.reason ~= nil then log("staged restore reason: " .. tostring(result.reason)) end
     self.transport:markDirty()
 end

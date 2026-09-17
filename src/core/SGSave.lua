@@ -448,7 +448,7 @@ function S:stageLoad(payload, context)
     if e.farmRestore ~= nil then
         self.farmRestore = { receipts = copy(e.farmRestore.receipts), pendingUnits = copy(e.farmRestore.pendingUnits) }
     end
-    result.core = self.operations:restoreCore(e.coreValues)
+    result.core = self.operations:restoreCore(e.coreValues, context)
     -- Member sections as coupled dependency sets.
     local pending = {}
     for _, id in ipairs(e.initializedSections) do pending[id] = e.sections[id] end
