@@ -243,9 +243,12 @@ function H:onStorageAdded(storage)
         end
     end
     table.sort(names)
+    -- Through the dirty queue and flushed at once, so a store busy with a
+    -- replacement keeps the bind for the next flush instead of dropping it.
     for _, name in ipairs(names) do
-        self.handle.refreshCarrier(self.storageLease, A.storageBinding(placeable, slot, name), "STORAGE_ADDED")
+        self:markDirty(self.storageLease, A.storageBinding(placeable, slot, name), false)
     end
+    self:flush()
 end
 
 --- A placeable is being removed (PlaceableSystem.removePlaceable, before its
@@ -281,8 +284,9 @@ function H:onVehicleAdded(vehicle)
     local fu = vehicle.spec_fillUnit
     for index in ipairs(fu ~= nil and type(fu.fillUnits) == "table" and fu.fillUnits or {}) do
         local binding = A.fillUnitBindingFor(vehicle, index)
-        if binding ~= nil then self.handle.refreshCarrier(self.fillUnitLease, binding, "VEHICLE_ADDED") end
+        if binding ~= nil then self:markDirty(self.fillUnitLease, binding, false) end
     end
+    self:flush()
 end
 
 --- A vehicle was removed (VehicleSystem.removeVehicle, after its teardown,

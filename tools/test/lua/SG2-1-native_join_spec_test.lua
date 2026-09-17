@@ -207,6 +207,23 @@ group("J", function()
     spec.readNativeState = function(binding, native) if native == world.bad then return { amount = 5, unit = "LITRE" } end return { materialRef = native.amount > 0 and wheat or nil, amount = native.amount, unit = "LITRE" } end
     T.eq("J18 a nonempty read with no material is refused by the core", select(2, m.stockGuard.refreshCarrier(lease, fakeBinding("bad", "1"), "TEST")), "MATERIAL_REF")
     T.eq("J19 and bound nothing", carrierOf(sg, fakeBinding("bad", "1")), nil)
+
+    -- A BOUND carrier whose read turns invalid is refused and its stock untouched.
+    -- SG2-1 review MAJOR 2: the validation on the already-bound path was unpinned
+    -- (`local state = ns` survived the suite).
+    local keyA = SGRecords.carrierKeyString(a.carrierKey)
+    local amountBefore = stockOf(sg, a).observedAmount
+    local stockBefore = stockOf(sg, a).stockId
+    world.a.invalidRead = true
+    local readBad = spec.readNativeState
+    spec.readNativeState = function(binding, native)
+        if native.invalidRead then return { amount = 99, unit = "LITRE" } end
+        return readBad(binding, native)
+    end
+    T.eq("J19b [reached] carrier a is bound before its read turns invalid", carrierOf(sg, a) ~= nil, true)
+    T.eq("J19c a bound carrier whose read turns invalid is refused with the core's reason", select(2, m.stockGuard.observeCarrier(lease, keyA, nil)), "MATERIAL_REF")
+    T.eq("J19d and its stock is untouched: same stock, same amount", tostring(stockOf(sg, a) and stockOf(sg, a).stockId == stockBefore) .. "/" .. tostring(stockOf(sg, a) and stockOf(sg, a).observedAmount), "true/" .. tostring(amountBefore))
+    world.a.invalidRead = nil
     shutdown(sg, nil)
 end)
 
@@ -361,8 +378,74 @@ group("R", function()
     shutdown(sg, nil)
     world = {}
     sg = restoreInto(env, worldSpec({}))
-    T.eq("R16 twin: an unresolvable saved carrier stays historical as CARRIER_ABSENT", sg.operations.retiredStocks[ids[1]] and sg.operations.retiredStocks[ids[1]].retireReason, "CARRIER_ABSENT")
+    T.eq("R16 twin: an unresolvable saved carrier stays historical, and the adapter's reason is kept", sg.operations.retiredStocks[ids[1]] and sg.operations.retiredStocks[ids[1]].retireReason, "CARRIER_ABSENT:UNRESOLVED:NO_CARRIER")
     shutdown(sg, nil)
+
+    -- R17-R24: EVERY saved reference (brief 4.7.1 :416), including a historical stock
+    -- whose carrier record was not saved. SG2-1 review MAJOR 1: such a stock used to
+    -- resolve by identity, skipping restoreBinding and the collision map.
+    -- Load 2: old1's carrier cannot be resolved, so its stock is kept as history and
+    -- no carrier record is bound for it. Save that.
+    world = { ["silo:OLD|2"] = 70 }
+    sg = restoreInto(env, worldSpec({}))
+    sg.save.backendId = SGSave.BACKEND_XML
+    local env2 = SGValues.decode(SGValues.encode(sg.save:buildEnvelope({})))
+    shutdown(sg, nil)
+    local histRow, carrierSaved = nil, false
+    for _, h in ipairs(env2.coreValues.historical or {}) do if h.stockId == ids[1] then histRow = h end end
+    for _, c in ipairs(env2.coreValues.carriers) do if c.carrierId == SGRecords.carrierKeyString(old1.carrierKey) then carrierSaved = true end end
+    T.ok("R17 [reached] the second save holds old1's stock as history with NO carrier record", histRow ~= nil and not carrierSaved)
+    T.ok("R18 and that history carries its carrier's binding", histRow ~= nil and SGRecords.isCarrierBinding(histRow.binding) and histRow.binding.carrierKey.nativeOwnerKey == "silo:OLD")
+    -- A stock kept as history because its carrier MISMATCHED carries the binding too.
+    world = { ["silo:OLD|1"] = 60, ["silo:OLD|2"] = 71 }
+    sg = restoreInto(env, worldSpec({ enumerateCarriers = function() return { { binding = old1 }, { binding = old2 } } end }))
+    local mismatchRow = sg.operations.retiredStocks[ids[2]]
+    T.eq("R18b [reached] old2 mismatched (71 L against a saved 70 L) and is kept as history", mismatchRow and mismatchRow.retireReason, "RESTORE_MISMATCH")
+    T.ok("R18c and that history carries its carrier's binding", mismatchRow ~= nil and SGRecords.isCarrierBinding(mismatchRow.binding) and SGRecords.carrierKeyString(mismatchRow.binding.carrierKey) == SGRecords.carrierKeyString(old2.carrierKey))
+    shutdown(sg, nil)
+
+    -- Load 3: restoreBinding remaps OLD to NEW; the history-only reference is staged too.
+    world = { ["silo:NEW|1"] = 60, ["silo:NEW|2"] = 70 }
+    local stagedHistory = false
+    sg = restoreInto(env2, worldSpec({ restoreBinding = function(saved)
+        if saved.carrierKey.componentKey == "1" then stagedHistory = true end
+        local c = SGValues.copy(saved)
+        c.carrierKey.nativeOwnerKey = "silo:NEW"
+        return c
+    end }))
+    T.eq("R19 restoreBinding is called for the history-only reference", stagedHistory, true)
+    T.eq("R20 and its stock reattaches to the remapped carrier, not the old key", stockOf(sg, new1) and stockOf(sg, new1).stockId, ids[1])
+    shutdown(sg, nil)
+
+    -- R21: a history-only reference and a saved carrier record remapped onto one
+    -- current carrier collide; neither is chosen.
+    world = { ["silo:ONE|1"] = 60 }
+    sg = restoreInto(env2, worldSpec({ restoreBinding = function(saved)
+        local c = SGValues.copy(saved)
+        c.carrierKey.nativeOwnerKey, c.carrierKey.componentKey, c.quantityBasisKey = "silo:ONE", "1", "q1"
+        return c
+    end, enumerateCarriers = function() return { { binding = one } } end }))
+    T.eq("R21 a history-only reference joins the collision map", tostring(sg.operations.retiredStocks[ids[1]] and sg.operations.retiredStocks[ids[1]].retireReason) .. "/" .. tostring(sg.operations.retiredStocks[ids[2]] and sg.operations.retiredStocks[ids[2]].retireReason), "RESTORE_COLLISION/RESTORE_COLLISION")
+    shutdown(sg, nil)
+
+    -- R22-R23: a legacy history row with no binding cannot be staged. Under an
+    -- adapter with restoreBinding it is refused, never attached by identity; without
+    -- one its identity is its own binding, as before.
+    local legacy = SGValues.decode(SGValues.encode(env2))
+    for _, h in ipairs(legacy.coreValues.historical) do h.binding = nil end
+    world = { ["silo:OLD|1"] = 60, ["silo:OLD|2"] = 70 }
+    sg = restoreInto(legacy, worldSpec({ restoreBinding = function(saved) return saved end,
+        enumerateCarriers = function() return { { binding = old1 }, { binding = old2 } } end }))
+    T.eq("R22 a legacy history row under a remapping adapter is refused, not attached by identity", tostring(stockOf(sg, old1) and stockOf(sg, old1).stockId == ids[1]) .. "/" .. tostring(sg.operations.retiredStocks[ids[1]] and sg.operations.retiredStocks[ids[1]].retireReason), "false/RESTORE_BINDING_UNAVAILABLE")
+    shutdown(sg, nil)
+    sg = restoreInto(legacy, worldSpec({ enumerateCarriers = function() return { { binding = old1 }, { binding = old2 } } end }))
+    T.eq("R23 twin: without restoreBinding the legacy row's identity is its own binding", stockOf(sg, old1) and stockOf(sg, old1).stockId, ids[1])
+    shutdown(sg, nil)
+
+    -- R24: a history binding that does not describe its own carrier id is refused.
+    local forged = SGValues.decode(SGValues.encode(env2))
+    for _, h in ipairs(forged.coreValues.historical) do if h.binding ~= nil then h.binding.carrierKey.nativeOwnerKey = "silo:ELSEWHERE" end end
+    T.eq("R24 a history binding for another carrier id is refused at validation", select(2, SGOperations.validateCore(forged.coreValues)), "CORE_HISTORICAL_BINDING:1")
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -596,6 +679,15 @@ group("H", function()
     m._vehicles[#m._vehicles + 1] = newV
     T.eq("H22 addVehicle's true return is preserved through the hook", vs:addVehicle(newV), true)
     T.eq("H23 and a registered vehicle is bound and observed", tostring(stockOf(sg, NA.fillUnitBinding(newV, 1)) ~= nil) .. "/" .. tostring(newV[SGFillUnitObserver.MARKER] ~= nil), "true/true")
+    -- A vehicle added while the store is busy is kept dirty, not dropped (review MINOR).
+    local busyV = newVehicle("vehicle:busy", { { fillLevel = 5, capacity = 100, fillType = 2 } })
+    m._vehicles[#m._vehicles + 1] = busyV
+    sg.operations.busy = true
+    vs:addVehicle(busyV)
+    sg.operations.busy = false
+    T.eq("H23b a vehicle added while the store is busy stays dirty, not dropped", tostring(carrierOf(sg, NA.fillUnitBinding(busyV, 1)) == nil) .. "/" .. tostring(#host.dirtyOrder >= 1), "true/true")
+    host:flush()
+    T.eq("H23c and binds on the next flush", stockOf(sg, NA.fillUnitBinding(busyV, 1)) and stockOf(sg, NA.fillUnitBinding(busyV, 1)).observedAmount, 5)
     local refused = newVehicle("vehicle:refused", { { fillLevel = 10, capacity = 100, fillType = 2 } })
     refused.refuse = true
     -- The refused vehicle is RESOLVABLE (in the vehicle list), so the only thing
@@ -617,6 +709,16 @@ group("H", function()
     T.eq("H27 addStorage's return is preserved", sysS:addStorage(sNew), true)
     local grassB = NA.storageBinding(silo2, { role = "silo", ordinal = 0, partition = "shared" }, "GRASS")
     T.eq("H28 an added storage's held slots are bound", stockOf(sg, grassB) and stockOf(sg, grassB).observedAmount, 12)
+    local sBusy = newStorage({ [2] = 9 })
+    local siloBusy = newSilo("placeable:busy", { sBusy }, false)
+    m._placeables[#m._placeables + 1] = siloBusy
+    local barleyBusy = NA.storageBinding(siloBusy, { role = "silo", ordinal = 0, partition = "shared" }, "BARLEY")
+    sg.operations.busy = true
+    sysS:addStorage(sBusy)
+    sg.operations.busy = false
+    T.eq("H28b a storage added while the store is busy stays dirty, not dropped", tostring(carrierOf(sg, barleyBusy) == nil) .. "/" .. tostring(#host.dirtyOrder >= 1), "true/true")
+    host:flush()
+    T.eq("H28c and binds on the next flush", stockOf(sg, barleyBusy) and stockOf(sg, barleyBusy).observedAmount, 9)
     local ps = setmetatable({}, { __index = PlaceableSystemClass })
     T.eq("H29 removePlaceable's return is preserved", ps:removePlaceable(silo2), "native-return")
     T.eq("H30 and the placeable's carriers were withdrawn before it went", carrierOf(sg, grassB), nil)

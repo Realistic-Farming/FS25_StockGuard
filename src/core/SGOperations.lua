@@ -1667,6 +1667,11 @@ local function serializeStock(s)
         stockId = s.stockId, contentsGeneration = s.contentsGeneration, dataRevision = s.dataRevision, carrierId = s.carrierId, carrierKey = copy(s.carrierKey),
         quantityBasisKey = s.quantityBasisKey, materialRef = copy(s.materialRef), observedAmount = s.observedAmount, amountUnit = s.amountUnit,
         knowledge = s.knowledge, reason = s.reason, properties = props, acceptedCauses = causes, retireReason = s.retireReason,
+        -- A historical stock keeps the binding of the carrier it was saved on, so
+        -- a later load can stage it through restoreBinding even when that carrier
+        -- record is no longer saved (SG2-1 review MAJOR 1). Live stocks have none:
+        -- their carrier record travels in carriers.
+        binding = s.binding ~= nil and copy(s.binding) or nil,
     }
 end
 
@@ -1700,6 +1705,9 @@ local function validateSavedStock(s, i, label, carrierIds)
     if not nonempty(s.carrierId, 2048) or not SGRecords.isMaterialRef(s.materialRef) or not SGRecords.isAmount(s.observedAmount) or not nonempty(s.amountUnit, 32) then return nil, label .. ":" .. i end
     if carrierIds ~= nil and not carrierIds[s.carrierId] then return nil, label .. ":" .. i end
     if not SGRecords.KNOWLEDGE[s.knowledge] then return nil, label .. "_KNOWLEDGE:" .. i end
+    if s.binding ~= nil and (not SGRecords.isCarrierBinding(s.binding) or SGRecords.carrierKeyString(s.binding.carrierKey) ~= s.carrierId) then
+        return nil, label .. "_BINDING:" .. i
+    end
     for j, p in ipairs(s.properties or {}) do
         if not SGRecords.isPropertyRecord(p) then return nil, "CORE_PROPERTY:" .. i .. "." .. j end
     end
@@ -1737,8 +1745,9 @@ function O.validateCore(core)
     return core
 end
 
-local function retainHistorical(self, saved, reason)
+local function retainHistorical(self, saved, reason, binding)
     local h = copy(saved)
+    if h.binding == nil and binding ~= nil then h.binding = copy(binding) end
     h.properties = {}
     for _, p in ipairs(saved.properties or {}) do h.properties[p.propertyId] = copy(p) end
     h.acceptedCauses = {}
@@ -1757,14 +1766,41 @@ end
 --- binding is its own. The staged map must be one to one: two saved carriers
 --- claiming one current carrier are a collision and every claimant is refused,
 --- never the first chosen. A mapped carrier the enumeration did not bind is
---- resolved and read through the adapter. Returns savedId -> currentId and
---- savedId -> refusal reason. Saved carriers are walked in saved (sorted) order
---- so binding side effects are deterministic.
+--- resolved and read through the adapter.
+---
+--- EVERY saved reference (brief 4.7.1 :416), not only saved carrier records: a
+--- historical stock whose carrier record was not saved is staged from the
+--- binding it carries, and joins the same collision map. A legacy historical
+--- stock with no binding cannot be staged; under an adapter with restoreBinding
+--- it is refused rather than attached by identity (SG2-1 review MAJOR 1).
+---
+--- Returns savedId -> currentId, savedId -> refusal reason, savedId -> saved
+--- binding (for the history kept), and savedId -> why a mapped carrier could not
+--- be resolved. Saved references are walked in saved order so binding side
+--- effects are deterministic.
 function O:restoreBindings(core, context)
-    local target, refused, staged, claims = {}, {}, {}, {}
+    local target, refused, staged, claims, bindingOf, absentWhy = {}, {}, {}, {}, {}, {}
+    local references, byId = {}, {}
     for _, sc in ipairs(core.carriers) do
-        local lease = self.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, sc.binding.carrierKey.adapterId)
-        if lease ~= nil then
+        references[#references + 1] = { carrierId = sc.carrierId, binding = sc.binding }
+        byId[sc.carrierId] = references[#references]
+    end
+    for _, s in ipairs(core.historical or {}) do
+        local ref = byId[s.carrierId]
+        if ref == nil then
+            ref = { carrierId = s.carrierId, adapterId = type(s.carrierKey) == "table" and s.carrierKey.adapterId or nil }
+            references[#references + 1] = ref
+            byId[s.carrierId] = ref
+        end
+        if ref.binding == nil and s.binding ~= nil then ref.binding = s.binding end
+    end
+    for _, sc in ipairs(references) do
+        bindingOf[sc.carrierId] = sc.binding
+        local adapterId = sc.binding ~= nil and sc.binding.carrierKey.adapterId or sc.adapterId
+        local lease = adapterId ~= nil and self.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, adapterId) or nil
+        if lease ~= nil and sc.binding == nil then
+            if type(lease.spec.restoreBinding) == "function" then refused[sc.carrierId] = "RESTORE_BINDING_UNAVAILABLE" end
+        elseif lease ~= nil then
             local candidate = sc.binding
             if type(lease.spec.restoreBinding) == "function" then
                 local ok, b, why = pcall(lease.spec.restoreBinding, copy(sc.binding), copy(context or {}))
@@ -1786,18 +1822,21 @@ function O:restoreBindings(core, context)
             end
         end
     end
-    for _, sc in ipairs(core.carriers) do
+    for _, sc in ipairs(references) do
         local st = staged[sc.carrierId]
         if st ~= nil then
             if #claims[st.id] > 1 then
                 refused[sc.carrierId] = "RESTORE_COLLISION"
             else
                 target[sc.carrierId] = st.id
-                if self.carriers[st.id] == nil then self:refreshCarrier(st.lease, st.binding, "RESTORE") end
+                if self.carriers[st.id] == nil then
+                    local c, why = self:refreshCarrier(st.lease, st.binding, "RESTORE")
+                    if c == nil then absentWhy[sc.carrierId] = "CARRIER_ABSENT:" .. tostring(why) end
+                end
             end
         end
     end
-    return target, refused
+    return target, refused, bindingOf, absentWhy
 end
 
 --- Restore saved core values against the actual enumerated carriers. A
@@ -1810,7 +1849,7 @@ end
 function O:restoreCore(core, context)
     local restored, unknown, historical = 0, 0, 0
     if core.nextStock > self.nextStock then self.nextStock = core.nextStock end
-    local target, refused = self:restoreBindings(core, context)
+    local target, refused, bindingOf, absentWhy = self:restoreBindings(core, context)
     local saved = {}
     for _, s in ipairs(core.stocks) do saved[#saved + 1] = s end
     for _, s in ipairs(core.historical or {}) do saved[#saved + 1] = s end
@@ -1846,9 +1885,9 @@ function O:restoreCore(core, context)
             end
             live.dataRevision = bump(self)
             unknown = unknown + 1
-            retainHistorical(self, s, "RESTORE_MISMATCH")
+            retainHistorical(self, s, "RESTORE_MISMATCH", bindingOf[s.carrierId])
         else
-            retainHistorical(self, s, refused[s.carrierId] or "CARRIER_ABSENT")
+            retainHistorical(self, s, refused[s.carrierId] or absentWhy[s.carrierId] or "CARRIER_ABSENT", bindingOf[s.carrierId])
             historical = historical + 1
         end
     end
