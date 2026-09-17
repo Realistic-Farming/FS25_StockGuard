@@ -430,6 +430,72 @@ function O:withdrawAdapter(adapterId, reason)
 end
 
 -- ---------------------------------------------------------
+-- The native join: resolveCarrier, readNativeState, resolveAlias
+-- ---------------------------------------------------------
+-- SG2-1 (Gap 1, ledger d4b7216). SG-1 admitted these callbacks and never called
+-- them, so native state reached the store only when an adapter pushed it. The
+-- join makes the adapter's own reads the path: the core names a binding, the
+-- adapter resolves the actual native carrier and reports what it holds now. An
+-- adapter that cannot resolve or read gets no invented state; the carrier stays
+-- unbound or unavailable and the reason is returned.
+
+--- The canonical binding for a binding. An adapter with resolveAlias names the
+--- one binding that owns an aliased quantity; the alias is never bound as a
+--- second carrier, and a canonical binding over a different quantity basis is
+--- refused rather than merged.
+function O:canonicalBinding(adapterLease, binding)
+    local fn = adapterLease.spec.resolveAlias
+    if type(fn) ~= "function" then return binding end
+    local ok, canonical = pcall(fn, copy(binding))
+    if not ok then return nil, "ALIAS_ERROR" end
+    if canonical == nil then return binding end
+    if not SGRecords.isCarrierBinding(canonical) then return nil, "ALIAS_BINDING" end
+    if canonical.carrierKey.adapterId ~= adapterLease.ownerId then return nil, "ALIAS_ADAPTER" end
+    if canonical.quantityBasisKey ~= binding.quantityBasisKey then return nil, "ALIAS_BASIS" end
+    return canonical
+end
+
+--- Resolve the actual native carrier for a binding and read its current state
+--- through the adapter. Returns the native state or nil, reason. Both callbacks
+--- are protected: a fault in an adapter is an unavailable carrier, never a fault
+--- in the caller.
+function O:readThroughAdapter(adapterLease, binding)
+    local spec = adapterLease.spec
+    local okR, native, whyR = pcall(spec.resolveCarrier, copy(binding))
+    if not okR then return nil, "RESOLVE_ERROR" end
+    if native == nil then return nil, "UNRESOLVED:" .. tostring(whyR or "NO_CARRIER") end
+    local okS, ns, whyS = pcall(spec.readNativeState, copy(binding), native)
+    if not okS then return nil, "READ_ERROR" end
+    if ns == nil then return nil, "UNREADABLE:" .. tostring(whyS or "NO_STATE") end
+    return ns
+end
+
+--- Bind or refresh one carrier through the join: the canonical binding, the
+--- actual native carrier, its current state as the adapter reads it. The one
+--- path shared by enumeration, restore and an observation that carries no
+--- state. An already bound carrier with the same binding is reconciled; a new
+--- or changed binding goes through bindCarrier's rebind rules.
+function O:refreshCarrier(adapterLease, binding, reason)
+    if self.busy then return nil, "REENTRANT" end
+    if not self.registry:isLive(adapterLease, SGRegistry.KIND_CARRIER_ADAPTER) then return nil, "LEASE" end
+    if not SGRecords.isCarrierBinding(binding) then return nil, "BINDING" end
+    if binding.carrierKey.adapterId ~= adapterLease.ownerId then return nil, "ADAPTER_MISMATCH" end
+    local canonical, whyAlias = self:canonicalBinding(adapterLease, binding)
+    if canonical == nil then return nil, whyAlias end
+    local ns, whyRead = self:readThroughAdapter(adapterLease, canonical)
+    if ns == nil then return nil, whyRead end
+    local carrierId = self:carrierIdOf(canonical)
+    local carrier = self.carriers[carrierId]
+    if carrier ~= nil and carrier.adapterId == adapterLease.ownerId and SGValues.equal(carrier.binding, canonical) then
+        local state, whyState = O.validateNativeState(ns)
+        if state == nil then return nil, whyState end
+        reconcile(self, carrierId, state, reason or "ADAPTER_OBSERVATION")
+        return carrier
+    end
+    return self:bindCarrier(adapterLease, canonical, ns)
+end
+
+-- ---------------------------------------------------------
 -- Detached snapshots
 -- ---------------------------------------------------------
 function O:snapshotStock(stock, propertyIds)
@@ -1684,19 +1750,73 @@ local function retainHistorical(self, saved, reason)
     self.retiredStocks[saved.stockId] = h
 end
 
+--- The restore half of the join (SG-1 brief 4.7.1). Every saved carrier of a
+--- live adapter is mapped to its CURRENT binding: an adapter whose durable key
+--- or layout embeds farm or session identity stages the replacement through
+--- restoreBinding(savedBinding, context), with context.farmRestore; any other
+--- binding is its own. The staged map must be one to one: two saved carriers
+--- claiming one current carrier are a collision and every claimant is refused,
+--- never the first chosen. A mapped carrier the enumeration did not bind is
+--- resolved and read through the adapter. Returns savedId -> currentId and
+--- savedId -> refusal reason. Saved carriers are walked in saved (sorted) order
+--- so binding side effects are deterministic.
+function O:restoreBindings(core, context)
+    local target, refused, staged, claims = {}, {}, {}, {}
+    for _, sc in ipairs(core.carriers) do
+        local lease = self.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, sc.binding.carrierKey.adapterId)
+        if lease ~= nil then
+            local candidate = sc.binding
+            if type(lease.spec.restoreBinding) == "function" then
+                local ok, b, why = pcall(lease.spec.restoreBinding, copy(sc.binding), copy(context or {}))
+                if not ok then candidate, refused[sc.carrierId] = nil, "RESTORE_BINDING_ERROR"
+                elseif b == nil then candidate, refused[sc.carrierId] = nil, "RESTORE_BINDING_REFUSED:" .. tostring(why or "")
+                elseif not SGRecords.isCarrierBinding(b) or b.carrierKey.adapterId ~= lease.ownerId then candidate, refused[sc.carrierId] = nil, "RESTORE_BINDING_INVALID"
+                else candidate = b end
+            end
+            if candidate ~= nil then
+                local canonical, whyAlias = self:canonicalBinding(lease, candidate)
+                if canonical == nil then
+                    refused[sc.carrierId] = whyAlias
+                else
+                    local id = self:carrierIdOf(canonical)
+                    staged[sc.carrierId] = { lease = lease, binding = canonical, id = id }
+                    claims[id] = claims[id] or {}
+                    claims[id][#claims[id] + 1] = sc.carrierId
+                end
+            end
+        end
+    end
+    for _, sc in ipairs(core.carriers) do
+        local st = staged[sc.carrierId]
+        if st ~= nil then
+            if #claims[st.id] > 1 then
+                refused[sc.carrierId] = "RESTORE_COLLISION"
+            else
+                target[sc.carrierId] = st.id
+                if self.carriers[st.id] == nil then self:refreshCarrier(st.lease, st.binding, "RESTORE") end
+            end
+        end
+    end
+    return target, refused
+end
+
 --- Restore saved core values against the actual enumerated carriers. A
 --- saved stock reattaches only when its carrier is present with the same
 --- material and native amount (the bar's restore rule); otherwise the
 --- native quantity stands with UNKNOWN knowledge and the saved facts are
---- retained as historical and persisted until a load resolves them.
-function O:restoreCore(core)
+--- retained as historical and persisted until a load resolves them. The
+--- carrier is found through restoreBindings (the join); a saved carrier whose
+--- current binding was refused or collided keeps its facts historical.
+function O:restoreCore(core, context)
     local restored, unknown, historical = 0, 0, 0
     if core.nextStock > self.nextStock then self.nextStock = core.nextStock end
+    local target, refused = self:restoreBindings(core, context)
     local saved = {}
     for _, s in ipairs(core.stocks) do saved[#saved + 1] = s end
     for _, s in ipairs(core.historical or {}) do saved[#saved + 1] = s end
     for _, s in ipairs(saved) do
-        local carrier = self.carriers[s.carrierId]
+        local carrier = nil
+        if refused[s.carrierId] == nil then carrier = self.carriers[target[s.carrierId] or s.carrierId] end
         local live = carrier and carrier.stockId and self.stocks[carrier.stockId] or nil
         local nativeAmount = carrier and carrier.native and carrier.native.amount or nil
         local nativeMaterial = carrier and carrier.native and carrier.native.materialRef or nil
@@ -1728,16 +1848,21 @@ function O:restoreCore(core)
             unknown = unknown + 1
             retainHistorical(self, s, "RESTORE_MISMATCH")
         else
-            retainHistorical(self, s, "CARRIER_ABSENT")
+            retainHistorical(self, s, refused[s.carrierId] or "CARRIER_ABSENT")
             historical = historical + 1
         end
     end
     pruneRetired(self)
+    local refusedCount = 0
     for _, sc in ipairs(core.carriers) do
-        local carrier = self.carriers[sc.carrierId]
-        if carrier ~= nil then carrier.lastGeneration = math.max(carrier.lastGeneration or 0, sc.lastGeneration or 0) end
+        if refused[sc.carrierId] ~= nil then
+            refusedCount = refusedCount + 1
+        else
+            local carrier = self.carriers[target[sc.carrierId] or sc.carrierId]
+            if carrier ~= nil then carrier.lastGeneration = math.max(carrier.lastGeneration or 0, sc.lastGeneration or 0) end
+        end
     end
-    return { restored = restored, unknown = unknown, historical = historical }
+    return { restored = restored, unknown = unknown, historical = historical, refused = refusedCount }
 end
 
 --- Mission teardown.

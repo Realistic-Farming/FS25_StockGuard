@@ -7,12 +7,11 @@
 -- reaches the code. A fixture that falls out early reports "refused" exactly like
 -- a working guard, so a negative assertion is worth only what its twin proves.
 --
---!load: src/core/SGValues.lua, src/native/SGOperationContext.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua
+--!load: src/core/SGValues.lua, src/native/SGOperationContext.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua
 
 local C  = SGOperationContext
 local SB = SGStorageBracket
 local FO = SGFillUnitObserver
-local NA = SGNativeAdapters
 
 g_server = g_server or {}
 
@@ -259,94 +258,12 @@ do
          (FO.install({ }, nil)), false)
 end
 
--- ── D: the carrier adapters read the engine, and own nothing ────────────────
-do
-    local storeA = { fillLevels = { [1] = 60, [2] = 0 }, capacity = 900,
-                     getUniqueId = function() return "placeable:A" end }
-    local storeB = { fillLevels = { [3] = 10 }, capacity = 500,
-                     getUniqueId = function() return "placeable:B" end }
-    local spec = NA.storageAdapterSpec(function() return { storeA, storeB } end)
-
-    T.eq("D1 the spec declares its version", spec.version, 1)
-    T.eq("D2 and its carrier kind", spec.carrierKinds[1], "storage")
-
-    local list = spec.enumerateCarriers()
-    T.eq("D3 both storages enumerate", #list, 2)
-    T.eq("D4 keyed by the engine's own persistent id, not a table address",
-         list[1].carrierKey.nativeOwnerKey, "placeable:A")
-
-    local resolved = spec.resolveCarrier({ carrierKey = { nativeOwnerKey = "placeable:B" } })
-    T.eq("D5 a binding resolves by that id", resolved, storeB)
-    T.eq("D6 an unknown id resolves to nothing rather than the nearest match",
-         spec.resolveCarrier({ carrierKey = { nativeOwnerKey = "placeable:ZZZ" } }), nil)
-
-    local state = spec.readNativeState(storeA)
-    T.eq("D7 native state reports the live total", state.amount, 60)
-    T.eq("D8 zero-level types are not reported as held material", state.levels[2], nil)
-    T.eq("D9 and the held one is", state.levels[1], 60)
-end
-
-do
-    local veh = { getUniqueId = function() return "vehicle:7" end,
-                  spec_fillUnit = { fillUnits = { [1] = { fillLevel = 120, capacity = 400, fillType = 5 } } } }
-    local spec = NA.fillUnitAdapterSpec(function() return { veh } end)
-
-    local list = spec.enumerateCarriers()
-    T.eq("D10 one fill unit is one carrier", #list, 1)
-    T.eq("D11 owner key is the vehicle", list[1].carrierKey.nativeOwnerKey, "vehicle:7")
-    T.eq("D12 component key is the unit index", list[1].carrierKey.componentKey, "1")
-
-    local carrier = spec.resolveCarrier({ carrierKey = { nativeOwnerKey = "vehicle:7", componentKey = "1" } })
-    T.ok("D13 a binding resolves to that vehicle and index",
-         carrier ~= nil and carrier.vehicle == veh and carrier.fillUnitIndex == 1)
-    T.eq("D14 an index the vehicle does not have resolves to nothing",
-         spec.resolveCarrier({ carrierKey = { nativeOwnerKey = "vehicle:7", componentKey = "9" } }), nil)
-
-    local state = spec.readNativeState(carrier)
-    T.eq("D15 native state is the live level", state.amount, 120)
-    T.eq("D16 with its single fill type", state.fillType, 5)
-end
-
-do
-    -- An object the engine cannot name stably is not bound, because the binding
-    -- would not survive a reload.
-    local anon = { fillLevels = { [1] = 10 } }
-    local spec = NA.storageAdapterSpec(function() return { anon } end)
-    T.eq("D17 an object with no persistent id is not enumerated", #spec.enumerateCarriers(), 0)
-end
-
-do
-    local saved = g_server
-    local savedMission = g_currentMission
-    -- A PERMISSIVE access handler, deliberately installed. Without one, hasAccess
-    -- refuses for the handler's own reasons and D22 below passes whether the
-    -- server gate exists or not: the fixture cannot reach the branch it names.
-    -- Mutation M22 survived on exactly that until this line was added.
-    g_currentMission = { accessHandler = { canFarmAccess = function() return true end } }
-    local st = { fillLevels = { [1] = 5 }, getUniqueId = function() return "s" end }
-    local spec = NA.storageAdapterSpec(function() return { st } end)
-    T.eq("D18 the server enumerates", #spec.enumerateCarriers(), 1)
-    T.eq("D18b and grants access while the handler says yes", spec.hasAccess(1, st), true)
-    g_server = nil
-    T.eq("D19 a client enumerates nothing", #spec.enumerateCarriers(), 0)
-    T.eq("D20 a client resolves nothing", spec.resolveCarrier({ carrierKey = { nativeOwnerKey = "s" } }), nil)
-    T.eq("D21 and reads no native state", spec.readNativeState(st), nil)
-    T.eq("D22 access is refused on a client EVEN THOUGH the handler would grant it",
-         spec.hasAccess(1, st), false)
-    g_server = saved
-    g_currentMission = savedMission
-end
-
-do
-    -- Access refuses when it cannot check, rather than opening up.
-    local saved = g_currentMission
-    g_currentMission = nil
-    local spec = NA.storageAdapterSpec(function() return {} end)
-    T.eq("D23 no access handler means no access", spec.hasAccess(1, {}), false)
-    g_currentMission = { accessHandler = { canFarmAccess = function() return true end } }
-    T.eq("D24 and a working handler is honoured", spec.hasAccess(1, {}), true)
-    g_currentMission = saved
-end
+-- ── D: moved ─────────────────────────────────────────────────────────────────
+-- The carrier adapters are tested through the route the game uses (the mission
+-- handle, the restore-complete barrier, observe and restore) in
+-- SG2-1-native_join_spec_test.lua groups N and H. Calling the adapter functions
+-- directly with invented keys is how six contract defects stayed green here
+-- (ledger d4b7216), so those cases, and E15-E24, now live there.
 
 -- ── E: rules nothing checked until a mutation said so ───────────────────────
 -- Every case below exists because a mutation SURVIVED the suite above. The
@@ -421,50 +338,4 @@ do
     T.eq("E12 a closed frame refuses them", C.observe(stack, { n = 2 }), false)
     T.eq("E13 and refuses published outputs too", C.publish(stack, { n = 3 }), false)
     T.eq("E14 nothing was appended", #frame.observations, 1)
-end
-
-do
-    -- M18 and M26. An access handler that exists but cannot answer is not
-    -- permission. Refusing here is the same rule as refusing when the handler is
-    -- absent: a reader that opens up when it cannot check is worse than one that
-    -- closes. D23 covered only the absent-handler case.
-    local savedMission = g_currentMission
-    local spec = NA.storageAdapterSpec(function() return {} end)
-
-    g_currentMission = { accessHandler = {} }
-    T.eq("E15 a handler with no canFarmAccess refuses", spec.hasAccess(1, {}), false)
-
-    g_currentMission = { accessHandler = { canFarmAccess = function() error("boom") end } }
-    T.eq("E16 a handler that throws refuses rather than propagating", spec.hasAccess(1, {}), false)
-
-    g_currentMission = { accessHandler = { canFarmAccess = function() return 1 end } }
-    T.eq("E17 a truthy non-boolean is not permission", spec.hasAccess(1, {}), false)
-
-    g_currentMission = { accessHandler = { canFarmAccess = function() return true end } }
-    T.eq("E18 and the twin proves the call path reaches the handler at all",
-         spec.hasAccess(1, {}), true)
-    g_currentMission = savedMission
-end
-
-do
-    -- M27. The fill-unit adapter is server only on every entry point, not just
-    -- the ones the storage adapter happened to get tested on.
-    local saved = g_server
-    local savedMission = g_currentMission
-    g_currentMission = { accessHandler = { canFarmAccess = function() return true end } }
-    local veh = { getUniqueId = function() return "vehicle:9" end,
-                  spec_fillUnit = { fillUnits = { [1] = { fillLevel = 30, capacity = 200 } } } }
-    local spec = NA.fillUnitAdapterSpec(function() return { veh } end)
-    local key = { carrierKey = { nativeOwnerKey = "vehicle:9", componentKey = "1" } }
-
-    T.ok("E19 the server resolves", spec.resolveCarrier(key) ~= nil)
-    T.eq("E20 and grants access", spec.hasAccess(1, { vehicle = veh }), true)
-    g_server = nil
-    T.eq("E21 a client resolves nothing", spec.resolveCarrier(key), nil)
-    T.eq("E22 enumerates nothing", #spec.enumerateCarriers(), 0)
-    T.eq("E23 reads no native state", spec.readNativeState({ vehicle = veh, fillUnitIndex = 1 }), nil)
-    T.eq("E24 and is refused access though the handler would grant it",
-         spec.hasAccess(1, { vehicle = veh }), false)
-    g_server = saved
-    g_currentMission = savedMission
 end
