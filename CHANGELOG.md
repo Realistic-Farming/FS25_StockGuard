@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0.0] - 2026-09-18
+
+First public release.
+
 ### Added
 - SG2-1: native kernel. The Storage and FillUnit carrier adapters are registered on the server and bound at the restore-complete barrier: one carrier per fill type slot of a silo, silo extension or husbandry storage (keyed by the placeable's unique id, the storage's rank within its partition and the fill type), and one per non-consumer vehicle fill unit. Storage setFillLevel and empty brackets and the FillUnit observer report changes, coalesced every 500 ms and flushed at once when a slot empties, first fills or changes type; an open operation context owns its observations. Placeables and vehicles added or removed during play bind and withdraw their carriers. The call-scoped operation context and the captured work-area installer ship for SG2-2 onward and are not yet used.
 - SG2-1: the SG-1 native join. Carrier enumeration, restore and an observation without a pushed state now read each carrier through the adapter's resolveCarrier and readNativeState; restoreBinding stages a saved binding's current identity under the load's farm restore context, two saved carriers claiming one current carrier are both refused, and resolveAlias maps an alias onto its canonical carrier. A per-farm silo partition is never restored in singleplayer or after a native farm merge.
