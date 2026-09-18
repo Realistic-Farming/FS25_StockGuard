@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard nu a putut pregăti capacitatea de materiale pentru această sesiune: %s. Încărcarea se oprește ca nicio marfă să nu fie citită greșit. Verifică selecția de moduri și jurnalul."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: profilul de capacitate al materialelor și hărții diferă de cel al serverului. Procură configurația potrivită și consultă jurnalul gazdei."/>
+        <text name="sg_site_purpose_yard" text="Curte StockGuard"/>
+    </texts>
+</l10n>

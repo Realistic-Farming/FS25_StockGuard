@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard could not arrange material capacity for this session: %s. Loading stops so no goods are misread. Check the mods set and the log."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: the material and map capacity profile differs from the server. Obtain the matching setup and consult the host log."/>
+        <text name="sg_site_purpose_yard" text="StockGuard yard"/>
+    </texts>
+</l10n>

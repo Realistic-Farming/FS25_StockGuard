@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="StockGuard kunde inte ordna materialkapaciteten för den här sessionen: %s. Laddningen stoppas så att inga varor läses fel. Kontrollera modurvalet och loggen."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: material- och kartkapacitetsprofilen skiljer sig från serverns. Skaffa motsvarande uppsättning och läs värdens logg."/>
+        <text name="sg_site_purpose_yard" text="StockGuard-gaard"/>
+    </texts>
+</l10n>

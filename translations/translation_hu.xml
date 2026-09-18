@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<l10n>
+    <texts>
+        <text name="sg6_capacity_refused" text="A StockGuard nem tudta beállítani az anyagkapacitást ehhez a munkamenethez: %s. A betöltés leáll, hogy egyetlen árut se olvasson félre. Ellenőrizd a modválasztást és a naplót."/>
+        <text name="sg6_profile_mismatch" text="StockGuard: az anyag- és térképkapacitási profil eltér a szerverétől. Szerezd be a megfelelő összeállítást, és nézd meg a gazda naplóját."/>
+        <text name="sg_site_purpose_yard" text="StockGuard-udvar"/>
+    </texts>
+</l10n>

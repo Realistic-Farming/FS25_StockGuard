@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8" standalone="no" ?>
 <modDesc descVersion="92">
     <author>TisonK</author>
-    <version>0.1.0.0</version>
+    <version>1.0.0.0</version>
     <modName>FS25_StockGuard</modName>
 
     <title>
@@ -61,6 +61,8 @@
         <id><![CDATA[Whole-material foundation for the Realistic Farming mod ecosystem. Gives every actual stock on the farm a consistent identity and its proved facts through handling, storage, mixing, processing, feeding and sale. Nine clean silos stay separate from a contaminated tenth. What a barn consumes comes from what was actually delivered and fed. Unknown facts stay unknown; nothing is invented. Works standalone; StateLedger, NetworkSync and FarmTablet add depth when installed.]]></id>
         <vi><![CDATA[Whole-material foundation for the Realistic Farming mod ecosystem. Gives every actual stock on the farm a consistent identity and its proved facts through handling, storage, mixing, processing, feeding and sale. Nine clean silos stay separate from a contaminated tenth. What a barn consumes comes from what was actually delivered and fed. Unknown facts stay unknown; nothing is invented. Works standalone; StateLedger, NetworkSync and FarmTablet add depth when installed.]]></vi>
     </description>
+
+    <l10n filenamePrefix="translations/translation"/>
 
     <iconFilename>icon.dds</iconFilename>
 
