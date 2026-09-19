@@ -18,15 +18,20 @@
 // Mission00.load append, the Mission00.loadMission00Finished block, and the
 // console-command block. About a third of the file, and specifically the third
 // that wires the mod into the game, was skipped while the gate reported "load
-// path whole". A source() added inside one of those blocks would have been
-// skipped and still passed, which is the exact class this gate exists for. The
-// harness below therefore supplies the engine globals those guards test, and
-// asserts the wiring actually happened - "did it pass" is a weaker question than
-// "which paths did it enter".
+// path whole". The harness below therefore supplies the engine globals those
+// guards test - "did it pass" is a weaker question than "which paths did it enter".
+//
+// What check 2 is really for, stated honestly. It is NOT what stops a source()
+// inside an unentered guard slipping through: check 3 already does that by
+// construction, because such a file simply is not sourced and check 3 names it.
+// The evidence for the original defect was always the unsourced FILE. Check 2
+// earns its place on a different class that check 3 cannot see at all: delete or
+// break one of these appends and NO file changes, so the source list stays
+// complete and silent while the mod quietly stops wiring itself into the game.
 //
 // What it asserts:
 //   1. main.lua runs to completion with no load-time error;
-//   2. every guarded wiring region was entered, so no source() inside one is skipped;
+//   2. every guarded wiring region actually wired its slot;
 //   3. every .lua under src/ was sourced, exactly once (a new file that nobody
 //      wires up fails here on the day it is added, not two releases later).
 //
@@ -90,18 +95,26 @@ g_currentModDirectory = ${JSON.stringify(modDir)}
 g_currentModName = "FS25_StockGuard"
 g_modsDirectory = nil
 
-local function compose(name)
-  return function(oldFn, newFn)
-    _SG_WIRED[name] = (_SG_WIRED[name] or 0) + 1
-    return function(...) if oldFn then oldFn(...) end return newFn(...) end
-  end
-end
-
 Utils = Utils or {}
--- appendedFunction/prependedFunction record WHICH slot was wrapped, by matching the
--- function value back to the table it came from after main.lua has run.
-Utils.appendedFunction = function(oldFn, newFn) return compose("?")(oldFn, newFn) end
-Utils.prependedFunction = function(oldFn, newFn) return compose("?")(oldFn, newFn) end
+-- Modelled on the engine rather than approximated: utils/Utils.lua:380-386 runs
+-- oldFunc THEN newFunc, :387-393 runs newFunc THEN oldFunc, and both return newFunc
+-- bare when oldFunc is nil. No assertion here invokes a composed function today, so
+-- the ordering is not load-bearing yet; it is written correctly anyway because this
+-- is the one file whose whole purpose is to stop a stub answering a narrower
+-- question than it appears to, and a backwards prepend would encode a real
+-- ordering defect as intended the day someone does assert on it.
+--
+-- They record nothing. Which slot was wired is decided by the before/after slot
+-- comparison in the report below, which is stronger: it proves the assignment
+-- landed on that slot rather than that a wrapper was constructed.
+Utils.appendedFunction = function(oldFn, newFn)
+  if oldFn == nil then return newFn end
+  return function(...) oldFn(...) return newFn(...) end
+end
+Utils.prependedFunction = function(oldFn, newFn)
+  if oldFn == nil then return newFn end
+  return function(...) newFn(...) return oldFn(...) end
+end
 
 Mission00 = { load = function() end, loadMission00Finished = function() end }
 FSBaseMission = { delete = function() end, update = function() end, onConnectionClosed = function() end }
@@ -175,7 +188,7 @@ if (rc !== lua.LUA_OK) {
 // 2. Every guarded wiring region was entered.
 for (const name of EXPECTED_WIRING) {
   if (!wired.has(name)) {
-    fail(`main.lua never wired ${name} - that guarded block did not run, so any source() inside it was skipped.`);
+    fail(`main.lua never wired ${name} - the mod does not attach itself to that engine hook.`);
   }
 }
 
