@@ -36,6 +36,7 @@ def p(rel): return os.path.join(ROOT, rel)
 
 WF = "src/capacity/SGWireFormats.lua"
 PRE = "tools/test/lua/prelude.lua"
+TST = "tools/test/lua/SG-wire-reach_test.lua"
 
 MUTATIONS = [
  ("M1-bool-writer-returns-nil", PRE,
@@ -126,6 +127,16 @@ end""", 1)],
     "            self.fillLevelsLastSynced[fillType] = level", 1)],
   "an absent level is written anyway, so the reader's present flag and the stream "
   "no longer agree about what follows"),
+
+ ("M12-node-id-written-as-int32", TST,
+  [("""  writeNodeObjectId = function(s, id) streamWriteUIntN(s, id or 0, NetworkNode.OBJECT_SEND_NUM_BITS) end,
+  readNodeObjectId = function(s) return streamReadUIntN(s, NetworkNode.OBJECT_SEND_NUM_BITS) end,""",
+    """  writeNodeObjectId = function(s, id) streamWriteInt32(s, id or 0) end,
+  readNodeObjectId = function(s) return streamReadInt32(s) end,""", 1)],
+  "the node id stub goes back to Int32. It is SYMMETRIC, so every round trip still "
+  "drains and every value still survives, while six cells assert the wrong type and "
+  "no width where the engine puts a 24-bit UIntN. This is the exact hole Bob found "
+  "in the first draft, and it must now fail by name"),
 ]
 
 

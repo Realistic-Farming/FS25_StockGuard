@@ -64,11 +64,22 @@ SellingStation.superClass = function() return sellSuper end
 ProductionPoint = nativePair("ProductionPoint")
 ProductionPoint.superClass = function() return prodSuper end
 ProductionPoint.OUTPUT_MODE = { DIRECT_SELL = 1, AUTO_DELIVER = 2 }
+-- PROD_STATUS_NUM_BITS IS DELIBERATELY NOT THE ENGINE'S VALUE. The engine uses 2
+-- (objects/ProductionPoint.lua:16). This stub uses 3 BECAUSE of that: running at a
+-- value the engine never uses means a production line that hardcoded the engine's
+-- literal instead of reading the constant FAILS the bar. Same move as the width-5
+-- round trip in BAR 10. This is the opposite of the NetworkNode stub above, which
+-- must match the engine exactly, so the divergence is stated rather than left to
+-- read as an unverified guess.
 ProductionPoint.PROD_STATUS_NUM_BITS = 3
 Storage = nativePair("Storage")
 Storage.superClass = function() return storeSuper end
 
 MoneyType = { registerWithId = function(id) return { id = id } end }
+-- A bit32.band fallback for the bench only. Production already depends on the
+-- engine providing bit32, since SGWireFormats ships calling it, so this governs
+-- nothing that runs in game. It is only ever asked a SINGLE-BIT question here (is
+-- this dirty flag set), and every correct band agrees on that.
 bit32 = bit32 or { band = function(a, b)
   local r, bitv = 0, 1
   while a > 0 and b > 0 do
@@ -77,9 +88,29 @@ bit32 = bit32 or { band = function(a, b)
   end
   return r
 end }
+-- NetworkNode.OBJECT_SEND_NUM_BITS = 24, taken from the decompile at
+-- network/NetworkNode.lua:20, not guessed.
+NetworkNode = { OBJECT_SEND_NUM_BITS = 24 }
+
+-- Node ids go on the wire as a 24-bit UIntN, exactly as the engine writes them
+-- (network/NetworkUtil.lua:31-33: streamWriteUIntN(streamId, objectId or 0,
+-- NetworkNode.OBJECT_SEND_NUM_BITS)).
+--
+-- THE FIRST DRAFT STUBBED THIS AS Int32 AND THAT WAS A REAL HOLE, Bob's MAJOR.
+-- Production calls these six times in the paths this file drives (writes at
+-- SGWireFormats.lua:277, :281, :285 and reads at :244, :248, :252). An Int32 stub
+-- is SYMMETRIC on both sides, so every round trip still drained and every bar
+-- still passed, while six cells asserted i32 and no width where the engine puts a
+-- 24-bit uN. Symmetry is self-fulfilling: it proves the two halves of MY fiction
+-- agree, never that either matches the engine. That is the worst place for it in
+-- this file, because per-cell width fidelity is the thing this file exists to
+-- assert.
+--
+-- 24 also cannot collide with a frozen width of 8 or 5, so a hardcoding defect
+-- here is visible rather than hidden behind a shared default.
 NetworkUtil = {
-  writeNodeObjectId = function(s, id) streamWriteInt32(s, id or 0) end,
-  readNodeObjectId = function(s) return streamReadInt32(s) end,
+  writeNodeObjectId = function(s, id) streamWriteUIntN(s, id or 0, NetworkNode.OBJECT_SEND_NUM_BITS) end,
+  readNodeObjectId = function(s) return streamReadUIntN(s, NetworkNode.OBJECT_SEND_NUM_BITS) end,
   getObjectId = function(o) return o ~= nil and o._objId or 0 end,
 }
 g_client = { finishRegisterObject = function() end }
@@ -419,6 +450,28 @@ T.ok("a status cell was written",           statusIdx ~= nil, "no uN at PROD_STA
 T.eq("THE STATUS USES THE ENGINE'S CONSTANT, not the frozen width",
      statusIdx ~= nil and s7.widths[statusIdx] or -1, 3)
 T.eq("the status value survives",           statusIdx ~= nil and s7.cells[statusIdx] or -1, 5)
+-- THE NODE IDS, which the first draft could not see at all.
+--
+-- Three are written here (unloadingStation, loadingStation, storage) and three
+-- read back. They are 24-bit UIntN on the engine's wire, a DIFFERENT width from
+-- both the frozen width and PROD_STATUS_NUM_BITS, so each is pinned by width and
+-- not merely by value. With the old Int32 stub every one of these rows was absent
+-- and the file still passed, which is what made the hole invisible.
+local nodeCells = {}
+for i = 1, s7.w do
+  if s7.tags[i] == "uN" and s7.widths[i] == NetworkNode.OBJECT_SEND_NUM_BITS then
+    nodeCells[#nodeCells + 1] = s7.cells[i]
+  end
+end
+T.eq("three node ids went on the wire",      #nodeCells, 3)
+T.eq("the unloading station id",             nodeCells[1], 11)
+T.eq("the loading station id",               nodeCells[2], 12)
+T.eq("the storage id",                       nodeCells[3], 13)
+T.eq("A NODE ID IS 24 BITS, not the frozen width",
+     NetworkNode.OBJECT_SEND_NUM_BITS, 24)
+T.ok("and 24 is distinct from every other width in this frame",
+     NetworkNode.OBJECT_SEND_NUM_BITS ~= 8
+     and NetworkNode.OBJECT_SEND_NUM_BITS ~= ProductionPoint.PROD_STATUS_NUM_BITS)
 T.ok("the production write is clean",       StreamClean(s7))
 
 local recv7 = productionPoint()
