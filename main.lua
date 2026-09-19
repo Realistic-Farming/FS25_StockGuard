@@ -54,6 +54,16 @@ source(modDirectory .. "src/native/SGFillUnitObserver.lua")
 source(modDirectory .. "src/native/SGNativeAdapters.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 
+-- EP-1 chemical station: role slots, the operator address, the WIP transfer route
+-- and the sale gate. These four shipped in the zip but were never sourced, so the
+-- globals did not exist in game and nothing could reach them. They are pure Lua
+-- tables of functions with no load-time engine calls and no dependency on each
+-- other, so this only makes the globals exist; no caller is wired up here.
+source(modDirectory .. "src/placeables/ChemicalStationRoles.lua")
+source(modDirectory .. "src/placeables/ChemicalStationAddress.lua")
+source(modDirectory .. "src/placeables/ChemicalStationWipRoute.lua")
+source(modDirectory .. "src/placeables/ChemicalStationSaleGate.lua")
+
 -- One controller for the process; the unload hook resets it per mission.
 StockGuardCapacity = StockGuardCapacity or SGCapacity.new()
 SGCapacity.installHooks(StockGuardCapacity)
