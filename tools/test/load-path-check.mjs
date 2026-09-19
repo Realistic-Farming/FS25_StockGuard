@@ -82,6 +82,12 @@ function rootProvenance(root) {
   let drift = "";
   if (behind !== null && behind !== "0") drift += ` BEHIND UPSTREAM BY ${behind}`;
   if (ahead !== null && ahead !== "0") drift += ` ahead by ${ahead}`;
+  // HEAD names the COMMIT; this gate walks the WORKING TREE. A clone with
+  // uncommitted changes reads files that do not match the commit printed beside
+  // them, and @{u} cannot see that. It is the likelier case for a spot check than
+  // staleness was, since you naturally point --root at a clone you are working in.
+  const dirty = git(["status", "--porcelain"]);
+  if (dirty) drift += ` +DIRTY (${dirty.split("\n").length} files)`;
   return `${root} @ ${branch} ${head}${drift}`;
 }
 
@@ -327,7 +333,19 @@ for (const s of loadedRel) {
 const arch = declared.length === 1 ? "entry + source()"
   : loadedRel.length > declared.length ? "hybrid (modDesc list + source())"
   : "modDesc lists all";
-const label = `${production.length} production modules, ${loaded.length} executions, ${wired.size} wiring points, ${arch}`;
+
+// Say which of these is a CHECK and which is an OBSERVATION.
+//
+// `wired` is populated by the slot sweep and addConsoleCommand regardless of what was
+// asserted, and expectedWiringFor returns [] for any root with no config. So a --root
+// run against an unconfigured repo checks nothing and would still have reported "5
+// wiring points": not a wrong number, but one answering a narrower question than the
+// summary implied, and the summary is the part that gets quoted.
+const asserted = expectedWiringFor(ROOT).length;
+const wiringLabel = asserted === 0
+  ? `${wired.size} hooks observed, 0 asserted`
+  : `${wired.size} hooks observed, ${asserted} asserted`;
+const label = `${production.length} production modules, ${loaded.length} executions, ${wiringLabel}, ${arch}`;
 if (errors > 0) {
   console.log(c.red(`\nLoad path check FAILED - ${errors} problem(s). (${label})\n`));
   process.exit(1);

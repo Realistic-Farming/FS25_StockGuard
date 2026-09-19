@@ -37,7 +37,7 @@ const CASES = [
    "TYPE 3: a modDesc list PLUS a file that sources another. Both mechanisms fire " +
    "and the union covers every production file."],
 
-  ["wiring-ok", 0, "1 wiring points",
+  ["wiring-ok", 0, "1 hooks observed, 1 asserted",
    "WIRING, positive: the entry attaches the hook its config declares."],
 
   ["wiring-missing", 1, "was never wired",
