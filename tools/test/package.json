@@ -5,12 +5,13 @@
   "type": "module",
   "description": "Self-test harness for FS25_StockGuard (excluded from the mod zip via build.sh include list).",
   "scripts": {
-    "check": "node syntax-check.mjs && node lint.mjs && node load-path-check.mjs",
+    "check": "node syntax-check.mjs && node lint.mjs && node load-path-check.mjs && node load-path-selftest.mjs",
     "syntax": "node syntax-check.mjs",
     "lint": "node lint.mjs",
     "loadpath": "node load-path-check.mjs",
+    "loadpath:selftest": "node load-path-selftest.mjs",
     "test": "node run-tests.mjs",
-    "all": "node syntax-check.mjs && node lint.mjs && node load-path-check.mjs && node run-tests.mjs"
+    "all": "node syntax-check.mjs && node lint.mjs && node load-path-check.mjs && node load-path-selftest.mjs && node run-tests.mjs"
   },
   "devDependencies": {
     "fengari": "^0.1.4",
