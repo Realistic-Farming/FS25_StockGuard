@@ -45,6 +45,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 import fengari from "fengari";
 import { REPO_ROOT, c } from "./lib.mjs";
 
@@ -59,6 +60,34 @@ const LUA_DIR = fileURLToPath(new URL("./lua", import.meta.url));
 const rootArg = process.argv.indexOf("--root");
 const ROOT = rootArg !== -1 ? resolve(process.argv[rootArg + 1]) : REPO_ROOT;
 const IS_SELF = ROOT === REPO_ROOT;
+
+// PROVENANCE. --root walks a WORKING TREE, and a working tree is whatever that clone
+// happens to be sitting on. A spot check against a repo 24 commits behind its remote
+// produces real numbers about a state nobody named, which is how a correct conclusion
+// ends up with figures that describe a different repo. Every --root run therefore
+// says which tree it read, and says so loudly when that tree is behind.
+function rootProvenance(root) {
+  const git = (args) => {
+    try {
+      return execFileSync("git", ["-C", root, ...args], {
+        encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch { return null; }
+  };
+  const head = git(["rev-parse", "--short", "HEAD"]);
+  if (head === null) return `${root} (not a git repo)`;
+  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]) || "?";
+  const behind = git(["rev-list", "--count", "HEAD..@{u}"]);
+  const ahead = git(["rev-list", "--count", "@{u}..HEAD"]);
+  let drift = "";
+  if (behind !== null && behind !== "0") drift += ` BEHIND UPSTREAM BY ${behind}`;
+  if (ahead !== null && ahead !== "0") drift += ` ahead by ${ahead}`;
+  return `${root} @ ${branch} ${head}${drift}`;
+}
+
+if (!IS_SELF) {
+  console.log(c.dim(`  root: ${rootProvenance(ROOT)}`));
+}
 
 // ── Per-repo front end ──────────────────────────────────────────────────────────
 // The only repo-specific parts. Everything below is generic.
