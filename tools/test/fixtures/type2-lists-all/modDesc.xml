@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no" ?>
+<modDesc descVersion="60">
+    <extraSourceFiles>
+        <sourceFile filename="api/Alpha.lua" />
+        <sourceFile filename="events/Beta.lua" />
+    </extraSourceFiles>
+</modDesc>
