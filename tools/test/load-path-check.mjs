@@ -342,9 +342,7 @@ const arch = declared.length === 1 ? "entry + source()"
 // wiring points": not a wrong number, but one answering a narrower question than the
 // summary implied, and the summary is the part that gets quoted.
 const asserted = expectedWiringFor(ROOT).length;
-const wiringLabel = asserted === 0
-  ? `${wired.size} hooks observed, 0 asserted`
-  : `${wired.size} hooks observed, ${asserted} asserted`;
+const wiringLabel = `${wired.size} hooks observed, ${asserted} asserted`;
 const label = `${production.length} production modules, ${loaded.length} executions, ${wiringLabel}, ${arch}`;
 if (errors > 0) {
   console.log(c.red(`\nLoad path check FAILED - ${errors} problem(s). (${label})\n`));

@@ -11,6 +11,20 @@
 // message says the expected thing. A gate that failed for the wrong reason would pass
 // an exit-code-only check.
 //
+// PINNING THE MESSAGE IS DELIBERATE. DO NOT LOOSEN IT.
+//
+// Asserting on output text normally couples a test to something incidental, and for
+// most code that is a defect: the test breaks on a rewording that changed no
+// behaviour. A gate is the opposite case. What a gate DOES is print a claim for a
+// human to read, so its message is not incidental to its behaviour, it IS its
+// behaviour, and a test that pins the message pins the thing that matters.
+//
+// This has already earned itself once: the wiring-ok case was written to prove the
+// wiring detector, and it caught an unrelated summary-label edit an hour later that
+// its author was not looking for. If a future change makes these substrings fail,
+// the question to ask is "did the claim this gate makes change", not "how do I make
+// this assertion less fragile".
+//
 // Usage:  node load-path-selftest.mjs
 // Exit:   0 = the gate behaves as specified on every fixture, 1 = it does not.
 import { execFileSync } from "node:child_process";
