@@ -42,7 +42,7 @@
 //
 // Usage:  node load-path-check.mjs
 // Exit:   0 = the load path is whole, 1 = something is dead, doubled or errored.
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import fengari from "fengari";
@@ -69,12 +69,20 @@ const IS_SELF = ROOT === REPO_ROOT;
 // that excluded `tools/` but not `tests/` once turned seven test files into an
 // apparent seven dead files. Add to it deliberately, and prefer a directory the build
 // script already excludes from the zip.
+//
+// Measured complete 2026-09-19 (Bob): across the fleet these are the only dedicated
+// test directories. `tools/` in 21 repos, `tests/` in exactly two, TransportCompany
+// and WeatherGuard. No repo uses a third name and no test file lives inside a
+// production directory, so the false-positive direction (a test file reported as dead
+// production code) has no instance today. That is PROSPECTIVE, not live. Re-verify in
+// one command rather than re-deriving the question:
+//   for d in FS25_*/; do ls "$d" | grep -iE '^(test|tests|spec|specs)$'; done
 const NON_PRODUCTION_DIRS = ["tools/", "tests/"];
 
 // Engine hooks this mod must attach. A mod can load every file and still wire itself
 // into nothing, and no file-level check can see that: break one of these appends and
 // the source list stays complete and silent. Leave empty in a repo that attaches none.
-const EXPECTED_WIRING = [
+const SELF_WIRING = [
   "Mission00.load",
   "Mission00.loadMission00Finished",
   "FSBaseMission.delete",
@@ -84,6 +92,22 @@ const EXPECTED_WIRING = [
   "console:sgCapacity",
   "console:sgStatus",
 ];
+
+// The wiring expectations belong to the ROOT being checked, not to this repo.
+//
+// They used to be gated on "am I checking myself", which made wiring the one
+// assertion that could not have a negative test: any fixture exercising it runs with
+// --root, which was exactly when the list emptied. A regression that made the wiring
+// detector always pass would have been invisible in both modes, while checks 1 and 3
+// each have a fixture that fails. Reading them from the root lets a fixture declare a
+// hook and not attach it, so the detector can be proven the way the others are.
+function expectedWiringFor(root) {
+  const cfg = join(root, "load-path.config.json");
+  if (existsSync(cfg)) {
+    return JSON.parse(readFileSync(cfg, "utf8")).expectedWiring ?? [];
+  }
+  return IS_SELF ? SELF_WIRING : [];
+}
 
 // ── The production file set ─────────────────────────────────────────────────────
 // Walked from the REPO ROOT, not from src/.
@@ -240,7 +264,7 @@ if (rc !== lua.LUA_OK) {
 }
 
 // 2. Every engine hook this mod declares it attaches was actually attached.
-for (const name of (IS_SELF ? EXPECTED_WIRING : [])) {
+for (const name of expectedWiringFor(ROOT)) {
   if (!wired.has(name)) {
     fail(`${name} was never wired - the mod does not attach itself to that engine hook.`);
   }

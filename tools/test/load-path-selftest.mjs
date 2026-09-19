@@ -37,6 +37,16 @@ const CASES = [
    "TYPE 3: a modDesc list PLUS a file that sources another. Both mechanisms fire " +
    "and the union covers every production file."],
 
+  ["wiring-ok", 0, "1 wiring points",
+   "WIRING, positive: the entry attaches the hook its config declares."],
+
+  ["wiring-missing", 1, "was never wired",
+   "WIRING, negative, and the reason the expectations moved out of an IS_SELF gate. " +
+   "Checks 1 and 3 each have a fixture that FAILS; wiring had none and could not, " +
+   "because any fixture exercising it runs with --root, which was exactly when the " +
+   "list emptied. A regression making the wiring detector always pass would have " +
+   "been invisible in both modes. Now it is proven the way the others are."],
+
   ["type3-double-load", 1, "is loaded 2 times per game load",
    "TYPE 3 double load: a file listed in modDesc AND sourced by the entry runs twice " +
    "per game load. This is TaxMod's real shape, and ONLY the union of both " +
