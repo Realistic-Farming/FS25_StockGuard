@@ -80,6 +80,16 @@ SGCapacity.ADAPTERS = {
       basis = "accepted interim (Tyson 2026-09-15): source not on C:" },
     { key = "realisticLivestock", modNames = { "FS25_RealisticLivestockRM", "FS25_RealisticLivestock" }, role = "floor", floorBits = 10, bound = true,
       basis = "FS25_RealisticLivestockRM.zip scripts/fillTypes/RealisticLivestock_FillTypeManager.lua:6 (SEND_NUM_BITS < 10 -> 10 at file load; :17 appends its fill types to loadMapData)" },
+    -- Ours. Added when SoilFertilizer absorbed FillType Extender's capability so
+    -- players on large maps can drop that mod. Our floor is 10, ABOVE FTE's 9 and
+    -- equal to Realistic Livestock's, because 9 caps at 511 and the one heavy modset
+    -- anyone has measured carries 513+ live fill types. A player dropping FTE still
+    -- sees no regression: 10 is strictly above 9 and we never lower. Declared here
+    -- rather than discovered later, because a width writer the fleet does not know
+    -- about is one found by accident. This record and the source it cites shipped
+    -- together.
+    { key = "soilFertilizer", modNames = { "FS25_SoilFertilizer" }, role = "floor", floorBits = 10, bound = true,
+      basis = "FS25_SoilFertilizer src/utils/SoilFillTypeWidth.lua FLOOR_BITS = 10, raises only when current < floor and never lowers; called at top-level file scope from src/main.lua before any addFillType. 10 rather than FillType Extender's 9 deliberately: 9 caps at 511 and a measured tester modset carries 513+ live fill types" },
     { key = "montana", modNames = { "FS25_Montana_MF" }, role = "temporary", temporaryWidth = 10, bound = true,
       basis = "FS25_Montana_MF.zip multifruit/scripts/FillTypeLimitIncrease.lua:22-33 (10 during loadMapData, then max(getNumRequiredBits(#fillTypes), old), utils/MathUtil.lua:707)" },
 }

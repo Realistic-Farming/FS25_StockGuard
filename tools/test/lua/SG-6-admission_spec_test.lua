@@ -1010,6 +1010,53 @@ do
     T.eq("J12 duplicate ids in a list refused", select(2, WF.validateIdList({ { id = 4 }, { id = 4 } }, 2, 9, 300)), "INVALID_ID")
     T.eq("J13 valid id list", (WF.validateIdList({ { id = 4 }, { id = 9 } }, 2, 9, 300)), true)
     T.eq("J14 adapter seam accepts a named tail", WF.registerTail("ProductionPoint", { read = function() end }), true)
-    T.eq("J15 four adapters are bound (realSilo, extender, Realistic Livestock, Montana)", (function() local n = 0 for _, a in ipairs(CAP.ADAPTERS) do if a.bound then n = n + 1 end end return n end)(), 4)
+    -- Five since SoilFertilizer absorbed FillType Extender's capability and became a
+    -- width writer in its own right. A bare count is a weak census, so the named
+    -- assertions below it pin WHICH five, and J15c pins the floor SoilFertilizer
+    -- actually writes: a record claiming the wrong floorBits would pass a count.
+    T.eq("J15 five adapters are bound (realSilo, extender, Realistic Livestock, Montana, SoilFertilizer)", (function() local n = 0 for _, a in ipairs(CAP.ADAPTERS) do if a.bound then n = n + 1 end end return n end)(), 5)
+    T.ok("J15b every bound adapter is one of the five named", (function()
+        local expected = { realSilo = true, fillTypeExtender = true, realisticLivestock = true, montana = true, soilFertilizer = true }
+        for _, a in ipairs(CAP.ADAPTERS) do
+            if a.bound and not expected[a.key] then return false end
+        end
+        return true
+    end)())
+    T.eq("J15c SoilFertilizer is a floor writer at 10 bits", (function()
+        local sf = CAP.matchAdapter(CAP.SOIL_MOD_NAME)
+        if sf == nil then return "no record" end
+        return sf.role .. ":" .. tostring(sf.floorBits)
+    end)(), "floor:10")
+    T.eq("J15d and it is selected by our real mod name, not a near miss", (function()
+        local sf = CAP.matchAdapter("FS25_SoilFertilizer")
+        return sf ~= nil and sf.key or "nil"
+    end)(), "soilFertilizer")
+    -- J15e and J15f pin RELATIONSHIPS, which is what the change actually rests on.
+    -- Bob's MINOR, and the floor moving from 9 to 10 made it more important rather
+    -- than less: there are now TWO relationships and neither is a bare constant.
+    --
+    -- The safety claim is that a player who drops FillType Extender sees no
+    -- regression. That is true because our floor is at least as high as FTE's, NOT
+    -- because both read the same number. Asserting equality here would now be wrong,
+    -- and asserting 10 and 9 separately would leave this green on the day someone
+    -- raises FTE's record above ours and quietly breaks the claim.
+    T.ok("J15e our floor is at least FillType Extender's, so dropping FTE cannot regress", (function()
+        local fte = CAP.matchAdapter("FS25_fillTypeExtender")
+        local sf  = CAP.matchAdapter(CAP.SOIL_MOD_NAME)
+        return fte ~= nil and sf ~= nil and sf.floorBits >= fte.floorBits
+    end)())
+    -- The parity claim is now with Realistic Livestock: we sit at the same width it
+    -- already establishes, so the registry carries no new shape and a session with
+    -- both mods has one agreed floor rather than two competing ones.
+    T.eq("J15f our floor EQUALS Realistic Livestock's, the value we claim parity with", (function()
+        local rl = CAP.matchAdapter("FS25_RealisticLivestockRM")
+        local sf = CAP.matchAdapter(CAP.SOIL_MOD_NAME)
+        if rl == nil or sf == nil then return "a record is missing" end
+        if rl.floorBits ~= sf.floorBits then
+            return string.format("mismatch: RL %s, SoilFertilizer %s",
+                tostring(rl.floorBits), tostring(sf.floorBits))
+        end
+        return "equal"
+    end)(), "equal")
     T.eq("J16 four stay refused (ProductionControl, Pumps N Hoses, UnlimitedFillTypes, Distribution Redux)", (function() local n = 0 for _, a in ipairs(CAP.ADAPTERS) do if not a.bound then n = n + 1 end end return n end)(), 4)
 end
