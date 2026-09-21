@@ -1022,29 +1022,39 @@ do
         end
         return true
     end)())
-    T.eq("J15c SoilFertilizer is a floor writer at 9 bits, matching FillType Extender", (function()
+    T.eq("J15c SoilFertilizer is a floor writer at 10 bits", (function()
         local sf = CAP.matchAdapter(CAP.SOIL_MOD_NAME)
         if sf == nil then return "no record" end
         return sf.role .. ":" .. tostring(sf.floorBits)
-    end)(), "floor:9")
+    end)(), "floor:10")
     T.eq("J15d and it is selected by our real mod name, not a near miss", (function()
         local sf = CAP.matchAdapter("FS25_SoilFertilizer")
         return sf ~= nil and sf.key or "nil"
     end)(), "soilFertilizer")
-    -- J15e pins the RELATIONSHIP, which is the thing the change actually rests on.
-    -- The premise is "same floor as FillType Extender, so a player who drops FTE sees
-    -- no change". That is a statement about two records being equal, not about two
-    -- constants each happening to read 9. Asserting them separately leaves every
-    -- assertion above green on the day someone edits FTE's floorBits, while the
-    -- premise silently stops being true. Bob's MINOR, and he is right that a test
-    -- which cannot fail when its own premise breaks is decoration.
-    T.eq("J15e our floor EQUALS FillType Extender's, which is the premise of absorbing it", (function()
+    -- J15e and J15f pin RELATIONSHIPS, which is what the change actually rests on.
+    -- Bob's MINOR, and the floor moving from 9 to 10 made it more important rather
+    -- than less: there are now TWO relationships and neither is a bare constant.
+    --
+    -- The safety claim is that a player who drops FillType Extender sees no
+    -- regression. That is true because our floor is at least as high as FTE's, NOT
+    -- because both read the same number. Asserting equality here would now be wrong,
+    -- and asserting 10 and 9 separately would leave this green on the day someone
+    -- raises FTE's record above ours and quietly breaks the claim.
+    T.ok("J15e our floor is at least FillType Extender's, so dropping FTE cannot regress", (function()
         local fte = CAP.matchAdapter("FS25_fillTypeExtender")
         local sf  = CAP.matchAdapter(CAP.SOIL_MOD_NAME)
-        if fte == nil or sf == nil then return "a record is missing" end
-        if fte.floorBits ~= sf.floorBits then
-            return string.format("mismatch: FTE %s, SoilFertilizer %s",
-                tostring(fte.floorBits), tostring(sf.floorBits))
+        return fte ~= nil and sf ~= nil and sf.floorBits >= fte.floorBits
+    end)())
+    -- The parity claim is now with Realistic Livestock: we sit at the same width it
+    -- already establishes, so the registry carries no new shape and a session with
+    -- both mods has one agreed floor rather than two competing ones.
+    T.eq("J15f our floor EQUALS Realistic Livestock's, the value we claim parity with", (function()
+        local rl = CAP.matchAdapter("FS25_RealisticLivestockRM")
+        local sf = CAP.matchAdapter(CAP.SOIL_MOD_NAME)
+        if rl == nil or sf == nil then return "a record is missing" end
+        if rl.floorBits ~= sf.floorBits then
+            return string.format("mismatch: RL %s, SoilFertilizer %s",
+                tostring(rl.floorBits), tostring(sf.floorBits))
         end
         return "equal"
     end)(), "equal")
