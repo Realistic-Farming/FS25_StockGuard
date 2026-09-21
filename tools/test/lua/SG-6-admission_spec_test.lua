@@ -1031,5 +1031,22 @@ do
         local sf = CAP.matchAdapter("FS25_SoilFertilizer")
         return sf ~= nil and sf.key or "nil"
     end)(), "soilFertilizer")
+    -- J15e pins the RELATIONSHIP, which is the thing the change actually rests on.
+    -- The premise is "same floor as FillType Extender, so a player who drops FTE sees
+    -- no change". That is a statement about two records being equal, not about two
+    -- constants each happening to read 9. Asserting them separately leaves every
+    -- assertion above green on the day someone edits FTE's floorBits, while the
+    -- premise silently stops being true. Bob's MINOR, and he is right that a test
+    -- which cannot fail when its own premise breaks is decoration.
+    T.eq("J15e our floor EQUALS FillType Extender's, which is the premise of absorbing it", (function()
+        local fte = CAP.matchAdapter("FS25_fillTypeExtender")
+        local sf  = CAP.matchAdapter(CAP.SOIL_MOD_NAME)
+        if fte == nil or sf == nil then return "a record is missing" end
+        if fte.floorBits ~= sf.floorBits then
+            return string.format("mismatch: FTE %s, SoilFertilizer %s",
+                tostring(fte.floorBits), tostring(sf.floorBits))
+        end
+        return "equal"
+    end)(), "equal")
     T.eq("J16 four stay refused (ProductionControl, Pumps N Hoses, UnlimitedFillTypes, Distribution Redux)", (function() local n = 0 for _, a in ipairs(CAP.ADAPTERS) do if not a.bound then n = n + 1 end end return n end)(), 4)
 end
