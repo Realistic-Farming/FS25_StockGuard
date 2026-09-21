@@ -1010,6 +1010,26 @@ do
     T.eq("J12 duplicate ids in a list refused", select(2, WF.validateIdList({ { id = 4 }, { id = 4 } }, 2, 9, 300)), "INVALID_ID")
     T.eq("J13 valid id list", (WF.validateIdList({ { id = 4 }, { id = 9 } }, 2, 9, 300)), true)
     T.eq("J14 adapter seam accepts a named tail", WF.registerTail("ProductionPoint", { read = function() end }), true)
-    T.eq("J15 four adapters are bound (realSilo, extender, Realistic Livestock, Montana)", (function() local n = 0 for _, a in ipairs(CAP.ADAPTERS) do if a.bound then n = n + 1 end end return n end)(), 4)
+    -- Five since SoilFertilizer absorbed FillType Extender's capability and became a
+    -- width writer in its own right. A bare count is a weak census, so the named
+    -- assertions below it pin WHICH five, and J15c pins the floor SoilFertilizer
+    -- actually writes: a record claiming the wrong floorBits would pass a count.
+    T.eq("J15 five adapters are bound (realSilo, extender, Realistic Livestock, Montana, SoilFertilizer)", (function() local n = 0 for _, a in ipairs(CAP.ADAPTERS) do if a.bound then n = n + 1 end end return n end)(), 5)
+    T.ok("J15b every bound adapter is one of the five named", (function()
+        local expected = { realSilo = true, fillTypeExtender = true, realisticLivestock = true, montana = true, soilFertilizer = true }
+        for _, a in ipairs(CAP.ADAPTERS) do
+            if a.bound and not expected[a.key] then return false end
+        end
+        return true
+    end)())
+    T.eq("J15c SoilFertilizer is a floor writer at 9 bits, matching FillType Extender", (function()
+        local sf = CAP.matchAdapter(CAP.SOIL_MOD_NAME)
+        if sf == nil then return "no record" end
+        return sf.role .. ":" .. tostring(sf.floorBits)
+    end)(), "floor:9")
+    T.eq("J15d and it is selected by our real mod name, not a near miss", (function()
+        local sf = CAP.matchAdapter("FS25_SoilFertilizer")
+        return sf ~= nil and sf.key or "nil"
+    end)(), "soilFertilizer")
     T.eq("J16 four stay refused (ProductionControl, Pumps N Hoses, UnlimitedFillTypes, Distribution Redux)", (function() local n = 0 for _, a in ipairs(CAP.ADAPTERS) do if not a.bound then n = n + 1 end end return n end)(), 4)
 end
