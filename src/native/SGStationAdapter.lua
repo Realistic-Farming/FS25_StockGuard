@@ -34,12 +34,27 @@
 -- TEARDOWN restores the raw instance slot (nil for a formerly inherited method) only
 -- while our wrapper is still the current method, so a later foreign replacement is
 -- never erased.
+--
+-- THE CALL-SCOPED CONTEXT. The host passes open/close hooks, and each corrected loop
+-- runs inside them, so the Storage bracket's observations of the stores it touches
+-- belong to ONE physical operation and no generic listener commits a second transfer
+-- while it is open (SG-2 "Direct movement").
+--
+-- THE SALE BRACKET (SG2-2 stage c) is observation only. A SellingStation keeps its
+-- own addFillLevelFromTool (it is never corrected here); the bracket wraps that call
+-- and its inner sellFillType so the sale's paid phase can be joined to the discharge
+-- that caused it. It changes no argument, no return and no quantity. Each wrapper
+-- calls the instance's former raw slot, or else the CLASS method resolved at CALL
+-- time, so a class wrap installed later (MarketDynamics' PriceHook on sellFillType,
+-- TransportCompany's on addFillLevelFromTool) is still reached, whatever the load
+-- order. The file-scope identity baseline governs only the two quantity wrappers.
 
 SGStationAdapter = SGStationAdapter or {}
 local S = SGStationAdapter
 
 S.MARKER = "_sgStationAdapter"
-S.LOAD, S.UNLOAD = "LOAD", "UNLOAD"
+S.LOAD, S.UNLOAD, S.SELL = "LOAD", "UNLOAD", "SELL"
+S.SELL_KEYS = { "addFillLevelFromTool", "sellFillType" }
 S.KEY = { LOAD = "removeFillLevel", UNLOAD = "addFillLevelFromTool" }
 -- The native completeness predicate for the unload effects (UnloadingStation.lua:254).
 S.FX_EPSILON = 0.001
@@ -57,6 +72,46 @@ end
 
 local function finite(x)
     return type(x) == "number" and x == x and x ~= math.huge and x ~= -math.huge
+end
+
+local function packn(...)
+    return select("#", ...), { ... }
+end
+
+--- A hooks table from what the caller passed: a bare function is the failure hook.
+local function hooksOf(hooks)
+    if type(hooks) == "function" then return { failure = hooks } end
+    if type(hooks) == "table" then return hooks end
+    return {}
+end
+
+--- The method a class provides for `key`, read through the metatable at call time,
+--- skipping any instance slot.
+local function classMethod(obj, key)
+    local mt = getmetatable(obj)
+    local index = mt ~= nil and mt.__index or nil
+    if type(index) == "table" then return index[key] end
+    if type(index) == "function" then return index(obj, key) end
+    return nil
+end
+S.classMethod = classMethod
+
+--- Run fn inside the host's call-scoped context. The context is closed whether fn
+--- returned or raised; a raised error is re-raised unchanged.
+local function bracketed(fn, hooks, kind)
+    if hooks.open == nil then return fn end
+    return function(self, ...)
+        local token
+        local okOpen, result = pcall(hooks.open, self, kind)
+        if okOpen then token = result else print("[StockGuard] station adapter: open failed (" .. tostring(result) .. ")") end
+        local n, r = packn(pcall(fn, self, ...))
+        if token ~= nil and hooks.close ~= nil then
+            local okClose, err = pcall(hooks.close, token)
+            if not okClose then print("[StockGuard] station adapter: close failed (" .. tostring(err) .. ")") end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
 end
 
 --- Report a concrete failed native operation. The attempt stops with the observed
@@ -168,9 +223,9 @@ end
 --- instance's resolved method is exactly the file-scope native baseline.
 ---@param station table
 ---@param kind string   S.LOAD | S.UNLOAD
----@param onFailure function|nil (station, kind, reason)
+---@param hooks table|function|nil  { failure(station, kind, reason), open(station, kind) -> token, close(token) }, or the failure hook alone
 ---@return boolean admitted, string|nil why
-function S.install(station, kind, onFailure)
+function S.install(station, kind, hooks)
     if g_server == nil then return false, "CLIENT" end
     if type(station) ~= "table" then return false, "NO_STATION" end
     local key = S.KEY[kind]
@@ -185,8 +240,10 @@ function S.install(station, kind, onFailure)
     end
     if resolved ~= baseline then return false, "NOT_NATIVE" end
 
+    hooks = hooksOf(hooks)
     local raw = rawget(station, key)
-    local wrapper = kind == S.LOAD and S.makeRemoveFillLevel(onFailure) or S.makeAddFillLevelFromTool(onFailure)
+    local loop = kind == S.LOAD and S.makeRemoveFillLevel(hooks.failure) or S.makeAddFillLevelFromTool(hooks.failure)
+    local wrapper = bracketed(loop, hooks, kind)
     rawset(station, key, wrapper)
     if rec == nil then
         rec = {}
@@ -208,6 +265,95 @@ function S.uninstall(station, kind)
     if rawget(station, key) ~= entry.wrapper then return false, "REPLACED_BY_ANOTHER" end
     rawset(station, key, entry.raw)
     return true
+end
+
+-- ---------------------------------------------------------
+-- The sale bracket (SG2-2 stage c): observation only
+-- ---------------------------------------------------------
+--- Bracket a selling station's delivery call and its inner sell phase.
+---@param hooks table { saleOpen(station) -> token, saleClose(token),
+---                     phaseEnter(station, farmId, fillDelta, fillTypeIndex, toolType, extraAttributes) -> phase,
+---                     phaseExit(phase, ok) }
+---@return boolean installed, string|nil why
+function S.installSaleBracket(station, hooks)
+    if g_server == nil then return false, "CLIENT" end
+    if type(station) ~= "table" then return false, "NO_STATION" end
+    if type(station.addFillLevelFromTool) ~= "function" or type(station.sellFillType) ~= "function" then return false, "NOT_A_SALE_STATION" end
+    hooks = hooksOf(hooks)
+    local rec = rawget(station, S.MARKER)
+    local sell = rec ~= nil and rec[S.SELL] or nil
+    if sell ~= nil and station.addFillLevelFromTool == sell.wrappers.addFillLevelFromTool and station.sellFillType == sell.wrappers.sellFillType then
+        return true, "ALREADY"
+    end
+    if sell ~= nil then return false, "REPLACED_BY_ANOTHER" end
+
+    local raws = { addFillLevelFromTool = rawget(station, "addFillLevelFromTool"), sellFillType = rawget(station, "sellFillType") }
+    local wrappers = {}
+    wrappers.addFillLevelFromTool = function(self, ...)
+        local token
+        if hooks.saleOpen ~= nil then
+            local okOpen, result = pcall(hooks.saleOpen, self)
+            if okOpen then token = result else print("[StockGuard] sale bracket: open failed (" .. tostring(result) .. ")") end
+        end
+        local fn = raws.addFillLevelFromTool or classMethod(self, "addFillLevelFromTool")
+        local n, r = packn(pcall(fn, self, ...))
+        if token ~= nil and hooks.saleClose ~= nil then
+            local okClose, err = pcall(hooks.saleClose, token)
+            if not okClose then print("[StockGuard] sale bracket: close failed (" .. tostring(err) .. ")") end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
+    -- The paid phase is captured at ENTRY, from the native five arguments
+    -- (SellingStation.lua:349), before any class wrap of sellFillType runs.
+    wrappers.sellFillType = function(self, farmId, fillDelta, fillTypeIndex, toolType, extraAttributes, ...)
+        local phase
+        if hooks.phaseEnter ~= nil then
+            local okEnter, result = pcall(hooks.phaseEnter, self, farmId, fillDelta, fillTypeIndex, toolType, extraAttributes)
+            if okEnter then phase = result else print("[StockGuard] sale bracket: phase entry failed (" .. tostring(result) .. ")") end
+        end
+        local fn = raws.sellFillType or classMethod(self, "sellFillType")
+        local n, r = packn(pcall(fn, self, farmId, fillDelta, fillTypeIndex, toolType, extraAttributes, ...))
+        if phase ~= nil and hooks.phaseExit ~= nil then
+            local okExit, err = pcall(hooks.phaseExit, phase, r[1])
+            if not okExit then print("[StockGuard] sale bracket: phase exit failed (" .. tostring(err) .. ")") end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
+    for _, key in ipairs(S.SELL_KEYS) do rawset(station, key, wrappers[key]) end
+    if rec == nil then
+        rec = {}
+        rawset(station, S.MARKER, rec)
+    end
+    rec[S.SELL] = { raws = raws, wrappers = wrappers }
+    return true
+end
+
+--- Remove the sale bracket, restoring each slot only while ours is still current.
+---@return boolean restored, string|nil why
+function S.uninstallSaleBracket(station)
+    if type(station) ~= "table" then return false, "NO_STATION" end
+    local rec = rawget(station, S.MARKER)
+    local sell = rec ~= nil and rec[S.SELL] or nil
+    if sell == nil then return false, "NOT_INSTALLED" end
+    rec[S.SELL] = nil
+    local replaced = false
+    for _, key in ipairs(S.SELL_KEYS) do
+        if rawget(station, key) == sell.wrappers[key] then
+            rawset(station, key, sell.raws[key])
+        else
+            replaced = true
+        end
+    end
+    if replaced then return false, "REPLACED_BY_ANOTHER" end
+    return true
+end
+
+function S.isSaleBracketed(station)
+    local rec = type(station) == "table" and rawget(station, S.MARKER) or nil
+    local sell = rec ~= nil and rec[S.SELL] or nil
+    return sell ~= nil and station.addFillLevelFromTool == sell.wrappers.addFillLevelFromTool and station.sellFillType == sell.wrappers.sellFillType
 end
 
 --- True when the station's quantity method of this kind is our correction.

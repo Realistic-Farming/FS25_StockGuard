@@ -126,6 +126,12 @@ function SG:buildHandle()
     h.readMaterial = serverOnly(function(lease, query) return host.operations:readMaterial(lease, query) end)
     h.visitOwnedPropertyRecords = serverOnly(function(lease, cursor, limit) return host.operations:visitOwnedPropertyRecords(lease, cursor, limit) end)
     h.readPropertyMix = serverOnly(function(lease, contributions, context) return host.operations:readPropertyMix(lease, contributions, context) end)
+    -- SG2-2: the MD-16 source facade, answered by the live native host of THIS mission.
+    h.getNativeSaleInputsV1 = serverOnly(function(saleFrame)
+        local native = SGNativeHost ~= nil and SGNativeHost.current or nil
+        if native == nil or native.handle ~= h or SGNativeSale == nil then return nil, "UNAVAILABLE" end
+        return SGNativeSale.inputs(native, saleFrame)
+    end)
     h.readCarrierPending = serverOnly(function(lease, carrierKey, trustedActor) return host.operations:readCarrierPending(lease, carrierKey, trustedActor) end)
     h.setCarrierPending = serverOnly(function(lease, carrierKey, expectedEmptyEpoch, expectedSelectionRevision, newTarget, trustedActor) return host.operations:setCarrierPending(lease, carrierKey, expectedEmptyEpoch, expectedSelectionRevision, newTarget, trustedActor) end)
     h.onPendingComplete = serverOnly(function(pendingId, outcome, detail) local ok = host.commands:onPendingComplete(pendingId, outcome, detail) if ok then host.transport:markDirty() end return ok end)

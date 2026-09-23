@@ -27,7 +27,7 @@
 -- runner discarding the file. Every refusal has a twin proving the fixture reaches
 -- the branch.
 --
---!load: tools/test/lua/SG2-2-engine_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
+--!load: tools/test/lua/SG2-2-engine_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
 local SA, NH = SGStationAdapter, SGNativeHost
 local WHEAT, BARLEY, GRASS = ENGINE_FT.WHEAT, ENGINE_FT.BARLEY, ENGINE_FT.GRASS
@@ -282,6 +282,14 @@ group("I", function()
     g_server = {}
     T.eq("I18 a client admits nothing", tostring(okCl) .. "/" .. tostring(whyCl), "false/CLIENT")
     T.eq("I19 an unknown kind is refused", select(2, SA.install(plain(SA.LOAD), "BOTH")), "KIND")
+    local sale = SellingStation.newModel()
+    g_server = nil
+    local okSC, whySC = SA.installSaleBracket(sale, {})
+    g_server = {}
+    T.eq("I20 a client installs no sale bracket", tostring(okSC) .. "/" .. tostring(whySC) .. "/" .. tostring(rawget(sale, "sellFillType")), "false/CLIENT/nil")
+    T.eq("I21 [reached] twin: the server installs it", tostring((SA.installSaleBracket(sale, {}))), "true")
+    local okS2, whyS2 = SA.installSaleBracket(sale, {})
+    T.eq("I22 a second sale bracket install is a no-op", tostring(okS2) .. "/" .. tostring(whyS2), "true/ALREADY")
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -372,7 +380,7 @@ local E = {}
 group("E", function()
     -- What main.lua sourced is what this bench loaded, in the same order.
     local declared = {}
-    for _, d in ipairs({ "src/capacity/SGSha256.lua", "src/capacity/SGCanonicalProfile.lua", "src/capacity/SGWireFormats.lua", "src/capacity/SGCapacity.lua", "src/core/SGValues.lua", "src/core/SGRecords.lua", "src/core/SGRegistry.lua", "src/core/SGOperations.lua", "src/core/SGFarmRestore.lua", "src/core/SGSave.lua", "src/core/SGSiteBinding.lua", "src/core/SGViews.lua", "src/core/SGCommands.lua", "src/core/SGTransport.lua", "src/StockGuard.lua", "src/native/SGOperationContext.lua", "src/native/SGWorkAreaInstaller.lua", "src/native/SGStorageBracket.lua", "src/native/SGFillUnitObserver.lua", "src/native/SGNativeAdapters.lua", "src/native/SGStationAdapter.lua", "src/native/SGNativeHost.lua", "src/placeables/ChemicalStationRoles.lua", "src/placeables/ChemicalStationAddress.lua", "src/placeables/ChemicalStationWipRoute.lua", "src/placeables/ChemicalStationSaleGate.lua" }) do
+    for _, d in ipairs({ "src/capacity/SGSha256.lua", "src/capacity/SGCanonicalProfile.lua", "src/capacity/SGWireFormats.lua", "src/capacity/SGCapacity.lua", "src/core/SGValues.lua", "src/core/SGRecords.lua", "src/core/SGRegistry.lua", "src/core/SGOperations.lua", "src/core/SGFarmRestore.lua", "src/core/SGSave.lua", "src/core/SGSiteBinding.lua", "src/core/SGViews.lua", "src/core/SGCommands.lua", "src/core/SGTransport.lua", "src/StockGuard.lua", "src/native/SGOperationContext.lua", "src/native/SGWorkAreaInstaller.lua", "src/native/SGStorageBracket.lua", "src/native/SGFillUnitObserver.lua", "src/native/SGNativeAdapters.lua", "src/native/SGStationAdapter.lua", "src/native/SGDischargeCapture.lua", "src/native/SGNativeSale.lua", "src/native/SGNativeHost.lua", "src/placeables/ChemicalStationRoles.lua", "src/placeables/ChemicalStationAddress.lua", "src/placeables/ChemicalStationWipRoute.lua", "src/placeables/ChemicalStationSaleGate.lua" }) do
         declared[#declared + 1] = g_currentModDirectory .. d
     end
     T.eq("E0 main.lua sourced exactly this bench's modules, in order", table.concat(ENGINE_SOURCED, ","), table.concat(declared, ","))
@@ -438,13 +446,23 @@ group("E", function()
     T.eq("E13 and its unloading station", SA.isAdmitted(usU, SA.UNLOAD), true)
     T.eq("E14 and the one registered between install and barrier", SA.isAdmitted(usMid, SA.UNLOAD), true)
     T.eq("E15 and the one the engine holds though it returned false", SA.isAdmitted(usNoPlace, SA.UNLOAD), true)
-    T.eq("E16 a SellingStation is withheld, its own method untouched", tostring(SA.isAdmitted(sell, SA.UNLOAD)) .. "/" .. tostring(rawget(sell, "addFillLevelFromTool")) .. "/" .. tostring(host.stations[sell] and host.stations[sell].UNLOAD), "false/nil/false")
+    T.eq("E16 a SellingStation is withheld from the correction and gets the observation-only sale bracket", tostring(SA.isAdmitted(sell, SA.UNLOAD)) .. "/" .. tostring(host.stations[sell] and host.stations[sell].UNLOAD) .. "/" .. tostring(SA.isSaleBracketed(sell)), "false/false/true")
     T.eq("E17 a foreign instance override is withheld and left in place", tostring(SA.isAdmitted(usForeign, SA.UNLOAD)) .. "/" .. tostring(usForeign.addFillLevelFromTool == foreignFn), "false/true")
     T.eq("E18 a raw slot holding the native method is admitted", SA.isAdmitted(usRaw, SA.UNLOAD), true)
 
-    -- Corrected quantities through the engine's own callers.
+    -- Corrected quantities through the engine's own callers. A probe on the SECOND
+    -- store counts host flushes before its write: the first store's write went from
+    -- empty (a boundary), which flushes at once on the generic path.
+    local flushes, flushesAtSecondWrite = 0, nil
+    local realFlush = host.flush
+    host.flush = function(self, ...) flushes = flushes + 1 return realFlush(self, ...) end
+    sU[2].setFillLevel = function(self, ...) flushesAtSecondWrite = flushes return Storage.setFillLevel(self, ...) end
     m.accessCalls = {}
     local accepted = unloadInto(usU, 100)
+    host.flush = nil
+    sU[2].setFillLevel = nil
+    T.eq("E19a inside the corrected loop nothing flushes: one physical operation", flushesAtSecondWrite, 0)
+    T.ok("E19b [reached] the boundary flush runs once the loop's context closes", flushes >= 1)
     T.eq("E19 100 L unloaded into 50 + 200 L free: the station reports 100", accepted, 100)
     T.eq("E20 and lands 50 then 50, not 50 then 100", level(sU, 1) .. "/" .. level(sU, 2), "50/50")
     T.eq("E21 the effects fire once and the fill planes are kept", usU.fxCalls .. "/" .. usU.planeCalls, "1/1")

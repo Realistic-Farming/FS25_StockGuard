@@ -264,10 +264,52 @@ function SellingStation:addFillLevelFromTool(farmId, deltaFillLevel, fillTypeInd
     end
     return deltaFillLevel
 end
--- :349 MODELED: records the sale; price and money are SG2-2 stage (c)/(d) territory.
+-- :349 MODELED: records the sale and returns a price as money (2 per litre). The
+-- price body (:356-360) is the market's business, not this bench's.
 function SellingStation:sellFillType(farmId, fillDelta, fillTypeIndex, toolType, extraAttributes)
-    self.sold[#self.sold + 1] = { farmId = farmId, fillDelta = fillDelta, fillTypeIndex = fillTypeIndex, toolType = toolType }
-    return fillDelta
+    self.sold[#self.sold + 1] = { farmId = farmId, fillDelta = fillDelta, fillTypeIndex = fillTypeIndex, toolType = toolType, extraAttributes = extraAttributes }
+    return fillDelta * 2
+end
+-- :481-483 VERBATIM (the superclass call written out).
+function SellingStation:getIsFillAllowedFromFarm(farmId)
+    return not self:getStoreGoods(farmId, nil) and true or UnloadingStation.getIsFillAllowedFromFarm(self, farmId)
+end
+-- UnloadingStation.lua getIsFillAllowedFromFarm VERBATIM.
+function UnloadingStation:getIsFillAllowedFromFarm(farmId)
+    for _, targetStorage in pairs(self.targetStorages) do
+        if self:hasFarmAccessToStorage(farmId, targetStorage) then
+            return true
+        end
+    end
+    return false
+end
+
+-- ── Dischargeable (vehicles/specializations/Dischargeable.lua) ────────────────
+Dischargeable = {}
+-- :807-816 VERBATIM: the outer call of every tool-to-station unload.
+function Dischargeable:dischargeToObject(dischargeNode, emptyLiters, object, targetFillUnitIndex)
+    local fillType, factor = self:getDischargeFillType(dischargeNode)
+    local dischargedLiters = 0
+    if object:getFillUnitSupportsFillType(targetFillUnitIndex, fillType) and object:getFillUnitAllowsFillType(targetFillUnitIndex, fillType) then
+        dischargeNode.currentDischargeObject = object
+        local delta = object:addFillUnitFillLevel(self:getActiveFarm(), targetFillUnitIndex, emptyLiters * factor, fillType, dischargeNode.toolType, dischargeNode.info) / factor
+        local unloadInfo = self:getFillVolumeUnloadInfo(dischargeNode.unloadInfoIndex)
+        dischargedLiters = self:addFillUnitFillLevel(self:getOwnerFarmId(), dischargeNode.fillUnitIndex, -delta, self:getFillUnitFillType(dischargeNode.fillUnitIndex), ToolType.UNDEFINED, unloadInfo)
+    end
+    return dischargedLiters
+end
+-- :862-873 VERBATIM: the node's fill type converter.
+function Dischargeable:getDischargeFillType(dischargeNode)
+    local fillType = self:getFillUnitFillType(dischargeNode.fillUnitIndex)
+    local conversionFactor = 1
+    if dischargeNode.fillTypeConverter ~= nil then
+        local conversion = dischargeNode.fillTypeConverter[fillType]
+        if conversion ~= nil then
+            fillType = conversion.targetFillTypeIndex
+            conversionFactor = conversion.conversionFactor
+        end
+    end
+    return fillType, conversionFactor
 end
 
 -- ── StorageSystem (objects/StorageSystem.lua) ────────────────────────────────
@@ -370,6 +412,26 @@ UnloadTrigger = {}
 local UnloadTrigger_mt = { __index = UnloadTrigger }
 function UnloadTrigger.newModel(target, fillTypeConversions)
     return setmetatable({ target = target, fillTypeConversions = fillTypeConversions or {}, extraAttributes = nil }, UnloadTrigger_mt)
+end
+-- :144-153 VERBATIM: what a discharging vehicle asks the trigger first.
+function UnloadTrigger:getFillUnitSupportsFillType(_, fillType) return self:getIsFillTypeSupported(fillType) end
+function UnloadTrigger:getFillUnitAllowsFillType(_, fillType) return self:getIsFillTypeAllowed(fillType) end
+function UnloadTrigger:getIsFillTypeAllowed(fillType) return self:getIsFillTypeSupported(fillType) end
+-- :154-168 VERBATIM.
+function UnloadTrigger:getIsFillTypeSupported(fillType)
+    if self.fillTypes ~= nil and not self.fillTypes[fillType] then
+        return false
+    end
+    if self.target ~= nil then
+        local conversion = self.fillTypeConversions[fillType]
+        if conversion ~= nil then
+            fillType = conversion.outgoingFillType
+        end
+        if not self.target:getIsFillTypeAllowed(fillType, self.extraAttributes) then
+            return false
+        end
+    end
+    return true
 end
 function UnloadTrigger:addFillUnitFillLevel(farmId, _, fillLevelDelta, fillTypeIndex, toolType, fillPositionData, extraAttributes)
     local fillTypeConverison = self.fillTypeConversions[fillTypeIndex]

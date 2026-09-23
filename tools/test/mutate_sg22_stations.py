@@ -1,6 +1,10 @@
-# StockGuard SG2-2 stage (a) mutation battery: the RSF-F207 station quantity
-# correction (src/native/SGStationAdapter.lua), the host's station binding
-# (src/native/SGNativeHost.lua) and main.lua's two new lines.
+# StockGuard SG2-2 mutation battery: the RSF-F207 station quantity correction and
+# the observation-only sale bracket (src/native/SGStationAdapter.lua), the outer
+# discharge capture (src/native/SGDischargeCapture.lua), sale frames and the MD-16
+# facade (src/native/SGNativeSale.lua), the host's station binding, discharge
+# settlement and context replay (src/native/SGNativeHost.lua), and main.lua's lines.
+# Rows live in SG2-2-station_quantity_spec_test.lua (stage a) and
+# SG2-2-native_sale_spec_test.lua (stages b to e).
 #
 # SEPARATE FILE ON PURPOSE. mutate.py is the SG2-1 kernel battery and mutate_wire.py
 # the wire-reach battery; each belongs to its own work.
@@ -26,6 +30,8 @@ SA = "src/native/SGStationAdapter.lua"
 NH = "src/native/SGNativeHost.lua"
 MAIN = "main.lua"
 MODEL = "tools/test/lua/SG2-2-engine_model.lua"
+DC = "src/native/SGDischargeCapture.lua"
+SALE = "src/native/SGNativeSale.lua"
 
 MUTATIONS = [
  # ── the LOAD loop ──────────────────────────────────────────────────────────
@@ -114,8 +120,8 @@ MUTATIONS = [
     "    local baseline = kind == S.LOAD and LoadingStation.removeFillLevel or UnloadingStation.addFillLevelFromTool", 1)],
   "the baseline is read at install, so a later foreign class wrap counts as native"),
  ("C3-already-check-dropped", SA,
-  [("        return true, \"ALREADY\"",
-    "        return false, \"ALREADY\"", 1)],
+  [("resolved == rec[kind].wrapper then\n        return true, \"ALREADY\"",
+    "resolved == rec[kind].wrapper then\n        return false, \"ALREADY\"", 1)],
   "a second install of our own wrapper reports a refusal"),
  ("C4-uninstall-erases-a-later-replacement", SA,
   [("    if rawget(station, key) ~= entry.wrapper then return false, \"REPLACED_BY_ANOTHER\" end\n",
@@ -126,9 +132,17 @@ MUTATIONS = [
     "    rawset(station, key, nil)", 1)],
   "a raw native slot is not restored as raw"),
  ("C6-client-admits", SA,
-  [("    if g_server == nil then return false, \"CLIENT\" end",
-    "", 1)],
+  [("    if g_server == nil then return false, \"CLIENT\" end\n    if type(station) ~= \"table\" then return false, \"NO_STATION\" end\n    local key = S.KEY[kind]",
+    "    if type(station) ~= \"table\" then return false, \"NO_STATION\" end\n    local key = S.KEY[kind]", 1)],
   "a client installs the correction"),
+ ("C7-sale-bracket-already-check-dropped", SA,
+  [("station.sellFillType == sell.wrappers.sellFillType then\n        return true, \"ALREADY\"",
+    "station.sellFillType == sell.wrappers.sellFillType then\n        return false, \"ALREADY\"", 1)],
+  "a second sale bracket install reports a refusal"),
+ ("C8-client-installs-sale-bracket", SA,
+  [("    if g_server == nil then return false, \"CLIENT\" end\n    if type(station) ~= \"table\" then return false, \"NO_STATION\" end\n    if type(station.addFillLevelFromTool)",
+    "    if type(station) ~= \"table\" then return false, \"NO_STATION\" end\n    if type(station.addFillLevelFromTool)", 1)],
+  "a client installs the sale bracket"),
 
  # ── the host ───────────────────────────────────────────────────────────────
  ("D1-no-sweep-at-the-barrier", NH,
@@ -180,6 +194,117 @@ MUTATIONS = [
  ("N2-adapter-not-sourced", MAIN,
   [("source(modDirectory .. \"src/native/SGStationAdapter.lua\")\n", "", 1)],
   "main.lua stops sourcing the adapter"),
+
+ # ── stage (b): the outer discharge capture ─────────────────────────────────
+ ("E1-discharge-identity-dropped", DC,
+  [("    if current ~= baseline then return false, \"NOT_NATIVE\" end\n", "", 1)],
+  "a foreign dischargeToObject is wrapped and then bypassed by the native baseline"),
+ ("E2-discharge-close-skipped", DC,
+  [("            local okClose, err = pcall(onClose, token, r[1], self, unpack(r, 2, n))",
+    "            local okClose, err = true, nil", 1)],
+  "the capture is never closed: nothing settles, the context never rests"),
+ ("E3-discharge-error-swallowed", DC,
+  [("        if not r[1] then error(r[2], 0) end\n        return unpack(r, 2, n)",
+    "        return unpack(r, 2, n)", 1)],
+  "an error raised inside the native discharge disappears"),
+
+ # ── stage (d): frames and the facade ───────────────────────────────────────
+ ("F1-facade-parent-check-dropped", SALE,
+  [("    if parent == nil then return nil, \"NO_PARENT\" end\n", "", 1)],
+  "a free-standing sale is treated as if it had a source"),
+ ("F2-facade-open-check-dropped", SALE,
+  [("    if not entry.open or entry.host ~= host then return nil, \"STALE_FRAME\" end",
+    "    if entry.host ~= host then return nil, \"STALE_FRAME\" end", 1)],
+  "a frame reused after its phase is answered again"),
+ ("F3-facade-altered-frame-accepted", SALE,
+  [("            if saleFrame[k] ~= f[k] then return nil, \"FRAME_ALTERED\" end",
+    "            if false then return nil, \"FRAME_ALTERED\" end", 1)],
+  "a holder can change the frame's paid amount and still be answered"),
+ ("F4-facade-zero-paid-accepted", SALE,
+  [("    if not finite(f.paidAmount) or f.paidAmount <= 0 then return nil, \"INVALID_PAID\" end",
+    "    if not finite(f.paidAmount) then return nil, \"INVALID_PAID\" end", 1)],
+  "a zero paid amount is not refused as such"),
+ ("F5-facade-projection-ignores-conversion", SALE,
+  [("    local projected = f.paidAmount / d.triggerRatio / d.dischargeFactor",
+    "    local projected = f.paidAmount", 1)],
+  "the paid litres are taken as source litres across a converting chain"),
+ ("F6-facade-properties-unscaled", SALE,
+  [("            q.knownAmount = (q.knownAmount or 0) * share",
+    "            q.knownAmount = (q.knownAmount or 0)", 1)],
+  "the whole stock's known amount is attributed to the sold share"),
+ ("F7-facade-always-complete", SALE,
+  [("    local complete = projected <= available + N.EPSILON",
+    "    local complete = true", 1)],
+  "a sale larger than its captured source is reported as fully covered"),
+ ("F8-facade-no-destination", SALE,
+  [("        destinationId = host:destinationToken(entry.station),",
+    "        destinationId = nil,", 1)],
+  "the record names no destination"),
+ ("F9-facade-farm-unchecked", SALE,
+  [("    if d.farmId ~= f.nativeFarmId then return nil, \"FARM_MISMATCH\" end\n", "", 1)],
+  "a paid phase for another farm is joined to this discharge"),
+ ("F10-facade-type-unchecked", SALE,
+  [("    if d.paidFillTypeIndex ~= f.paidFillTypeIndex then return nil, \"TYPE_MISMATCH\" end\n", "", 1)],
+  "a paid phase for another fill type is joined to this discharge"),
+ ("F11-facade-station-unchecked", SALE,
+  [("    if d.station ~= entry.station then return nil, \"DESTINATION_MISMATCH\" end\n", "", 1)],
+  "a paid phase at another station is joined to this discharge"),
+ ("F12-facade-nil-is-not-current", SALE,
+  [("        entry = host.salePhases[#host.salePhases]       -- A4: the current phase",
+    "        entry = nil", 1)],
+  "the A4 reading is lost: nil never finds the current phase"),
+
+ # ── stages (b) and (e) in the host ─────────────────────────────────────────
+ ("G1-host-captures-store-goods", NH,
+  [("    if not okS or store ~= false then return nil end\n", "", 1)],
+  "a station that stores the goods is captured though its path is not carried"),
+ ("G2-host-captures-unbound-stations", NH,
+  [("    if entry == nil or not entry[SGStationAdapter.SELL] then return nil end",
+    "    if false then return nil end", 1)],
+  "a selling station the host never bound is captured"),
+ ("G3-host-settle-consumes-nothing", NH,
+  [("    return consumed\nend", "    return nil\nend", 1)],
+  "the settled debit is replayed to the generic path as well"),
+ ("G4-host-settle-debit-is-projection", NH,
+  [("source = { carrierId = d.carrierId }, sourceAmount = debit,",
+    "source = { carrierId = d.carrierId }, sourceAmount = paid / d.triggerRatio / d.dischargeFactor,", 1)],
+  "the settlement retires the projection instead of the observed debit"),
+ ("G5-host-result-always-sold", NH,
+  [("            result = paid > 0 and \"SOLD\" or \"DELIVERED\", reason = paid <= 0 and \"NO_PAID_SALE\" or nil,",
+    "            result = \"SOLD\", reason = nil,", 1)],
+  "an unpaid mission delivery is recorded as a sale"),
+ ("G6-host-close-drops-observations", NH,
+  [("        if consumed == nil or not consumed[obs] then self:replayObservation(obs) end",
+    "        local _ = obs", 1)],
+  "a closed context swallows what it did not settle"),
+ ("G7-host-discharge-context-left-open", NH,
+  [("function H:onDischargeClose(frame, ok)\n    SGOperationContext.close(self.context, frame)",
+    "function H:onDischargeClose(frame, ok)\n    local _ = frame", 1)],
+  "the discharge context is never closed"),
+
+ # ── stage (c): the sale bracket ────────────────────────────────────────────
+ ("H1-sale-phase-never-entered", SA,
+  [("        if hooks.phaseEnter ~= nil then", "        if false then", 1)],
+  "no paid phase is ever captured"),
+ ("H2-sale-price-call-resolved-at-install", SA,
+  [("    local raws = { addFillLevelFromTool = rawget(station, \"addFillLevelFromTool\"), sellFillType = rawget(station, \"sellFillType\") }",
+    "    local raws = { addFillLevelFromTool = rawget(station, \"addFillLevelFromTool\"), sellFillType = rawget(station, \"sellFillType\") }\n    local installTimeSell = classMethod(station, \"sellFillType\")", 1),
+   ("        local fn = raws.sellFillType or classMethod(self, \"sellFillType\")",
+    "        local fn = raws.sellFillType or installTimeSell", 1)],
+  "a price hook installed after the bracket is shadowed"),
+ ("H3-sale-delivery-resolved-at-install", SA,
+  [("    local raws = { addFillLevelFromTool = rawget(station, \"addFillLevelFromTool\"), sellFillType = rawget(station, \"sellFillType\") }",
+    "    local raws = { addFillLevelFromTool = rawget(station, \"addFillLevelFromTool\"), sellFillType = rawget(station, \"sellFillType\") }\n    local installTimeDelivery = classMethod(station, \"addFillLevelFromTool\")", 1),
+   ("        local fn = raws.addFillLevelFromTool or classMethod(self, \"addFillLevelFromTool\")",
+    "        local fn = raws.addFillLevelFromTool or installTimeDelivery", 1)],
+  "a delivery wrap installed after the bracket (TransportCompany's) is shadowed"),
+ ("H4-sale-bracket-left-at-teardown", SA,
+  [("            rawset(station, key, sell.raws[key])", "            local _ = key", 1)],
+  "teardown leaves the sale bracket in the station's slots"),
+ ("H5-sale-phase-error-swallowed", SA,
+  [("            if not okExit then print(\"[StockGuard] sale bracket: phase exit failed (\" .. tostring(err) .. \")\") end\n        end\n        if not r[1] then error(r[2], 0) end",
+    "            if not okExit then print(\"[StockGuard] sale bracket: phase exit failed (\" .. tostring(err) .. \")\") end\n        end", 1)],
+  "an error inside the paid phase disappears"),
 
  # ── the engine model's fidelity ────────────────────────────────────────────
  ("X1-model-no-placeable-returns-true", MODEL,
