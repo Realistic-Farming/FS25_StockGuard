@@ -57,6 +57,7 @@ local S = SGStationAdapter
 
 S.MARKER = "_sgStationAdapter"
 S.LOAD, S.UNLOAD, S.SELL = "LOAD", "UNLOAD", "SELL"
+S.LOAD_FILL = "LOAD_FILL"   -- the load TRANSFER bracket (SG2-1b)
 S.SELL_KEYS = { "addFillLevelFromTool", "sellFillType" }
 S.KEY = { LOAD = "removeFillLevel", UNLOAD = "addFillLevelFromTool" }
 -- The native completeness predicate for the unload effects (UnloadingStation.lua:254).
@@ -71,6 +72,11 @@ if S.nativeLoadQuantity == nil and LoadingStation ~= nil then
 end
 if S.nativeUnloadQuantity == nil and UnloadingStation ~= nil then
     S.nativeUnloadQuantity = UnloadingStation.addFillLevelFromTool
+end
+-- SG2-1b: the outer load call, so one TRANSFER spans the receiver's fill
+-- (LoadingStation.lua:217) AND the source debit after it (:218).
+if S.nativeLoadFill == nil and LoadingStation ~= nil then
+    S.nativeLoadFill = LoadingStation.addFillLevelToFillableObject
 end
 
 local function finite(x)
@@ -357,6 +363,73 @@ function S.isSaleBracketed(station)
     local rec = type(station) == "table" and rawget(station, S.MARKER) or nil
     local sell = rec ~= nil and rec[S.SELL] or nil
     return sell ~= nil and station.addFillLevelFromTool == sell.wrappers.addFillLevelFromTool and station.sellFillType == sell.wrappers.sellFillType
+end
+
+-- ---------------------------------------------------------
+-- The load TRANSFER bracket (SG2-1b): observation only
+-- ---------------------------------------------------------
+-- LoadingStation:addFillLevelToFillableObject fills the RECEIVER first (:217) and
+-- debits the sources after (:218, removeFillLevel). SG2-2's context brackets only the
+-- debit, so on its own it can never see both ends of a load. This bracket opens the
+-- TRANSFER context around the whole outer call. It changes no argument, return or
+-- quantity. Admission is by the file-scope identity rule: a BuyingStation overrides
+-- this method (BuyingStation.lua:89) because a purchase is a BIRTH, not a transfer,
+-- and is withheld. The call itself goes to the former raw slot or the class method
+-- resolved at call time, as the sale bracket's do.
+---@param hooks table { loadOpen(station, fillableObject, fillUnitIndex, fillTypeIndex, fillDelta, toolType) -> token, loadClose(token, ok) }
+---@return boolean installed, string|nil why
+function S.installLoadBracket(station, hooks)
+    if g_server == nil then return false, "CLIENT" end
+    if type(station) ~= "table" then return false, "NO_STATION" end
+    if S.nativeLoadFill == nil then return false, "NO_BASELINE" end
+    hooks = hooksOf(hooks)
+    local key = "addFillLevelToFillableObject"
+    local rec = rawget(station, S.MARKER)
+    local entry = rec ~= nil and rec[S.LOAD_FILL] or nil
+    local resolved = station[key]
+    if entry ~= nil and resolved == entry.wrapper then return true, "ALREADY" end
+    if resolved ~= S.nativeLoadFill then return false, "NOT_NATIVE" end
+    local raw = rawget(station, key)
+    local wrapper = function(self, fillableObject, fillUnitIndex, fillTypeIndex, fillDelta, fillInfo, toolType, ...)
+        local token
+        if hooks.loadOpen ~= nil then
+            local okOpen, result = pcall(hooks.loadOpen, self, fillableObject, fillUnitIndex, fillTypeIndex, fillDelta, toolType)
+            if okOpen then token = result else print("[StockGuard] load bracket: open failed (" .. tostring(result) .. ")") end
+        end
+        local fn = raw or classMethod(self, key)
+        local n, r = packn(pcall(fn, self, fillableObject, fillUnitIndex, fillTypeIndex, fillDelta, fillInfo, toolType, ...))
+        if token ~= nil and hooks.loadClose ~= nil then
+            local okClose, err = pcall(hooks.loadClose, token, r[1])
+            if not okClose then print("[StockGuard] load bracket: close failed (" .. tostring(err) .. ")") end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
+    rawset(station, key, wrapper)
+    if rec == nil then
+        rec = {}
+        rawset(station, S.MARKER, rec)
+    end
+    rec[S.LOAD_FILL] = { raw = raw, wrapper = wrapper }
+    return true
+end
+
+---@return boolean restored, string|nil why
+function S.uninstallLoadBracket(station)
+    if type(station) ~= "table" then return false, "NO_STATION" end
+    local rec = rawget(station, S.MARKER)
+    local entry = rec ~= nil and rec[S.LOAD_FILL] or nil
+    if entry == nil then return false, "NOT_INSTALLED" end
+    rec[S.LOAD_FILL] = nil
+    if rawget(station, "addFillLevelToFillableObject") ~= entry.wrapper then return false, "REPLACED_BY_ANOTHER" end
+    rawset(station, "addFillLevelToFillableObject", entry.raw)
+    return true
+end
+
+function S.isLoadBracketed(station)
+    local rec = type(station) == "table" and rawget(station, S.MARKER) or nil
+    local entry = rec ~= nil and rec[S.LOAD_FILL] or nil
+    return entry ~= nil and station.addFillLevelToFillableObject == entry.wrapper
 end
 
 --- True when the station's quantity method of this kind is our correction.

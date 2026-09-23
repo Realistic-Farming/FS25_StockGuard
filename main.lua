@@ -45,8 +45,8 @@ source(modDirectory .. "src/core/SGTransport.lua")
 source(modDirectory .. "src/StockGuard.lua")
 
 -- SG2-1 native kernel: operation context, captured work-area installer, Storage
--- brackets, FillUnit observer, the Storage and FillUnit carrier adapters and the
--- server host that wires them to the mission handle.
+-- brackets, FillUnit observer, the one native carrier adapter (storage and fill-unit
+-- kinds, SG2-1b) and the server host that wires them to the mission handle.
 source(modDirectory .. "src/native/SGOperationContext.lua")
 source(modDirectory .. "src/native/SGWorkAreaInstaller.lua")
 source(modDirectory .. "src/native/SGStorageBracket.lua")
@@ -90,8 +90,8 @@ local function stockGuardOf(mission)
     return StockGuard.hostOf(mission)
 end
 
---- SG2-1: the native kernel host, server only. Adapters register before the
---- restore-complete barrier, which enumerates them; the class hooks install once
+--- SG2-1: the native kernel host, server only. The native adapter registers before
+--- the restore-complete barrier, which enumerates it; the class hooks install once
 --- per process and dispatch to the current host.
 local function installNativeKernel(mission)
     if mission == nil or mission.stockGuard == nil or type(mission.getIsServer) ~= "function" or not mission:getIsServer() then return end
@@ -102,7 +102,7 @@ local function installNativeKernel(mission)
         storageSystem = function() return mission.storageSystem end,
     })
     local ok, why = host:install()
-    print("[StockGuard] native kernel " .. (ok and "installed: Storage and FillUnit adapters registered" or ("not installed: " .. tostring(why))))
+    print("[StockGuard] native kernel " .. (ok and "installed: native carrier adapter registered (storage and fill-unit kinds)" or ("not installed: " .. tostring(why))))
 end
 
 StockGuardHooks = StockGuardHooks or {}

@@ -2,7 +2,7 @@
 -- FS25_StockGuard - native kernel host (SG2-1)
 -- =========================================================
 -- Wires the SG2-1 kernel to the SG-1 mission handle on the server:
---   * registers the Storage and FillUnit carrier adapters,
+--   * registers the ONE native carrier adapter (storage and fill-unit kinds, SG2-1b),
 --   * routes Storage bracket and FillUnit observer reports to the handle,
 --   * follows the carrier lifecycle (placeables and vehicles added and removed),
 --   * binds the SG2-2 station quantity correction (SGStationAdapter) on every
@@ -15,11 +15,16 @@
 --
 -- EVERY CONTEXT IT OPENS IS CLOSED BY REPLAYING UPWARD. What a closed context did
 -- not settle is replayed to the context around it, or to the generic path when
--- there is none, so a context never swallows an observation. A station transfer
--- (silo to trailer, trailer to silo) therefore settles each side exactly as SG2-1
--- did, one physical operation later: its two ends belong to two carrier adapters,
--- and SG-1 settles one adapter's carriers per operation. One native adapter owning
--- both carrier kinds is a separate decision, not made here.
+-- there is none, so a context never swallows an observation.
+--
+-- A STATION TRANSFER IS ONE OPERATION (SG2-1b). With one native adapter owning both
+-- carrier kinds, a trailer-to-silo unload and a silo-to-trailer load capture their
+-- source and every destination under one lease and settle as one TRANSFER: what the
+-- source actually lost, allocated by what each destination actually gained. Unequal
+-- totals are never rescaled (SG-2 :231): a source excess is a LOSS leg, a
+-- destination excess is left to SG-1 as an unexplained delta. A converting unload
+-- (a trigger ratio or discharge factor other than 1) is not carried and keeps the
+-- per-side path.
 --
 -- THE BARRIER IS THE CORE'S. Nothing is bound or observed until SG-1 enumerates
 -- the adapters at its restore-complete barrier; the enumeration call is what marks
@@ -55,6 +60,9 @@ H.FLUSH_INTERVAL_MS = 500
 H.REASON = "ADAPTER_OBSERVATION"
 H.current = H.current  -- the live host, or nil
 H.DISCHARGE_FRAME = "DISCHARGE"
+H.LOAD_FRAME = "LOAD_TRANSFER"
+H.ROUTE_SALE, H.ROUTE_TRANSFER = "SALE", "TRANSFER"
+H.TRANSFER_EPSILON = 1e-6
 H.SELL_FRAME = "STATION_SELL"
 H.STATION_FRAME = { LOAD = "STATION_LOAD", UNLOAD = "STATION_UNLOAD" }
 H.instances = H.instances or 0
@@ -77,8 +85,7 @@ function H.new(handle, sources)
     self.dirtyOrder = {}
     self.sinceFlush = 0
     self.storageSlots = setmetatable({}, { __mode = "k" })  -- storage -> { placeable, slot }
-    self.storageLease = nil
-    self.fillUnitLease = nil
+    self.nativeLease = nil     -- the one native adapter's lease, both kinds (SG2-1b)
     self.stations = {}        -- station -> { LOAD = bool, UNLOAD = bool } (SG2-2)
     self.stationFailures = 0
     self.stationFailuresLogged = setmetatable({}, { __mode = "k" })  -- station -> { [kind:reason] = true }
@@ -88,6 +95,7 @@ function H.new(handle, sources)
     self.salePhases = {}      -- open paid phases, innermost last
     self.nextSaleCall = 0
     self.nextDischarge = 0
+    self.nextTransfer = 0
     self.lastSettlement = nil  -- diagnostic: the last sale discharge's outcome and report
     H.instances = H.instances + 1
     self.epoch = H.instances
@@ -104,37 +112,24 @@ end
 -- ---------------------------------------------------------
 -- Install and teardown
 -- ---------------------------------------------------------
---- Register both adapters and become the current host. Server only.
+--- Register the native adapter and become the current host. Server only.
 function H:install()
     if g_server == nil then return false, "CLIENT" end
     if self.handle == nil or type(self.handle.registerCarrierAdapter) ~= "function" then return false, "NO_HANDLE" end
     local host = self
 
-    local storageSpec = A.storageAdapterSpec(self.sources.placeables)
-    local enumerateStorage = storageSpec.enumerateCarriers
-    storageSpec.enumerateCarriers = function()
-        host.ready = true
-        return enumerateStorage()
-    end
-
-    local fillUnitSpec = A.fillUnitAdapterSpec(self.sources.vehicles)
-    local enumerateFillUnits = fillUnitSpec.enumerateCarriers
-    fillUnitSpec.enumerateCarriers = function()
+    local spec = A.nativeAdapterSpec(self.sources.placeables, self.sources.vehicles)
+    local enumerateNative = spec.enumerateCarriers
+    spec.enumerateCarriers = function()
         host.ready = true
         for _, vehicle in ipairs(listOf(host.sources.vehicles)) do host:observeVehicle(vehicle) end
         host:sweepStations()
-        return enumerateFillUnits()
+        return enumerateNative()
     end
 
     local why
-    self.storageLease, why = self.handle.registerCarrierAdapter(A.STORAGE_ADAPTER_ID, storageSpec)
-    if self.storageLease == nil then return false, "STORAGE_ADAPTER:" .. tostring(why) end
-    self.fillUnitLease, why = self.handle.registerCarrierAdapter(A.FILLUNIT_ADAPTER_ID, fillUnitSpec)
-    if self.fillUnitLease == nil then
-        self.handle.unregisterOwner(self.storageLease)
-        self.storageLease = nil
-        return false, "FILLUNIT_ADAPTER:" .. tostring(why)
-    end
+    self.nativeLease, why = self.handle.registerCarrierAdapter(A.NATIVE_ADAPTER_ID, spec)
+    if self.nativeLease == nil then return false, "NATIVE_ADAPTER:" .. tostring(why) end
     H.current = self
     return true
 end
@@ -224,7 +219,7 @@ function H:onStorageChange(storage, fillType, before, after, cause)
     local binding = A.storageBinding(placeable, slot, fillTypeName)
     if binding == nil then return end
     local boundary = cause == SGStorageBracket.CAUSE_EMPTY or (after or 0) <= 0 or (before or 0) <= 0
-    self:markDirty(self.storageLease, binding, boundary)
+    self:markDirty(self.nativeLease, binding, boundary)
 end
 
 --- A FillUnit observer report: (vehicle, fillUnitIndex, acceptedDelta, fillTypeIndex, cause).
@@ -239,7 +234,7 @@ function H:onFillUnitMovement(vehicle, fillUnitIndex, accepted, fillTypeIndex, c
         local fu = vehicle.spec_fillUnit
         for index in ipairs(fu ~= nil and type(fu.fillUnits) == "table" and fu.fillUnits or {}) do
             local binding = A.fillUnitBindingFor(vehicle, index)
-            if binding ~= nil then self:markDirty(self.fillUnitLease, binding, false) end
+            if binding ~= nil then self:markDirty(self.nativeLease, binding, false) end
         end
         self:flush()
         return
@@ -251,7 +246,7 @@ function H:onFillUnitMovement(vehicle, fillUnitIndex, accepted, fillTypeIndex, c
         local ok, level = pcall(vehicle.getFillUnitFillLevel, vehicle, fillUnitIndex)
         boundary = ok and type(level) == "number" and (level <= 0 or level - (accepted or 0) <= 0)
     end
-    self:markDirty(self.fillUnitLease, binding, boundary)
+    self:markDirty(self.nativeLease, binding, boundary)
 end
 
 function H:observeVehicle(vehicle)
@@ -282,7 +277,7 @@ function H:onStorageAdded(storage)
     -- Through the dirty queue and flushed at once, so a store busy with a
     -- replacement keeps the bind for the next flush instead of dropping it.
     for _, name in ipairs(names) do
-        self:markDirty(self.storageLease, A.storageBinding(placeable, slot, name), false)
+        self:markDirty(self.nativeLease, A.storageBinding(placeable, slot, name), false)
     end
     self:flush()
 end
@@ -307,7 +302,7 @@ function H:onPlaceableRemoved(placeable)
             local key = binding ~= nil and SGRecords.carrierKeyString(binding.carrierKey) or nil
             if key ~= nil then
                 self.dirty[key] = nil
-                self.handle.withdrawCarrier(self.storageLease, key, "PLACEABLE_REMOVED")
+                self.handle.withdrawCarrier(self.nativeLease, key, "PLACEABLE_REMOVED")
             end
         end
     end
@@ -320,7 +315,7 @@ function H:onVehicleAdded(vehicle)
     local fu = vehicle.spec_fillUnit
     for index in ipairs(fu ~= nil and type(fu.fillUnits) == "table" and fu.fillUnits or {}) do
         local binding = A.fillUnitBindingFor(vehicle, index)
-        if binding ~= nil then self:markDirty(self.fillUnitLease, binding, false) end
+        if binding ~= nil then self:markDirty(self.nativeLease, binding, false) end
     end
     self:flush()
 end
@@ -350,7 +345,7 @@ function H:onVehicleRemoved(vehicle)
         local key = binding ~= nil and SGRecords.carrierKeyString(binding.carrierKey) or nil
         if key ~= nil then
             self.dirty[key] = nil
-            self.handle.withdrawCarrier(self.fillUnitLease, key, "VEHICLE_REMOVED")
+            self.handle.withdrawCarrier(self.nativeLease, key, "VEHICLE_REMOVED")
         end
     end
 end
@@ -368,6 +363,11 @@ function H:bindStation(station, kind)
     local ok, why = SGStationAdapter.install(station, kind, hooks)
     local entry = self.stations[station] or {}
     entry[kind] = ok == true
+    -- An admitted loading station also gets the load TRANSFER bracket around its
+    -- outer call, so one operation spans the receiver's fill and the source debit.
+    if kind == SGStationAdapter.LOAD and ok then
+        entry[SGStationAdapter.LOAD_FILL] = SGStationAdapter.installLoadBracket(station, hooks) == true
+    end
     -- A selling station keeps its own delivery method: no correction, but the
     -- observation-only sale bracket that lets a paid phase find its source.
     if kind == SGStationAdapter.UNLOAD and not ok and why == "NOT_NATIVE" then
@@ -390,6 +390,8 @@ function H:stationHooks()
         saleClose = function(frame) host:closeFrame(frame) end,
         phaseEnter = function(st, ...) return SGNativeSale.enterPhase(host, st, ...) end,
         phaseExit = function(phase, ok) SGNativeSale.exitPhase(host, phase, ok) end,
+        loadOpen = function(st, ...) return host:onLoadOpen(st, ...) end,
+        loadClose = function(frame, ok) host:onTransferClose(frame, ok) end,
     }
 end
 
@@ -402,6 +404,10 @@ function H:unbindStation(station, kind)
         if kind == nil or kind == k then
             if entry[k] then SGStationAdapter.uninstall(station, k) end
             entry[k] = nil
+            if k == SGStationAdapter.LOAD then
+                if entry[SGStationAdapter.LOAD_FILL] then SGStationAdapter.uninstallLoadBracket(station) end
+                entry[SGStationAdapter.LOAD_FILL] = nil
+            end
             if k == SGStationAdapter.UNLOAD then
                 if entry[SGStationAdapter.SELL] then SGStationAdapter.uninstallSaleBracket(station) end
                 entry[SGStationAdapter.SELL] = nil
@@ -467,44 +473,270 @@ local function triggerOf(object, fillType)
     return object.target, c.ratio, c.outgoingFillType
 end
 
---- Before the native discharge: open its context and capture its source, only for
---- a sale-bracketed station's paid route. A station that will STORE the goods
---- (getStoreGoods, SellingStation.lua:307) is not carried and keeps today's path.
+--- Resolve and refresh every carrier of a transfer BEFORE the native call. An empty
+--- destination slot has no carrier yet (enumeration binds only slots holding
+--- material), so each binding is refreshed first; SG-1 captures an empty carrier
+--- with no StockRef (SG-1 :277). Any participant that cannot be bound makes the whole
+--- transfer not carried, and it keeps the per-side path. The refresh is an ordinary
+--- observation: drift it finds happened before this transfer and is not labelled as it.
+---@return table|nil participants (carrierId -> participant), table|nil capture list, string|nil why
+function H:transferParticipants(list)
+    if self.nativeLease == nil then return nil, nil, "NO_LEASE" end
+    local participants, capture = {}, {}
+    for _, p in ipairs(list) do
+        if p.binding == nil then return nil, nil, "UNSUPPORTED_CARRIER" end
+        local c, why = self.handle.refreshCarrier(self.nativeLease, p.binding, H.REASON)
+        if c == nil then return nil, nil, "REFRESH:" .. tostring(why) end
+        p.carrierId = SGRecords.carrierKeyString(p.binding.carrierKey)
+        if participants[p.carrierId] == nil then
+            participants[p.carrierId] = p
+            capture[#capture + 1] = { carrierId = p.carrierId }
+        end
+    end
+    return participants, capture, nil
+end
+
+--- The storages of a station the native call can move this fill type through, as
+--- transfer participants: a storage that supports the type and that the station lets
+--- this farm reach. Both native loops skip a storage the farm cannot access
+--- (UnloadingStation.lua:246, LoadingStation.lua:198/:223), so it is no participant.
+--- The binding comes through the host's per-storage slot cache: the discharge runs
+--- every frame of an unload, and a placeable scan per frame per storage would not do.
+local function storageParticipants(host, station, storages, fillType, farmId, list)
+    local fillTypeName = nil
+    if g_fillTypeManager ~= nil and type(g_fillTypeManager.getFillTypeNameByIndex) == "function" then
+        local okN, name = pcall(g_fillTypeManager.getFillTypeNameByIndex, g_fillTypeManager, fillType)
+        if okN then fillTypeName = name end
+    end
+    for _, storage in pairs(storages or {}) do
+        local supported = type(storage) == "table" and type(storage.fillTypes) == "table" and storage.fillTypes[fillType] == true
+        if supported and type(station.hasFarmAccessToStorage) == "function" then
+            local okA, access = pcall(station.hasFarmAccessToStorage, station, farmId, storage)
+            supported = okA and access == true
+        end
+        if supported then
+            local placeable, slot = host:slotOfStorage(storage)
+            local binding = placeable ~= nil and A.storageBinding(placeable, slot, fillTypeName) or nil
+            list[#list + 1] = { binding = binding, kind = A.KIND_STORAGE, storage = storage, fillType = fillType }
+        end
+    end
+    return list
+end
+
+--- Before the native discharge. Two routes open a context and capture:
+---   SALE     a sale-bracketed station's paid route (getStoreGoods false): the
+---            source retires as SG2-2 settles it;
+---   TRANSFER an admitted unloading station, or a selling station that only STORES
+---            (getStoreGoods and getSkipSell both true): source and destinations in
+---            one TRANSFER, identity conversions only.
+--- Anything else keeps today's per-side path.
 function H:onDischargeOpen(vehicle, dischargeNode, emptyLiters, object, targetFillUnitIndex)
     if not self.ready or type(dischargeNode) ~= "table" then return nil end
     local okT, fillType, factor = pcall(vehicle.getDischargeFillType, vehicle, dischargeNode)
     if not okT then return nil end
     local station, ratio, paidFillType = triggerOf(object, fillType)
     local entry = station ~= nil and self.stations[station] or nil
-    if entry == nil or not entry[SGStationAdapter.SELL] then return nil end
+    if entry == nil then return nil end
     local okF, farmId = pcall(vehicle.getActiveFarm, vehicle)
     if not okF then return nil end
-    local okS, store = pcall(station.getStoreGoods, station, farmId, paidFillType)
-    if not okS or store ~= false then return nil end
+    local route = nil
+    if entry[SGStationAdapter.SELL] then
+        local okS, store = pcall(station.getStoreGoods, station, farmId, paidFillType)
+        if not okS then return nil end
+        if store == false then
+            route = H.ROUTE_SALE
+        else
+            local okK, skip = pcall(station.getSkipSell, station, farmId, paidFillType)
+            if okK and skip == true then route = H.ROUTE_TRANSFER end
+        end
+    elseif entry[SGStationAdapter.UNLOAD] then
+        route = H.ROUTE_TRANSFER
+    end
+    if route == nil then return nil end
+
+    local binding = A.fillUnitBindingFor(vehicle, dischargeNode.fillUnitIndex)
+    local participants, captureList = nil, nil
+    if route == H.ROUTE_TRANSFER then
+        -- A converting chain changes type or amount: a CONVERT needs a registered
+        -- conversion basis (later SG-2 slices), so it is not carried here.
+        if factor ~= 1 or ratio ~= 1 or paidFillType ~= fillType then return nil end
+        local list = { { binding = binding, kind = A.KIND_FILL_UNIT, vehicle = vehicle, fillUnitIndex = dischargeNode.fillUnitIndex } }
+        storageParticipants(self, station, station.targetStorages, paidFillType, farmId, list)
+        participants, captureList = self:transferParticipants(list)
+        if participants == nil then return nil end
+    end
 
     local frame = SGOperationContext.open(self.context, vehicle, H.DISCHARGE_FRAME)
     if frame == nil then return nil end
     self.nextDischarge = self.nextDischarge + 1
     local d = {
-        vehicle = vehicle, fillUnitIndex = dischargeNode.fillUnitIndex, station = station, farmId = farmId,
+        route = route, vehicle = vehicle, fillUnitIndex = dischargeNode.fillUnitIndex, station = station, farmId = farmId,
         dischargeFillType = fillType, dischargeFactor = factor, triggerRatio = ratio, paidFillTypeIndex = paidFillType,
         callRef = "discharge:" .. tostring(self.epoch) .. ":" .. tostring(self.nextDischarge),
     }
     frame.discharge = d
-    local binding = A.fillUnitBindingFor(vehicle, d.fillUnitIndex)
-    if binding ~= nil and self.fillUnitLease ~= nil then
+    if route == H.ROUTE_TRANSFER then
+        local cap, why = self.handle.captureOperation(self.nativeLease, "TRANSFER", captureList)
+        d.transfer = { capture = cap, captureFailure = why, participants = participants, nativePath = "STATION_UNLOAD", callRef = d.callRef,
+                       requested = emptyLiters, fillType = paidFillType }
+        return frame
+    end
+    if binding ~= nil and self.nativeLease ~= nil then
         d.binding = binding
         d.carrierId = SGRecords.carrierKeyString(binding.carrierKey)
-        local cap, why = self.handle.captureOperation(self.fillUnitLease, "REMOVE", { { carrierId = d.carrierId } })
+        local cap, why = self.handle.captureOperation(self.nativeLease, "REMOVE", { { carrierId = d.carrierId } })
         d.capture, d.captureFailure = cap, why
         if cap ~= nil then d.captureRef = cap.operationId .. ":source" end
     end
     return frame
 end
 
+--- Before the native load (the load bracket's open): the receiver fill unit and every
+--- source storage of the fill type, captured as one TRANSFER. A receiver that is not
+--- a bindable vehicle fill unit, or a conveyor-belt receiver (whose capacity the
+--- native reads from its target object, LoadingStation.lua:207-215), is not carried.
+function H:onLoadOpen(station, fillableObject, fillUnitIndex, fillTypeIndex, fillDelta, toolType)
+    if not self.ready or self.nativeLease == nil then return nil end
+    if type(fillableObject) ~= "table" or fillableObject.getConveyorBeltTargetObject ~= nil then return nil end
+    -- The farm the native call debits for: a vehicle's active farm (LoadingStation.lua:193-196).
+    if type(fillableObject.getActiveFarm) ~= "function" then return nil end
+    local okF, farmId = pcall(fillableObject.getActiveFarm, fillableObject)
+    if not okF then return nil end
+    local list = { { binding = A.fillUnitBindingFor(fillableObject, fillUnitIndex), kind = A.KIND_FILL_UNIT,
+                     vehicle = fillableObject, fillUnitIndex = fillUnitIndex } }
+    storageParticipants(self, station, station.sourceStorages, fillTypeIndex, farmId, list)
+    local participants, captureList = self:transferParticipants(list)
+    if participants == nil then return nil end
+    local frame = SGOperationContext.open(self.context, station, H.LOAD_FRAME)
+    if frame == nil then return nil end
+    self.nextTransfer = self.nextTransfer + 1
+    local cap, why = self.handle.captureOperation(self.nativeLease, "TRANSFER", captureList)
+    frame.transfer = { capture = cap, captureFailure = why, participants = participants, nativePath = "STATION_LOAD",
+                       callRef = "load:" .. tostring(self.epoch) .. ":" .. tostring(self.nextTransfer),
+                       requested = fillDelta, fillType = fillTypeIndex }
+    return frame
+end
+
+--- After the native load: settle the transfer and replay what it did not consume.
+function H:onTransferClose(frame, ok)
+    if frame == nil then return end
+    SGOperationContext.close(self.context, frame)
+    local consumed = self:settleTransfer(frame, ok, frame.transfer) or {}
+    for _, obs in ipairs(frame.observations) do
+        if not consumed[obs] then self:replayObservation(obs) end
+    end
+end
+
+--- The legs of a transfer from each participant's observed net change. The matched
+--- part (the smaller of what the sources lost and the destinations gained) moves
+--- source to destination, split by each side's share. What a source lost beyond it
+--- is a LOSS leg to retirement. What a destination gained beyond it stays unexplained:
+--- SG-1 marks that stock's delta unexplained rather than inventing a source for it.
+local function transferLegs(net)
+    local eps = H.TRANSFER_EPSILON
+    local ids = {}
+    for cid in pairs(net) do ids[#ids + 1] = cid end
+    table.sort(ids)
+    local sources, dests, S, D = {}, {}, 0, 0
+    for _, cid in ipairs(ids) do
+        local v = net[cid]
+        if v < -eps then sources[#sources + 1] = { cid = cid, amount = -v }; S = S - v
+        elseif v > eps then dests[#dests + 1] = { cid = cid, amount = v }; D = D + v end
+    end
+    local matched = math.min(S, D)
+    local legs = {}
+    for _, src in ipairs(sources) do
+        local moved = S > 0 and matched * src.amount / S or 0
+        for _, dst in ipairs(dests) do
+            local amount = D > 0 and moved * dst.amount / D or 0
+            if amount > eps then
+                legs[#legs + 1] = { source = { carrierId = src.cid }, sourceAmount = amount, sourceUnit = A.UNIT,
+                                    destination = { carrierId = dst.cid }, destinationAmount = amount, destinationUnit = A.UNIT,
+                                    result = "TRANSFERRED" }
+            end
+        end
+        local loss = src.amount - moved
+        if loss > eps then
+            legs[#legs + 1] = { source = { carrierId = src.cid }, sourceAmount = loss, sourceUnit = A.UNIT,
+                                destination = { retire = true }, result = "LOSS", reason = "UNMATCHED_SOURCE" }
+        end
+    end
+    return legs, S, D, matched
+end
+H.transferLegs = transferLegs
+
+--- Settle a station transfer through SG-1 from what the native call actually did.
+---
+--- EACH PARTICIPANT'S NET CHANGE IS ITS AFTER-STATE MINUS ITS CAPTURED BEFORE-STATE,
+--- both read through the adapter, not a sum of observations. The capture's baseline
+--- is the carrier's native state just refreshed, and the after-state is read the way
+--- SG-1 reads every carrier, so the net sees every write to a participant whatever
+--- path made it: the F207 loops, a SellingStation's class super call into the native
+--- loop (SellingStation.lua:327, which no instance slot sees), or a writer that
+--- bypasses the Storage bracket. The observations of the participants are CONSUMED,
+--- so the generic path never reconciles the same movement a second time (SG-2 :92);
+--- anything else the call touched is replayed.
+---
+--- Returns the observations the settlement consumed.
+function H:settleTransfer(frame, ok, t)
+    if t == nil or t.capture == nil then return nil end
+    local spec = self.nativeLease ~= nil and self.nativeLease.spec or nil
+    local after = {}
+    for cid, p in pairs(t.participants) do
+        local native = spec ~= nil and spec.resolveCarrier(p.binding) or nil
+        local ns = native ~= nil and spec.readNativeState(p.binding, native) or nil
+        if ns == nil then after = nil break end
+        after[cid] = ns
+    end
+    local refuse = (not ok and "NATIVE_ERROR") or (after == nil and "AFTER_STATE_UNREADABLE") or nil
+    if refuse ~= nil then
+        t.outcome, t.outcomeReason = "ABANDONED", refuse
+        self.lastSettlement = { callRef = t.callRef, outcome = t.outcome, reason = refuse }
+        self.handle.abandonOperation(t.capture.handle, refuse, after)
+        return nil
+    end
+    local net = {}
+    local before = t.capture.before and t.capture.before.carriers or {}
+    for cid, ns in pairs(after) do
+        local b = before[cid]
+        net[cid] = (ns.amount or 0) - (b ~= nil and b.amount or 0)
+    end
+    local consumed, stationFailure = {}, nil
+    for _, obs in ipairs(frame.observations) do
+        if obs.source == "STATION" and stationFailure == nil then stationFailure = obs.failure end
+        for _, p in pairs(t.participants) do
+            local mine = (obs.source == "STORAGE" and p.kind == A.KIND_STORAGE and p.storage == obs.storage and p.fillType == obs.fillType)
+                or (obs.source == "FILL_UNIT" and p.kind == A.KIND_FILL_UNIT and p.vehicle == obs.vehicle and p.fillUnitIndex == obs.fillUnitIndex)
+            if mine then
+                consumed[obs] = true
+                break
+            end
+        end
+    end
+    local legs, S, D, matched = transferLegs(net)
+    -- SG-2 :90: the result names the material and the requested quantity beside what
+    -- each side actually did.
+    local fillTypeName = nil
+    if t.fillType ~= nil and g_fillTypeManager ~= nil and type(g_fillTypeManager.getFillTypeNameByIndex) == "function" then
+        local okN, name = pcall(g_fillTypeManager.getFillTypeNameByIndex, g_fillTypeManager, t.fillType)
+        if okN then fillTypeName = name end
+    end
+    local report = {
+        participantsAfter = after,
+        allocations = legs,
+        outcomeEvidence = { nativePath = t.nativePath, callRef = t.callRef, fillTypeName = fillTypeName, requestedAmount = t.requested,
+                            sourceTotal = S, destinationTotal = D, matched = matched, loss = S - matched, unexplainedGain = D - matched,
+                            stationFailure = stationFailure },
+    }
+    t.outcome, t.outcomeReason = self.handle.settleOperation(t.capture.handle, report)
+    self.lastSettlement = { callRef = t.callRef, outcome = t.outcome, reason = t.outcomeReason, report = report }
+    if t.outcome == "NO_OP" or t.outcome == "COMMITTED" then return consumed end
+    return nil
+end
+
 --- The source fill unit's state after the native call, as SG-1 reads carriers.
 function H:dischargeSourceAfter(d)
-    local spec = self.fillUnitLease ~= nil and self.fillUnitLease.spec or nil
+    local spec = self.nativeLease ~= nil and self.nativeLease.spec or nil
     if spec == nil or d.binding == nil then return nil end
     local native = spec.resolveCarrier(d.binding)
     local ns = native ~= nil and spec.readNativeState(d.binding, native) or nil
@@ -515,7 +747,13 @@ end
 --- After the native discharge: settle the source through SG-1 and replay the rest.
 function H:onDischargeClose(frame, ok)
     SGOperationContext.close(self.context, frame)
-    local consumed = self:settleDischarge(frame, ok) or {}
+    local d = frame.discharge
+    local consumed
+    if d ~= nil and d.route == H.ROUTE_TRANSFER then
+        consumed = self:settleTransfer(frame, ok, d.transfer) or {}
+    else
+        consumed = self:settleDischarge(frame, ok) or {}
+    end
     for _, obs in ipairs(frame.observations) do
         if not consumed[obs] then self:replayObservation(obs) end
     end

@@ -21,7 +21,8 @@
 --   M  the unpaid branches: a mission delivery and a station that stores the goods
 --   C  a converting chain: the discharge node's converter and the trigger's ratio
 --   G  a sale larger than the captured source
---   D  a discharge into a silo station: not captured, the F207 correction applies
+--   D  a discharge into a silo station: since SG2-1b one TRANSFER, not a sale; the
+--      F207 correction still applies
 --   N  a free-standing sale at another station inside this station's paid phase
 --   L  load order: a class wrap installed after the barrier is still reached
 --   X  teardown
@@ -416,7 +417,10 @@ group("D", function()
     VehicleSystem.addVehicle(m.vehicleSystem, tr)
     local before = host.nextDischarge
     local out = tr:dischargeToObject(tr.node, 100, UnloadTrigger.newModel(us), 1)
-    T.eq("D1 a discharge into a silo station is not captured: station TRANSFER is not carried", host.nextDischarge - before, 0)
+    local ls = host.lastSettlement or {}
+    local ev = ls.report and ls.report.outcomeEvidence or {}
+    T.eq("D1 a discharge into a silo station is captured once, as a station TRANSFER and not a sale (SG2-1b)",
+        tostring(host.nextDischarge - before) .. "/" .. tostring(ev.nativePath) .. "/" .. tostring(ls.outcome), "1/STATION_UNLOAD/COMMITTED")
     T.eq("D2 and lands 50 then 50 through the F207 correction", s1:getFillLevel(WHEAT) .. "/" .. s2:getFillLevel(WHEAT) .. "/" .. out, "50/50/-100.0")
     T.eq("D3 the context is at rest", SGOperationContext.isAtRest(host.context), true)
 end)
