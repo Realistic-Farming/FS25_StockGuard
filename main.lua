@@ -55,6 +55,7 @@ source(modDirectory .. "src/native/SGNativeAdapters.lua")
 source(modDirectory .. "src/native/SGStationAdapter.lua")
 source(modDirectory .. "src/native/SGDischargeCapture.lua")
 source(modDirectory .. "src/native/SGNativeSale.lua")
+source(modDirectory .. "src/native/SGHarvestCapture.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
@@ -95,7 +96,8 @@ end
 --- per process and dispatch to the current host.
 local function installNativeKernel(mission)
     if mission == nil or mission.stockGuard == nil or type(mission.getIsServer) ~= "function" or not mission:getIsServer() then return end
-    SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem })
+    SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem,
+        Cutter = Cutter, Combine = Combine })
     local host = SGNativeHost.new(mission.stockGuard, {
         placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
         vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,

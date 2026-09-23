@@ -55,6 +55,13 @@ A.RETIRED_ADAPTER_IDS = { "sgStorage", "sgFillUnit" }
 A.ADAPTER_VERSION     = 2
 A.KIND_STORAGE        = "storage"
 A.KIND_FILL_UNIT      = "fillUnit"
+-- SG2-3: a Combine's grain delay slots and its straw input-buffer slots are real native
+-- buffers material waits in (Combine.lua:1040-1053, :979-996), so they are carriers of
+-- the same adapter, each kind with its own key prefix.
+A.KIND_DELAY_SLOT     = "combineDelaySlot"
+A.KIND_STRAW_SLOT     = "combineStrawSlot"
+A.DELAY_SLOT_PROFILE  = "NATIVE_COMBINE_DELAY_SLOT_V1"
+A.STRAW_SLOT_PROFILE  = "NATIVE_COMBINE_STRAW_SLOT_V1"
 A.STORAGE_PROFILE     = "NATIVE_STORAGE_SLOT_V1"
 A.FILLUNIT_PROFILE    = "NATIVE_FILL_UNIT_V1"
 A.PROFILE_VERSION     = 1
@@ -392,19 +399,23 @@ end
 
 --- The fill-unit KIND of the native adapter: its reader for fill-unit bindings.
 ---@param vehicles function  () -> list of vehicles
-function A.fillUnitKind(vehicles)
-    local function vehicleByKey(key)
-        local mission = g_currentMission
-        local system = mission ~= nil and mission.vehicleSystem or nil
-        if system ~= nil and type(system.getVehicleByUniqueId) == "function" then
-            local ok, v = pcall(system.getVehicleByUniqueId, system, key)
-            if ok and v ~= nil then return v end
-        end
-        for _, v in ipairs(vehicles and vehicles() or {}) do
-            if persistentIdOf(v) == key then return v end
-        end
-        return nil
+--- A live vehicle by its persistent unique id: the mission's own lookup first, then
+--- the injected list (the bench runs the game's path through the same list).
+local function vehicleOf(vehicles, key)
+    local mission = g_currentMission
+    local system = mission ~= nil and mission.vehicleSystem or nil
+    if system ~= nil and type(system.getVehicleByUniqueId) == "function" then
+        local ok, v = pcall(system.getVehicleByUniqueId, system, key)
+        if ok and v ~= nil then return v end
     end
+    for _, v in ipairs(vehicles and vehicles() or {}) do
+        if persistentIdOf(v) == key then return v end
+    end
+    return nil
+end
+
+function A.fillUnitKind(vehicles)
+    local function vehicleByKey(key) return vehicleOf(vehicles, key) end
 
     local spec = {}
 
@@ -480,6 +491,136 @@ function A.fillUnitKind(vehicles)
     return spec
 end
 
+-- ── Combine buffers (SG2-3) ─────────────────────────────────────────────────
+function A.combineSlotComponentKey(kind, index)
+    return kind .. ":" .. tostring(index)
+end
+
+--- The native slot table of one kind, or nil: a grain delay slot
+--- (spec_combine.loadingDelaySlots, Combine.lua:1040-1053) or a straw input-buffer slot
+--- (spec_combine.processing.inputBuffer.buffer, :979-996).
+function A.combineSlotOf(vehicle, kind, index)
+    local spec = type(vehicle) == "table" and vehicle.spec_combine or nil
+    if spec == nil or type(index) ~= "number" then return nil end
+    if kind == A.KIND_DELAY_SLOT then
+        return type(spec.loadingDelaySlots) == "table" and spec.loadingDelaySlots[index] or nil
+    elseif kind == A.KIND_STRAW_SLOT then
+        local ib = type(spec.processing) == "table" and spec.processing.inputBuffer or nil
+        return ib ~= nil and type(ib.buffer) == "table" and ib.buffer[index] or nil
+    end
+    return nil
+end
+
+function A.combineSlotBinding(vehicle, kind, index)
+    if A.combineSlotOf(vehicle, kind, index) == nil then return nil end
+    local ownerKey = persistentIdOf(vehicle)
+    if ownerKey == nil then return nil end
+    local profile = kind == A.KIND_DELAY_SLOT and A.DELAY_SLOT_PROFILE or A.STRAW_SLOT_PROFILE
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.combineSlotComponentKey(kind, index), profile,
+        { kind = kind, slotIndex = index, configFileName = type(vehicle.configFileName) == "string" and vehicle.configFileName or "" })
+end
+
+--- The loose material a straw slot holds, read the way the native drop reads it: the
+--- windrow fill type of the fruit behind the combine's last valid grain type
+--- (Combine.lua:1327-1350 sets dropFillType; :739-742 resolves the windrow type). A
+--- fruit with no windrow type is chopped or left as haulm, never loose stock.
+local function strawMaterialOf(vehicle)
+    local spec = vehicle.spec_combine
+    if spec == nil or type(vehicle.getFillUnitLastValidFillType) ~= "function" then return nil end
+    local ok, ft = pcall(vehicle.getFillUnitLastValidFillType, vehicle, spec.bufferFillUnitIndex or spec.fillUnitIndex)
+    if not ok or ft == nil or (FillType ~= nil and ft == FillType.UNKNOWN) then return nil end
+    local ftm = g_fruitTypeManager
+    if ftm == nil or type(ftm.getFruitTypeByFillTypeIndex) ~= "function" then return nil end
+    local okD, desc = pcall(ftm.getFruitTypeByFillTypeIndex, ftm, ft)
+    if not okD or type(desc) ~= "table" or desc.windrowLiterPerSqm == nil then return nil end
+    local okW, windrow = pcall(ftm.getWindrowFillTypeIndexByFruitTypeIndex, ftm, desc.index)
+    if not okW or windrow == nil then return nil end
+    return fillTypeNameOf(windrow)
+end
+A.strawMaterialOf = strawMaterialOf
+
+--- One Combine buffer KIND of the native adapter.
+---@param vehicles function  () -> list of vehicles
+---@param kind string        A.KIND_DELAY_SLOT or A.KIND_STRAW_SLOT
+function A.combineSlotKind(vehicles, kind)
+    local spec = {}
+
+    spec.resolveCarrier = function(binding)
+        if not isServer() then return nil, "CLIENT" end
+        if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil, "BINDING" end
+        local d = binding.sourceDescriptor
+        if type(d) ~= "table" or d.kind ~= kind or type(d.slotIndex) ~= "number" then return nil, "DESCRIPTOR" end
+        if binding.carrierKey.componentKey ~= A.combineSlotComponentKey(kind, d.slotIndex) then return nil, "DESCRIPTOR" end
+        local vehicle = vehicleOf(vehicles, binding.carrierKey.nativeOwnerKey)
+        if vehicle == nil then return nil, "VEHICLE_ABSENT" end
+        local current = type(vehicle.configFileName) == "string" and vehicle.configFileName or ""
+        if d.configFileName ~= nil and d.configFileName ~= current then return nil, "LAYOUT_CHANGED" end
+        local slot = A.combineSlotOf(vehicle, kind, d.slotIndex)
+        if slot == nil then return nil, "SLOT_ABSENT" end
+        return { vehicle = vehicle, slot = slot, slotIndex = d.slotIndex }
+    end
+
+    --- A delay slot holds fillLevelDelta of its fillType while valid, nothing once
+    --- cleared (:465). A straw slot holds its liters; inputLiters and area are native
+    --- process state, not a second quantity (SG-2 :148).
+    spec.readNativeState = function(binding, native)
+        if not isServer() then return nil, "CLIENT" end
+        if type(native) ~= "table" or type(native.slot) ~= "table" or type(native.vehicle) ~= "table" then return nil, "NATIVE" end
+        local slot, level, name = native.slot, 0, nil
+        if kind == A.KIND_DELAY_SLOT then
+            if slot.valid then level = slot.fillLevelDelta end
+            if type(level) ~= "number" or level ~= level or level < 0 then return nil, "LEVEL" end
+            if level > 0 then
+                name = fillTypeNameOf(slot.fillType)
+                if name == nil then return nil, "FILL_TYPE_UNNAMED" end
+            end
+        else
+            level = slot.liters
+            if type(level) ~= "number" or level ~= level or level < 0 then return nil, "LEVEL" end
+            if level > 0 then
+                name = strawMaterialOf(native.vehicle)
+                if name == nil then return nil, "NO_LOOSE_STRAW" end
+            end
+        end
+        return {
+            materialRef = name ~= nil and { kind = "FILL_TYPE", fillTypeName = name } or nil,
+            amount = level,
+            unit = A.UNIT,
+            ownerFarmId = ownerFarmOf(native.vehicle),
+            storeKind = "vehicle_buffer",
+            nativeUniqueId = persistentIdOf(native.vehicle),
+        }
+    end
+
+    spec.enumerateCarriers = function()
+        if not isServer() then return {} end
+        local out = {}
+        for _, vehicle in ipairs(vehicles and vehicles() or {}) do
+            local cs = vehicle.spec_combine
+            if cs ~= nil and persistentIdOf(vehicle) ~= nil then
+                local list = kind == A.KIND_DELAY_SLOT and cs.loadingDelaySlots
+                    or (type(cs.processing) == "table" and cs.processing.inputBuffer ~= nil and cs.processing.inputBuffer.buffer) or nil
+                for index, slot in ipairs(type(list) == "table" and list or {}) do
+                    local holds = kind == A.KIND_DELAY_SLOT and slot.valid == true or (tonumber(slot.liters) or 0) > 0
+                    if holds then
+                        local binding = A.combineSlotBinding(vehicle, kind, index)
+                        if binding ~= nil then out[#out + 1] = { binding = binding } end
+                    end
+                end
+            end
+        end
+        return out
+    end
+
+    spec.hasAccess = function(binding, actor)
+        local native = spec.resolveCarrier(binding)
+        if native == nil then return false end
+        return actorCanAccess(actor, native.vehicle)
+    end
+
+    return spec
+end
+
 -- ── The native adapter: one registration, both kinds ────────────────────────
 local function kindOf(binding)
     local d = type(binding) == "table" and binding.sourceDescriptor or nil
@@ -494,10 +635,12 @@ function A.nativeAdapterSpec(placeables, vehicles)
     local kinds = {
         [A.KIND_STORAGE] = A.storageKind(placeables),
         [A.KIND_FILL_UNIT] = A.fillUnitKind(vehicles),
+        [A.KIND_DELAY_SLOT] = A.combineSlotKind(vehicles, A.KIND_DELAY_SLOT),
+        [A.KIND_STRAW_SLOT] = A.combineSlotKind(vehicles, A.KIND_STRAW_SLOT),
     }
     local spec = {
         version        = A.ADAPTER_VERSION,
-        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT },
+        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT },
         materialGroups = {},
         kinds          = kinds,
     }
@@ -524,12 +667,17 @@ function A.nativeAdapterSpec(placeables, vehicles)
         local kind = kindOf(savedBinding)
         if kind == A.KIND_STORAGE then return kinds[A.KIND_STORAGE].restoreBinding(savedBinding, context) end
         if kind == A.KIND_FILL_UNIT then return savedBinding end
+        -- A Combine buffer slot keeps its own binding: its restoration with the native
+        -- slot is the save extension's (SG2-3c); without it the slot finds nothing.
+        if kind == A.KIND_DELAY_SLOT or kind == A.KIND_STRAW_SLOT then return savedBinding end
         return nil, "DESCRIPTOR"
     end
     spec.enumerateCarriers = function()
         local out = {}
         for _, e in ipairs(kinds[A.KIND_STORAGE].enumerateCarriers()) do out[#out + 1] = e end
         for _, e in ipairs(kinds[A.KIND_FILL_UNIT].enumerateCarriers()) do out[#out + 1] = e end
+        for _, e in ipairs(kinds[A.KIND_DELAY_SLOT].enumerateCarriers()) do out[#out + 1] = e end
+        for _, e in ipairs(kinds[A.KIND_STRAW_SLOT].enumerateCarriers()) do out[#out + 1] = e end
         return out
     end
     return spec
