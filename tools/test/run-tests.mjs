@@ -58,10 +58,15 @@ for (const tf of testFiles) {
   const testSrc = readFileSync(testPath, "utf8");
   const deps = parseDeps(testSrc);
 
+  // Each declared file runs in its own do ... end block. The engine's source()
+  // compiles every file as a separate chunk, so a file's top-level locals are its
+  // own. Concatenated bare, they leaked into every later file and piled up in one
+  // function scope; the SG2-2 bench, the first to load everything main.lua sources
+  // plus main.lua itself, passed Lua's 200-active-locals limit and could not load.
   const parts = [prelude];
   for (const d of deps) {
     try {
-      parts.push(`-- <<< ${d} >>>\n` + readFileSync(join(REPO_ROOT, d), "utf8"));
+      parts.push(`-- <<< ${d} >>>\ndo\n` + readFileSync(join(REPO_ROOT, d), "utf8") + `\nend`);
     } catch {
       console.log(c.red(`✗ ${tf}: cannot read declared dependency '${d}'`));
       hadError = true;

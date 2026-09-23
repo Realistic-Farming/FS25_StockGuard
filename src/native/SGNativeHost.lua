@@ -4,7 +4,10 @@
 -- Wires the SG2-1 kernel to the SG-1 mission handle on the server:
 --   * registers the Storage and FillUnit carrier adapters,
 --   * routes Storage bracket and FillUnit observer reports to the handle,
---   * follows the carrier lifecycle (placeables and vehicles added and removed).
+--   * follows the carrier lifecycle (placeables and vehicles added and removed),
+--   * binds the SG2-2 station quantity correction (SGStationAdapter) on every
+--     station the mission's storage system registers, and unbinds it on removal
+--     and at teardown.
 --
 -- THE BARRIER IS THE CORE'S. Nothing is bound or observed until SG-1 enumerates
 -- the adapters at its restore-complete barrier; the enumeration call is what marks
@@ -60,6 +63,9 @@ function H.new(handle, sources)
     self.storageSlots = setmetatable({}, { __mode = "k" })  -- storage -> { placeable, slot }
     self.storageLease = nil
     self.fillUnitLease = nil
+    self.stations = {}        -- station -> { LOAD = bool, UNLOAD = bool } (SG2-2)
+    self.stationFailures = 0
+    self.stationFailuresLogged = setmetatable({}, { __mode = "k" })  -- station -> { [kind:reason] = true }
     return self
 end
 
@@ -91,6 +97,7 @@ function H:install()
     fillUnitSpec.enumerateCarriers = function()
         host.ready = true
         for _, vehicle in ipairs(listOf(host.sources.vehicles)) do host:observeVehicle(vehicle) end
+        host:sweepStations()
         return enumerateFillUnits()
     end
 
@@ -108,6 +115,7 @@ function H:install()
 end
 
 function H:teardown()
+    self:unbindAllStations()
     if H.current == self then H.current = nil end
     self.ready = false
     self.dirty, self.dirtyOrder = {}, {}
@@ -289,6 +297,21 @@ function H:onVehicleAdded(vehicle)
     self:flush()
 end
 
+--- A station registration call returned (SG2-2). Bound only while live, and only
+--- when the storage system's own table now holds it: addUnloadingStation without a
+--- placeable inserts the station and still returns false (StorageSystem.lua:166-171).
+function H:onStationRegistered(station, kind)
+    if not self.ready then return end
+    local tables = self:stationTables()
+    if tables == nil or tables[kind] == nil or tables[kind][station] ~= station then return end
+    self:bindStation(station, kind)
+end
+
+--- A station of one kind is being removed from the storage system.
+function H:onStationUnregistered(station, kind)
+    self:unbindStation(station, kind)
+end
+
 --- A vehicle was removed (VehicleSystem.removeVehicle, after its teardown,
 --- Vehicle.lua:1134; its fill unit list survives FillUnit:onDelete). Withdrawn by key.
 function H:onVehicleRemoved(vehicle)
@@ -301,6 +324,85 @@ function H:onVehicleRemoved(vehicle)
             self.dirty[key] = nil
             self.handle.withdrawCarrier(self.fillUnitLease, key, "VEHICLE_REMOVED")
         end
+    end
+end
+
+-- ---------------------------------------------------------
+-- Stations (SG2-2, RSF-F207)
+-- ---------------------------------------------------------
+--- Admit a registered station's quantity method of one kind. A station whose
+--- resolved method is not the native baseline (a SellingStation, a custom override,
+--- a foreign class wrap) is left untouched and its capability withheld.
+---@return boolean admitted, string|nil why
+function H:bindStation(station, kind)
+    if type(station) ~= "table" then return false, "NO_STATION" end
+    local host = self
+    local ok, why = SGStationAdapter.install(station, kind, function(st, k, reason)
+        host:onStationFailure(st, k, reason)
+    end)
+    local entry = self.stations[station] or {}
+    entry[kind] = ok == true
+    self.stations[station] = entry
+    return ok, why
+end
+
+--- Unbind one kind, or both when kind is nil (host teardown).
+function H:unbindStation(station, kind)
+    local entry = self.stations[station]
+    if entry == nil then return end
+    for _, k in ipairs({ SGStationAdapter.LOAD, SGStationAdapter.UNLOAD }) do
+        if kind == nil or kind == k then
+            if entry[k] then SGStationAdapter.uninstall(station, k) end
+            entry[k] = nil
+        end
+    end
+    if entry[SGStationAdapter.LOAD] == nil and entry[SGStationAdapter.UNLOAD] == nil then
+        self.stations[station] = nil
+    end
+end
+
+--- The station tables of the live storage system, or nil.
+function H:stationTables()
+    local ss = type(self.sources.storageSystem) == "function" and self.sources.storageSystem() or nil
+    if type(ss) ~= "table" then return nil end
+    return {
+        [SGStationAdapter.LOAD] = type(ss.loadingStations) == "table" and ss.loadingStations or {},
+        [SGStationAdapter.UNLOAD] = type(ss.unloadingStations) == "table" and ss.unloadingStations or {},
+    }
+end
+
+function H:unbindAllStations()
+    for station in pairs(self.stations) do self:unbindStation(station) end
+    self.stations = {}
+end
+
+--- Bind every station already registered when the host becomes live.
+function H:sweepStations()
+    local tables = self:stationTables()
+    if tables == nil then return end
+    for _, station in pairs(tables[SGStationAdapter.LOAD]) do
+        self:bindStation(station, SGStationAdapter.LOAD)
+    end
+    for _, station in pairs(tables[SGStationAdapter.UNLOAD]) do
+        self:bindStation(station, SGStationAdapter.UNLOAD)
+    end
+end
+
+--- A concrete failed station operation (non-finite level, a setter writing outside
+--- the requested bound). The attempt has stopped with the observed state kept.
+--- Counted every time, logged once per station, kind and reason: a trigger drives
+--- its station every frame, so a broken store would otherwise flood the log.
+function H:onStationFailure(station, kind, reason)
+    self.stationFailures = self.stationFailures + 1
+    if SGOperationContext.current(self.context) ~= nil then
+        SGOperationContext.observe(self.context, { source = "STATION", station = station, kind = kind, failure = reason })
+    end
+    local seen = type(station) == "table" and (self.stationFailuresLogged[station] or {}) or {}
+    local tag = tostring(kind) .. ":" .. tostring(reason)
+    if not seen[tag] then
+        seen[tag] = true
+        if type(station) == "table" then self.stationFailuresLogged[station] = seen end
+        log("station " .. tostring(kind) .. " operation failed: " .. tostring(reason) .. " (observed state kept; further repeats counted, not logged)")
     end
 end
 
@@ -356,6 +458,21 @@ function H.installClassHooks(classes)
     end)
     wrapClassMethod(classes.VehicleSystem, "removeVehicle", function(vehicle)
         dispatch("onVehicleRemoved", vehicle)
+    end, nil)
+    -- SG2-2: stations are bound when the storage system registers them and unbound
+    -- before it forgets them (StorageSystem.lua:67/:84, :162/:182). Registration is
+    -- read from the system's own table after the call, not from a return value.
+    wrapClassMethod(classes.StorageSystem, "addLoadingStation", nil, function(r, station)
+        dispatch("onStationRegistered", station, SGStationAdapter.LOAD)
+    end)
+    wrapClassMethod(classes.StorageSystem, "addUnloadingStation", nil, function(r, station)
+        dispatch("onStationRegistered", station, SGStationAdapter.UNLOAD)
+    end)
+    wrapClassMethod(classes.StorageSystem, "removeLoadingStation", function(station)
+        dispatch("onStationUnregistered", station, SGStationAdapter.LOAD)
+    end, nil)
+    wrapClassMethod(classes.StorageSystem, "removeUnloadingStation", function(station)
+        dispatch("onStationUnregistered", station, SGStationAdapter.UNLOAD)
     end, nil)
     return true
 end
