@@ -57,6 +57,7 @@ source(modDirectory .. "src/native/SGDischargeCapture.lua")
 source(modDirectory .. "src/native/SGNativeSale.lua")
 source(modDirectory .. "src/native/SGCutState.lua")
 source(modDirectory .. "src/native/SGHarvestCapture.lua")
+source(modDirectory .. "src/native/SGCombineBufferSave.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
