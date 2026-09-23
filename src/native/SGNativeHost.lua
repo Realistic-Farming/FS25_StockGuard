@@ -250,7 +250,11 @@ function H:onFillUnitMovement(vehicle, fillUnitIndex, accepted, fillTypeIndex, c
 end
 
 function H:observeVehicle(vehicle)
-    if type(vehicle) ~= "table" or vehicle.spec_fillUnit == nil then return false end
+    if type(vehicle) ~= "table" then return false end
+    -- SG2-3: a cutter header usually has no fill unit of its own, so the harvest
+    -- brackets install before the fill-unit test.
+    if SGHarvestCapture ~= nil then SGHarvestCapture.observeVehicle(vehicle) end
+    if vehicle.spec_fillUnit == nil then return false end
     if vehicle.spec_dischargeable ~= nil then
         SGDischargeCapture.install(vehicle, H.dispatchDischargeOpen, H.dispatchDischargeClose)
     end
@@ -917,6 +921,8 @@ function H.installClassHooks(classes)
     if g_server == nil then return false, "CLIENT" end
     classes = classes or {}
     if classes.Storage ~= nil then SGStorageBracket.install(classes.Storage, H.dispatchStorageChange) end
+    -- SG2-3: the cutter frame and the combine drains are class events (mechanism 3).
+    if SGHarvestCapture ~= nil then SGHarvestCapture.installClassHooks({ Cutter = classes.Cutter, Combine = classes.Combine }) end
     wrapClassMethod(classes.StorageSystem, "addStorage", nil, function(r, storage)
         if r[1] == true then dispatch("onStorageAdded", storage) end
     end)

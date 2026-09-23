@@ -1,0 +1,414 @@
+-- SG2-3-engine_model.lua - the harvest engine the SG2-3 bench runs against.
+--
+-- NOT A TEST. A bar lists it SECOND in --!load, after SG2-2-engine_model.lua (whose
+-- storage, station, discharge and system classes it keeps) and before any StockGuard
+-- file, as the game defines its classes before a mod's source().
+--
+-- Bodies marked VERBATIM follow D:\FS25_Decoded\dataS\scripts_decompiled at the cited
+-- lines through every quantity they touch; presentation (effects, sounds, dirty flags,
+-- statistics) is abbreviated and said so. Bodies marked MODELED stand in for engine
+-- code with no usable Lua body: the fruit density plane and cutFruitArea's accumulators
+-- are C or missing from the decompile (FSDensityMapUtil.lua:154-201 omits them, SG-2
+-- :503), and Combine:addCutterArea's decompile reuses five names for different locals.
+
+ENGINE_FT.STRAW = 5
+local FT_NAMES = { [1] = "WHEAT", [2] = "BARLEY", [4] = "GRASS", [5] = "STRAW" }
+g_fillTypeManager = {
+    getFillTypeNameByIndex = function(_, i) return FT_NAMES[i] end,
+    getFillTypeIndexByName = function(_, n) for i, v in pairs(FT_NAMES) do if v == n then return i end end return nil end,
+}
+
+getWorldTranslation = getWorldTranslation or function(node)
+    if type(node) == "table" then return node.x or 0, node.y or 0, node.z or 0 end
+    return 0, 0, 0
+end
+MathUtil = MathUtil or {}
+MathUtil.areaToHa = MathUtil.areaToHa or function(area, pixelsToSqm) return area * (pixelsToSqm or 1) / 10000 end
+AccessHandler = AccessHandler or { EVERYONE = 0 }
+g_farmManager = g_farmManager or { updateFarmStats = function() end }
+
+-- ── fruit types (FruitTypeDesc.lua) ─────────────────────────────────────────
+FruitType = { UNKNOWN = 0, WHEAT = 11 }
+ENGINE_FRUIT = FruitType
+local FruitDesc = {}
+FruitDesc.__index = FruitDesc
+--- FruitTypeDesc.lua:283-319 MODELED: the per-state yield scale table.
+function FruitDesc:getYieldScale(state) return self.yieldScales[state] or 1 end
+local DESCS = {
+    [FruitType.WHEAT] = setmetatable({ index = FruitType.WHEAT, name = "WHEAT", fillTypeIndex = ENGINE_FT.WHEAT, windrowFillTypeIndex = ENGINE_FT.STRAW,
+        literPerSqm = 1, windrowLiterPerSqm = 1, hasWindrow = true, chopperType = nil, chopperUseHaulm = false,
+        minHarvestingGrowthState = 3, maxHarvestingGrowthState = 4, minForageGrowthState = 3, cutState = 6,
+        harvestTransitions = { [3] = 6, [4] = 6 }, yieldScales = { [3] = 0.5, [4] = 1 }, terrainDataPlaneId = 1 }, FruitDesc),
+}
+g_fruitTypeManager = {
+    getFruitTypeByIndex = function(_, i) return DESCS[i] end,
+    getFruitTypeByFillTypeIndex = function(_, ft) for _, d in pairs(DESCS) do if d.fillTypeIndex == ft then return d end end return nil end,
+    getFruitTypeIndexByFillTypeIndex = function(_, ft) for i, d in pairs(DESCS) do if d.fillTypeIndex == ft then return i end end return nil end,
+    getFillTypeIndexByFruitTypeIndex = function(_, i) return DESCS[i] and DESCS[i].fillTypeIndex or nil end,
+    getWindrowFillTypeIndexByFruitTypeIndex = function(_, i) return DESCS[i] and DESCS[i].windrowFillTypeIndex or nil end,
+    -- FruitTypeManager MODELED: one litre per harvested (scaled) pixel.
+    getFruitTypeAreaLiters = function(_, i, area, _useWindrowed) return area * (DESCS[i] and DESCS[i].literPerSqm or 1) end,
+    getCutHeightByFruitTypeIndex = function() return 0.1 end,
+}
+
+-- ── the fruit density plane (MODELED: C) ──────────────────────────────────────
+ENGINE_PLANE = { cells = {} }
+local function pkey(fruit, px, pz) return fruit .. "|" .. px .. ":" .. pz end
+--- Sow `fruit` at growth `state` on every 1 m pixel of the box [x0, x1) x [z0, z1).
+function ENGINE_PLANE.sow(fruit, x0, z0, x1, z1, state)
+    for px = x0, x1 - 1 do for pz = z0, z1 - 1 do ENGINE_PLANE.cells[pkey(fruit, px, pz)] = state end end
+end
+function ENGINE_PLANE.state(fruit, px, pz) return ENGINE_PLANE.cells[pkey(fruit, px, pz)] end
+
+FSDensityMapUtil = FSDensityMapUtil or {}
+--- FSDensityMapUtil.lua:22-201 MODELED. Kept: the per-state harvest transitions of
+--- every pixel between the min and max harvesting states inside the envelope, the
+--- returned SCALED area (each harvested pixel times its state's yield scale, the
+--- accumulator the decompile omits), the total, the dominant state and its count. The
+--- spray, plow, lime, weed, stubble and roller factors are 1: the harvest multiplier
+--- they feed is the mission's (held at 1 by the bench).
+function FSDensityMapUtil.cutFruitArea(fruitIndex, sx, sz, wx, wz, hx, hz, _destroySpray, useMinForageState, _excluded, _, _limitToField)
+    local desc = g_fruitTypeManager:getFruitTypeByIndex(fruitIndex)
+    if desc == nil or desc.terrainDataPlaneId == nil or desc.cutState == 0 then return 0 end
+    local minState = useMinForageState and desc.minForageGrowthState or desc.minHarvestingGrowthState
+    local x0, x1 = math.min(sx, wx, hx), math.max(sx, wx, hx)
+    local z0, z1 = math.min(sz, wz, hz), math.max(sz, wz, hz)
+    local scaled, total, byState = 0, 0, {}
+    for px = math.floor(x0), math.ceil(x1) - 1 do
+        for pz = math.floor(z0), math.ceil(z1) - 1 do
+            local cx, cz = px + 0.5, pz + 0.5
+            if cx >= x0 and cx < x1 and cz >= z0 and cz < z1 then
+                local state = ENGINE_PLANE.state(fruitIndex, px, pz)
+                if state ~= nil then
+                    total = total + 1
+                    local target = desc.harvestTransitions[state]
+                    if target ~= nil and state >= minState and state <= desc.maxHarvestingGrowthState then
+                        ENGINE_PLANE.cells[pkey(fruitIndex, px, pz)] = target
+                        byState[state] = (byState[state] or 0) + 1
+                        scaled = scaled + desc:getYieldScale(state)
+                    end
+                end
+            end
+        end
+    end
+    local growthState, maxArea = minState, 0
+    for state, n in pairs(byState) do if n > maxArea then growthState, maxArea = state, n end end
+    return scaled, total, 1, 1, 1, 1, 1, 1, 0, growthState, maxArea, total
+end
+
+-- ── Cutter (vehicles/specializations/Cutter.lua) ──────────────────────────────
+Cutter = {}
+Cutter.CLIENT_DM_UPDATE_RADIUS = 50
+-- :584-668 VERBATIM through the quantities (cutFruitArea, the harvest multiplier,
+-- lastMultiplierArea, lastArea, lastFruitType, the fruit change). Abbreviated: the
+-- growth-state timer, test areas, cut height, the chopper area and the stone read.
+function Cutter:processCutterArea(workArea, dt)
+    local spec = self.spec_cutter
+    if not self.isServer and self.currentUpdateDistance > Cutter.CLIENT_DM_UPDATE_RADIUS then
+        return 0, 0
+    end
+    if spec.workAreaParameters.combineVehicle == nil then
+        return 0, 0
+    end
+    local xs, _, zs = getWorldTranslation(workArea.start)
+    local xw, _, zw = getWorldTranslation(workArea.width)
+    local xh, _, zh = getWorldTranslation(workArea.height)
+    local lastArea = 0
+    local lastMultiplierArea = 0
+    local lastTotalArea = 0
+    for _, fruitTypeIndex in ipairs(spec.workAreaParameters.fruitTypeIndicesToUse) do
+        local area, totalArea, sprayFactor, plowFactor, limeFactor, weedFactor, stubbleFactor, rollerFactor, beeYieldBonusPerc, growthState = FSDensityMapUtil.cutFruitArea(fruitTypeIndex, xs, zs, xw, zw, xh, zh, true, spec.allowsForageGrowthState, nil)
+        if area > 0 then
+            if self.isServer and fruitTypeIndex ~= spec.currentInputFruitType then
+                spec.currentInputFruitType = fruitTypeIndex
+                spec.currentOutputFillType = g_fruitTypeManager:getFillTypeIndexByFruitTypeIndex(spec.currentInputFruitType)
+                if spec.fruitTypeConverters[spec.currentInputFruitType] ~= nil then
+                    spec.currentOutputFillType = spec.fruitTypeConverters[spec.currentInputFruitType].fillTypeIndex
+                    spec.currentConversionFactor = spec.fruitTypeConverters[spec.currentInputFruitType].conversionFactor
+                end
+            end
+            lastMultiplierArea = area * g_currentMission:getHarvestScaleMultiplier(fruitTypeIndex, sprayFactor, plowFactor, limeFactor, weedFactor, stubbleFactor, rollerFactor, beeYieldBonusPerc)
+            spec.workAreaParameters.lastFruitType = fruitTypeIndex
+            lastArea = area
+            break
+        end
+    end
+    spec.workAreaParameters.lastArea = spec.workAreaParameters.lastArea + lastArea
+    spec.workAreaParameters.lastMultiplierArea = spec.workAreaParameters.lastMultiplierArea + lastMultiplierArea
+    return spec.workAreaParameters.lastArea, lastTotalArea
+end
+-- :729-768 VERBATIM for the resets and the combine lookup; the AI required-fill-type
+-- branch is abbreviated (no bench cutter is AI-driven).
+function Cutter:onStartWorkAreaProcessing(_)
+    local spec = self.spec_cutter
+    spec.workAreaParameters.combineVehicle = self:getCombine()
+    spec.workAreaParameters.lastLiters = 0
+    spec.workAreaParameters.lastArea = 0
+    spec.workAreaParameters.lastMultiplierArea = 0
+    if spec.workAreaParameters.lastFruitType == nil then
+        spec.workAreaParameters.fruitTypeIndicesToUse = spec.fruitTypeIndices
+    else
+        for i = 1, #spec.workAreaParameters.lastFruitTypeToUse do spec.workAreaParameters.lastFruitTypeToUse[i] = nil end
+        spec.workAreaParameters.lastFruitTypeToUse[1] = spec.workAreaParameters.lastFruitType
+        spec.workAreaParameters.fruitTypeIndicesToUse = spec.workAreaParameters.lastFruitTypeToUse
+    end
+    spec.workAreaParameters.lastFruitType = nil
+    spec.isWorking = false
+end
+-- :770-840 MODELED names, VERBATIM flow: the decompile reuses `requirement(s)` for
+-- the liters, the output type and the AI requirement. Kept: server only, the frame's
+-- liters from lastMultiplierArea plus lastLiters, the conversion factor, ONE
+-- addCutterArea per frame with the native seven arguments. Abbreviated: statistics,
+-- dirty flags, AI requirements.
+function Cutter:onEndWorkAreaProcessing(_, _)
+    if not self.isServer then return end
+    local spec = self.spec_cutter
+    local lastArea = spec.workAreaParameters.lastArea
+    local lastLiters = spec.workAreaParameters.lastLiters
+    if (lastArea > 0 or lastLiters > 0) and spec.workAreaParameters.combineVehicle ~= nil then
+        local inputFruitType = spec.workAreaParameters.lastFruitType
+        local liters = g_fruitTypeManager:getFruitTypeAreaLiters(inputFruitType, spec.workAreaParameters.lastMultiplierArea, false) + lastLiters
+        local outputFillType = spec.currentOutputFillType
+        if spec.lastPrioritizedOutputType ~= FillType.UNKNOWN then outputFillType = spec.lastPrioritizedOutputType end
+        local conversionFactor = spec.currentConversionFactor or 1
+        liters = liters * conversionFactor
+        local farmId = self:getLastTouchedFarmlandFarmId()
+        spec.lastAddResult = spec.workAreaParameters.combineVehicle:addCutterArea(lastArea, liters, inputFruitType, outputFillType, spec.strawRatio * (1 / conversionFactor), farmId, self:getCutterLoad())
+    end
+end
+
+-- ── Combine (vehicles/specializations/Combine.lua) ────────────────────────────
+Combine = {}
+-- :956-1057 MODELED names (the decompile reuses damage/fruitTypeDesc/inputBuffer/slot
+-- for five different locals), VERBATIM flow: the stale-area refusal, the straw slot
+-- written BEFORE the infinite-capacity buffer-time return, the additive boost, the
+-- buffer-or-hopper destination, the no-delay direct add returning the ACCEPTED amount,
+-- the first free delay slot, and the delta returned with nothing stored when no slot
+-- is free. Abbreviated: rain and damage (both empty in the decompile), statistics.
+function Combine:addCutterArea(area, liters, inputFruitType, outputFillType, strawRatio, farmId, cutterLoad)
+    local spec = self.spec_combine
+    if area <= 0 and liters <= 0 or spec.lastCuttersFruitType ~= FruitType.UNKNOWN and (spec.lastCuttersArea ~= 0 and spec.lastCuttersOutputFillType ~= outputFillType) then
+        return 0
+    end
+    spec.lastCuttersArea = spec.lastCuttersArea + area
+    spec.lastCuttersOutputFillType = outputFillType
+    spec.lastCuttersInputFruitType = inputFruitType
+    spec.lastCuttersAreaTime = g_currentMission.time
+    spec.lastAreaZeroTime = 0
+    local deltaFillLevel = liters * spec.threshingScale
+    if self:getFillUnitLastValidFillType(spec.fillUnitIndex) == outputFillType or self:getFillUnitLastValidFillType(spec.bufferFillUnitIndex) == outputFillType then
+        if inputFruitType == nil then
+            inputFruitType = g_fruitTypeManager:getFruitTypeIndexByFillTypeIndex(outputFillType)
+        end
+        if inputFruitType ~= nil then
+            local inputBuffer = spec.processing.inputBuffer
+            local slot = inputBuffer.buffer[inputBuffer.fillIndex]
+            local fruitTypeDesc = g_fruitTypeManager:getFruitTypeByIndex(inputFruitType)
+            local strawLiters = liters / fruitTypeDesc.literPerSqm * (fruitTypeDesc.windrowLiterPerSqm or fruitTypeDesc.literPerSqm)
+            slot.area = slot.area + area
+            slot.liters = slot.liters + strawLiters
+            slot.inputLiters = slot.inputLiters + strawLiters
+            slot.strawRatio = strawRatio
+            slot.effectDensity = cutterLoad * strawRatio * 0.8 + 0.2
+        end
+    end
+    if spec.additives.available then
+        local hasAdditive = false
+        for i = 1, #spec.additives.fillTypes do
+            if outputFillType == spec.additives.fillTypes[i] then hasAdditive = true break end
+        end
+        if hasAdditive then
+            local additiveLevel = self:getFillUnitFillLevel(spec.additives.fillUnitIndex)
+            if additiveLevel > 0 then
+                local usage = spec.additives.usage * deltaFillLevel
+                if usage > 0 then
+                    deltaFillLevel = deltaFillLevel * (1 + 0.05 * math.min(additiveLevel / usage, 1))
+                    self:addFillUnitFillLevel(self:getOwnerFarmId(), spec.additives.fillUnitIndex, -usage, self:getFillUnitFillType(spec.additives.fillUnitIndex), ToolType.UNDEFINED)
+                end
+            end
+        end
+    end
+    if self:getFillUnitCapacity(spec.fillUnitIndex) == math.huge and self:getFillUnitFillLevel(spec.fillUnitIndex) > 0.001 then
+        if spec.lastDischargeTime + (self:getIsAIActive() and math.huge or spec.fillLevelBufferTime) < g_currentMission.time then
+            return deltaFillLevel
+        end
+    end
+    local fillUnitIndex = spec.fillUnitIndex
+    if spec.bufferFillUnitIndex ~= nil and self:getFillUnitFreeCapacity(spec.bufferFillUnitIndex) > 0 then
+        fillUnitIndex = spec.bufferFillUnitIndex
+    end
+    if spec.loadingDelay <= 0 then
+        return self:addFillUnitFillLevel(self:getOwnerFarmId(), fillUnitIndex, deltaFillLevel, outputFillType, ToolType.UNDEFINED, nil)
+    end
+    for i = 1, #spec.loadingDelaySlots do
+        if not spec.loadingDelaySlots[i].valid then
+            spec.loadingDelaySlots[i].valid = true
+            spec.loadingDelaySlots[i].fillLevelDelta = deltaFillLevel
+            spec.loadingDelaySlots[i].fillType = outputFillType
+            if spec.loadingDelaySlotsDelayedInsert then
+                spec.loadingDelaySlots[i].time = g_currentMission.time
+            else
+                spec.loadingDelaySlots[i].time = g_currentMission.time + (spec.unloadingDelay - spec.loadingDelay)
+            end
+            spec.loadingDelaySlotsDelayedInsert = not spec.loadingDelaySlotsDelayedInsert
+            return deltaFillLevel
+        end
+    end
+    return deltaFillLevel
+end
+-- :407-471 VERBATIM for the three material movements: the straw input buffer's
+-- rotation (:441-458), the buffer fill unit's drain (:459-462) and the due delay
+-- slots' drain, each slot cleared before its hopper add (:463-471). Abbreviated: the
+-- fill toggles, effects and dirty flags.
+function Combine:onUpdateTick(dt, _, _, _)
+    if not self.isServer then return end
+    local spec = self.spec_combine
+    spec.lastCuttersArea = 0
+    spec.lastCuttersInputFruitType = FruitType.UNKNOWN
+    spec.lastCuttersFruitType = FruitType.UNKNOWN
+    local inputBuffer = spec.processing.inputBuffer
+    inputBuffer.slotTimer = inputBuffer.slotTimer - dt
+    if inputBuffer.slotTimer < 0 then
+        inputBuffer.slotTimer = inputBuffer.slotDuration
+        inputBuffer.fillIndex = inputBuffer.fillIndex + 1
+        if inputBuffer.fillIndex > inputBuffer.slotCount then
+            inputBuffer.fillIndex = 1
+        end
+        local lastDropIndex = inputBuffer.dropIndex
+        inputBuffer.dropIndex = inputBuffer.dropIndex + 1
+        if inputBuffer.dropIndex > inputBuffer.slotCount then
+            inputBuffer.dropIndex = 1
+        end
+        inputBuffer.buffer[inputBuffer.dropIndex].liters = inputBuffer.buffer[inputBuffer.dropIndex].liters + inputBuffer.buffer[lastDropIndex].liters
+        inputBuffer.buffer[inputBuffer.dropIndex].inputLiters = inputBuffer.buffer[inputBuffer.dropIndex].inputLiters + inputBuffer.buffer[lastDropIndex].liters
+        inputBuffer.buffer[lastDropIndex].area = 0
+        inputBuffer.buffer[lastDropIndex].liters = 0
+        inputBuffer.buffer[lastDropIndex].inputLiters = 0
+    end
+    if spec.bufferFillUnitIndex ~= nil and (spec.lastCuttersAreaTime + dt * 10 < g_currentMission.time and self:getFillUnitFillLevel(spec.bufferFillUnitIndex) > 0) then
+        local request = dt * (self:getFillUnitCapacity(spec.bufferFillUnitIndex) / spec.bufferUnloadingTime)
+        local debit = self:addFillUnitFillLevel(self:getOwnerFarmId(), spec.bufferFillUnitIndex, -request, self:getFillUnitFillType(spec.bufferFillUnitIndex), ToolType.UNDEFINED)
+        self:addFillUnitFillLevel(self:getOwnerFarmId(), spec.fillUnitIndex, -debit, self:getFillUnitFillType(spec.bufferFillUnitIndex), ToolType.UNDEFINED, nil)
+    end
+    if spec.loadingDelay > 0 then
+        for i = 1, #spec.loadingDelaySlots do
+            local slot = spec.loadingDelaySlots[i]
+            if slot.valid and slot.time + spec.loadingDelay < g_currentMission.time then
+                slot.valid = false
+                self:addFillUnitFillLevel(self:getOwnerFarmId(), spec.fillUnitIndex, slot.fillLevelDelta, slot.fillType, ToolType.UNDEFINED, nil)
+            end
+        end
+    end
+end
+
+-- ── vehicles as the engine builds them ────────────────────────────────────────
+local function fillUnitFunctions(v)
+    v.getFillUnitFillLevel = function(self, i) local u = self.spec_fillUnit.fillUnits[i] return u and u.fillLevel or 0 end
+    v.getFillUnitFillType = function(self, i) local u = self.spec_fillUnit.fillUnits[i] return u and u.fillType or FillType.UNKNOWN end
+    v.getFillUnitLastValidFillType = function(self, i) local u = i and self.spec_fillUnit.fillUnits[i] return u and u.lastValidFillType or FillType.UNKNOWN end
+    v.getFillUnitCapacity = function(self, i) local u = self.spec_fillUnit.fillUnits[i] return u and u.capacity or 0 end
+    v.getFillUnitFreeCapacity = function(self, i) local u = self.spec_fillUnit.fillUnits[i] return u and math.max(0, u.capacity - u.fillLevel) or 0 end
+    -- FillUnit:addFillUnitFillLevel MODELED: refuse a type the unit does not support
+    -- (FillUnit.lua getFillUnitSupportsFillType is a supportedFillTypes lookup, and
+    -- UNKNOWN is never in it), clamp to [0, capacity], and return the accepted delta. An
+    -- emptied unit's type becomes UNKNOWN, as native's does.
+    v.addFillUnitFillLevel = function(self, farmId, i, delta, ft)
+        local u = self.spec_fillUnit.fillUnits[i]
+        if u == nil then return 0 end
+        if ft == nil or ft == FillType.UNKNOWN then return 0 end
+        local before = u.fillLevel
+        u.fillLevel = math.max(0, math.min(u.fillLevel + delta, u.capacity))
+        if u.fillLevel > 0 and delta > 0 then u.fillType, u.lastValidFillType = ft, ft end
+        if u.fillLevel == 0 then u.fillType = FillType.UNKNOWN end
+        return u.fillLevel - before
+    end
+end
+
+--- A combine with its hopper (fill unit 1), an optional buffer fill unit (2), an
+--- optional loading delay (opts.loadingDelay ms, slots per :520), and a straw input
+--- buffer of opts.strawSlots slots. Its functions are COPIED into the instance.
+function ENGINE_NEW_COMBINE(uid, opts)
+    opts = opts or {}
+    local v = { uniqueId = uid, configFileName = "data/vehicles/combine.xml", ownerFarmId = 1, activeFarm = 1, isServer = true,
+        currentUpdateDistance = 0, rootNode = { x = 0, z = 0 } }
+    local units = { { fillLevel = opts.hopperLevel or 0, capacity = opts.hopperCapacity or 10000, fillType = FillType.UNKNOWN, lastValidFillType = opts.lastValid or ENGINE_FT.WHEAT } }
+    if (opts.hopperLevel or 0) > 0 then units[1].fillType = ENGINE_FT.WHEAT end
+    if opts.buffer then units[2] = { fillLevel = 0, capacity = opts.bufferCapacity or 500, fillType = FillType.UNKNOWN, lastValidFillType = ENGINE_FT.WHEAT } end
+    v.spec_fillUnit = { fillUnits = units }
+    fillUnitFunctions(v)
+    v.getUniqueId = function(self) return self.uniqueId end
+    v.getOwnerFarmId = function(self) return self.ownerFarmId end
+    v.getActiveFarm = function(self) return self.activeFarm end
+    v.getIsAIActive = function() return false end
+    v.addCutterArea = Combine.addCutterArea
+    local slots = {}
+    local strawSlots = opts.strawSlots or 4
+    local buffer = {}
+    for i = 1, strawSlots do buffer[i] = { area = 0, liters = 0, inputLiters = 0, strawRatio = 0, effectDensity = 0 } end
+    v.spec_combine = {
+        fillUnitIndex = 1, bufferFillUnitIndex = opts.buffer and 2 or nil, bufferUnloadingTime = opts.bufferUnloadingTime or 1000,
+        loadingDelay = opts.loadingDelay or 0, unloadingDelay = opts.loadingDelay or 0, loadingDelaySlotsDelayedInsert = false,
+        threshingScale = opts.threshingScale or 1, fillLevelBufferTime = 2000, lastDischargeTime = 0,
+        lastCuttersArea = 0, lastCuttersFruitType = FruitType.UNKNOWN, lastCuttersOutputFillType = FillType.UNKNOWN, lastCuttersAreaTime = -math.huge,
+        additives = { available = false, fillTypes = {} },
+        processing = { inputBuffer = { buffer = buffer, fillIndex = 1, dropIndex = strawSlots, slotCount = strawSlots, slotTimer = opts.slotDuration or 100000, slotDuration = opts.slotDuration or 100000 } },
+    }
+    if (opts.loadingDelay or 0) > 0 then
+        v.spec_combine.loadingDelaySlots = slots
+        for i = 1, opts.loadingDelay / 1000 * 60 + 1 do slots[i] = { time = -math.huge, fillLevelDelta = 0, fillType = 0, valid = false } end
+    end
+    v.specClasses = { Combine }
+    return v
+end
+
+--- A cutter header attached to `combine`, with opts.areas work areas side by side,
+--- each opts.width wide and opts.depth deep from (x0, z0). Its processCutterArea is
+--- COPIED into the instance and each work area's pointer CAPTURED (WorkArea.lua:266).
+function ENGINE_NEW_HEADER(uid, combine, opts)
+    opts = opts or {}
+    local v = { uniqueId = uid, configFileName = "data/vehicles/header.xml", ownerFarmId = 1, isServer = true, currentUpdateDistance = 0 }
+    v.processCutterArea = Cutter.processCutterArea
+    v.getUniqueId = function(self) return self.uniqueId end
+    v.getOwnerFarmId = function(self) return self.ownerFarmId end
+    v.getCombine = function(self) return self._combine end
+    v.getLastTouchedFarmlandFarmId = function() return 1 end
+    v.getCutterLoad = function() return 1 end
+    v._combine = combine
+    v.spec_cutter = {
+        workAreaParameters = { lastArea = 0, lastMultiplierArea = 0, lastLiters = 0, fruitTypeIndicesToUse = { FruitType.WHEAT }, lastFruitTypeToUse = {} },
+        fruitTypeIndices = { FruitType.WHEAT }, fruitTypeConverters = {}, currentConversionFactor = 1, strawRatio = opts.strawRatio or 0.5,
+        lastPrioritizedOutputType = FillType.UNKNOWN, allowsForageGrowthState = false,
+    }
+    local areas = {}
+    local n, x0, z0, w, d = opts.areas or 1, opts.x0 or 0, opts.z0 or 0, opts.width or 4, opts.depth or 1
+    for i = 1, n do
+        local xa = x0 + (i - 1) * w
+        areas[i] = { index = i, functionName = "processCutterArea",
+            start = { x = xa, z = z0 }, width = { x = xa + w, z = z0 }, height = { x = xa, z = z0 + d } }
+    end
+    v.spec_workArea = { workAreas = areas }
+    for _, wa in ipairs(areas) do wa.processingFunction = v[wa.functionName] end
+    v.specClasses = { Cutter }
+    return v
+end
+
+--- One frame, in WorkArea:onUpdateTick's order (WorkArea.lua:126, :179-193, :206):
+--- the header's classes' start, each captured pointer, the end (which calls the
+--- combine), then the combine's own update tick. The mission clock advances by dt.
+function ENGINE_HARVEST_TICK(header, combine, dt)
+    dt = dt or 16
+    g_currentMission.time = (g_currentMission.time or 0) + dt
+    if header ~= nil then
+        for _, class in ipairs(header.specClasses) do class.onStartWorkAreaProcessing(header, dt) end
+        for _, wa in ipairs(header.spec_workArea.workAreas) do
+            if wa.processingFunction ~= nil then
+                local xs = wa.processingFunction(header, wa, dt)
+                if xs > 0 then wa.lastWorkedHectares = xs end
+            end
+        end
+        for _, class in ipairs(header.specClasses) do class.onEndWorkAreaProcessing(header, dt, true) end
+    end
+    if combine ~= nil then
+        for _, class in ipairs(combine.specClasses) do class.onUpdateTick(combine, dt, false, false, false) end
+    end
+end

@@ -30,7 +30,7 @@
 --   O  a dev save from before SG2-1b (sgStorage and sgFillUnit carriers) loads through
 --      main.lua: the old stocks become history, the live carriers are read fresh
 --
---!load: tools/test/lua/SG2-2-engine_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
+--!load: tools/test/lua/SG2-2-engine_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGHarvestCapture.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
 local SA, NH, NA = SGStationAdapter, SGNativeHost, SGNativeAdapters
 local WHEAT, BARLEY = ENGINE_FT.WHEAT, ENGINE_FT.BARLEY
@@ -257,7 +257,7 @@ group("S", function()
     for id in sg.registry:each(SGRegistry.KIND_CARRIER_ADAPTER) do ids[#ids + 1] = id end
     T.eq("S2 ONE carrier adapter is registered, the native one", table.concat(ids, ","), "sgNative")
     local lease0 = sg.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, "sgNative")
-    T.eq("S3 it owns both kinds", lease0 and table.concat(lease0.spec.carrierKinds, ","), "storage,fillUnit")
+    T.eq("S3 it owns every native kind: storage, fill unit and, since SG2-3, the Combine's two buffers", lease0 and table.concat(lease0.spec.carrierKinds, ","), "storage,fillUnit,combineDelaySlot,combineStrawSlot")
     T.eq("S4 neither SG2-1 id is registered", tostring(sg.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, "sgStorage")) .. "/" .. tostring(sg.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, "sgFillUnit")), "nil/nil")
     local n, foreign, kinds = 0, 0, {}
     for _, c in pairs(sg.operations.carriers) do
