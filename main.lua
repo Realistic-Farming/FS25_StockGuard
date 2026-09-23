@@ -52,6 +52,9 @@ source(modDirectory .. "src/native/SGWorkAreaInstaller.lua")
 source(modDirectory .. "src/native/SGStorageBracket.lua")
 source(modDirectory .. "src/native/SGFillUnitObserver.lua")
 source(modDirectory .. "src/native/SGNativeAdapters.lua")
+source(modDirectory .. "src/native/SGStationAdapter.lua")
+source(modDirectory .. "src/native/SGDischargeCapture.lua")
+source(modDirectory .. "src/native/SGNativeSale.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
@@ -96,6 +99,7 @@ local function installNativeKernel(mission)
     local host = SGNativeHost.new(mission.stockGuard, {
         placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
         vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,
+        storageSystem = function() return mission.storageSystem end,
     })
     local ok, why = host:install()
     print("[StockGuard] native kernel " .. (ok and "installed: Storage and FillUnit adapters registered" or ("not installed: " .. tostring(why))))
