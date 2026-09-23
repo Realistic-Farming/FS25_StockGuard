@@ -527,12 +527,22 @@ end
 local function strawMaterialOf(vehicle)
     local spec = vehicle.spec_combine
     if spec == nil or type(vehicle.getFillUnitLastValidFillType) ~= "function" then return nil end
-    local ok, ft = pcall(vehicle.getFillUnitLastValidFillType, vehicle, spec.bufferFillUnitIndex or spec.fillUnitIndex)
-    if not ok or ft == nil or (FillType ~= nil and ft == FillType.UNKNOWN) then return nil end
     local ftm = g_fruitTypeManager
     if ftm == nil or type(ftm.getFruitTypeByFillTypeIndex) ~= "function" then return nil end
-    local okD, desc = pcall(ftm.getFruitTypeByFillTypeIndex, ftm, ft)
-    if not okD or type(desc) ~= "table" or desc.windrowLiterPerSqm == nil then return nil end
+    local ok, ft = pcall(vehicle.getFillUnitLastValidFillType, vehicle, spec.bufferFillUnitIndex or spec.fillUnitIndex)
+    local desc = nil
+    if ok and ft ~= nil and not (FillType ~= nil and ft == FillType.UNKNOWN) then
+        local okD, d = pcall(ftm.getFruitTypeByFillTypeIndex, ftm, ft)
+        if okD and type(d) == "table" then desc = d end
+    else
+        -- After a load with an empty hopper the unit's last valid type is UNKNOWN again
+        -- (FillUnit.lua:1311). The combine's last valid input fruit (:414, the server's
+        -- own record), which the save extension restores as the buffer's output
+        -- selector (SG2-3c, SG-2 :148), names the straw instead.
+        local okD, d = pcall(ftm.getFruitTypeByIndex, ftm, spec.lastValidInputFruitType)
+        if okD and type(d) == "table" then desc = d end
+    end
+    if desc == nil or desc.windrowLiterPerSqm == nil then return nil end
     local okW, windrow = pcall(ftm.getWindrowFillTypeIndexByFruitTypeIndex, ftm, desc.index)
     if not okW or windrow == nil then return nil end
     return fillTypeNameOf(windrow)

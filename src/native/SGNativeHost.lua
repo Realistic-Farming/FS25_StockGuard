@@ -341,15 +341,30 @@ end
 
 --- A vehicle was removed (VehicleSystem.removeVehicle, after its teardown,
 --- Vehicle.lua:1134; its fill unit list survives FillUnit:onDelete). Withdrawn by key.
+--- A combine's live delay and straw slots go with it (SG2-3c, SG-2 :136): a sale or
+--- deletion with grain in flight is destruction, and the tokens never reach the next
+--- machine bought.
 function H:onVehicleRemoved(vehicle)
     if not self.ready then return end
-    local fu = type(vehicle) == "table" and vehicle.spec_fillUnit or nil
-    for index in ipairs(fu ~= nil and type(fu.fillUnits) == "table" and fu.fillUnits or {}) do
-        local binding = A.fillUnitBinding(vehicle, index)
+    local withdraw = function(binding)
         local key = binding ~= nil and SGRecords.carrierKeyString(binding.carrierKey) or nil
         if key ~= nil then
             self.dirty[key] = nil
             self.handle.withdrawCarrier(self.nativeLease, key, "VEHICLE_REMOVED")
+        end
+    end
+    local fu = type(vehicle) == "table" and vehicle.spec_fillUnit or nil
+    for index in ipairs(fu ~= nil and type(fu.fillUnits) == "table" and fu.fillUnits or {}) do
+        withdraw(A.fillUnitBinding(vehicle, index))
+    end
+    local cs = type(vehicle) == "table" and vehicle.spec_combine or nil
+    if cs ~= nil then
+        for index, slot in ipairs(type(cs.loadingDelaySlots) == "table" and cs.loadingDelaySlots or {}) do
+            if slot.valid == true then withdraw(A.combineSlotBinding(vehicle, A.KIND_DELAY_SLOT, index)) end
+        end
+        local ib = type(cs.processing) == "table" and cs.processing.inputBuffer or nil
+        for index, slot in ipairs(ib ~= nil and type(ib.buffer) == "table" and ib.buffer or {}) do
+            if (tonumber(slot.liters) or 0) > 0 then withdraw(A.combineSlotBinding(vehicle, A.KIND_STRAW_SLOT, index)) end
         end
     end
 end
@@ -923,6 +938,9 @@ function H.installClassHooks(classes)
     if classes.Storage ~= nil then SGStorageBracket.install(classes.Storage, H.dispatchStorageChange) end
     -- SG2-3: the cutter frame and the combine drains are class events (mechanism 3).
     if SGHarvestCapture ~= nil then SGHarvestCapture.installClassHooks({ Cutter = classes.Cutter, Combine = classes.Combine, FSDensityMapUtil = classes.FSDensityMapUtil }) end
+    -- SG2-3c: the combine's in-flight buffers survive a save (class-table saver and
+    -- post-load event, Vehicle.lua:1212 and :905).
+    if SGCombineBufferSave ~= nil then SGCombineBufferSave.installClassHooks({ Combine = classes.Combine }) end
     wrapClassMethod(classes.StorageSystem, "addStorage", nil, function(r, storage)
         if r[1] == true then dispatch("onStorageAdded", storage) end
     end)

@@ -73,6 +73,8 @@ g_fruitTypeManager = {
     getDefaultDataPlaneId = function() return 1 end,
     getFruitTypeByDensityTypeIndex = function(_, index) for _, d in pairs(DESCS) do if d.densityTypeIndex == index then return d end end return nil end,
     getFruitTypeByIndex = function(_, i) return DESCS[i] end,
+    -- FruitTypeManager.lua:220.
+    getFruitTypeIndexByName = function(_, name) for i, d in pairs(DESCS) do if d.name == name then return i end end return nil end,
     getFruitTypeByFillTypeIndex = function(_, ft) for _, d in pairs(DESCS) do if d.fillTypeIndex == ft then return d end end return nil end,
     getFruitTypeIndexByFillTypeIndex = function(_, ft) for i, d in pairs(DESCS) do if d.fillTypeIndex == ft then return i end end return nil end,
     getFillTypeIndexByFruitTypeIndex = function(_, i) return DESCS[i] and DESCS[i].fillTypeIndex or nil end,
@@ -325,9 +327,14 @@ end
 function Combine:onUpdateTick(dt, _, _, _)
     if not self.isServer then return end
     local spec = self.spec_combine
+    -- :409-414 VERBATIM: the last valid input fruit type survives the frame's reset.
+    spec.lastInputFruitType = spec.lastCuttersInputFruitType
     spec.lastCuttersArea = 0
     spec.lastCuttersInputFruitType = FruitType.UNKNOWN
     spec.lastCuttersFruitType = FruitType.UNKNOWN
+    if spec.lastInputFruitType ~= nil and spec.lastInputFruitType ~= FruitType.UNKNOWN then
+        spec.lastValidInputFruitType = spec.lastInputFruitType
+    end
     local inputBuffer = spec.processing.inputBuffer
     inputBuffer.slotTimer = inputBuffer.slotTimer - dt
     if inputBuffer.slotTimer < 0 then
@@ -407,21 +414,119 @@ function ENGINE_NEW_COMBINE(uid, opts)
     local strawSlots = opts.strawSlots or 4
     local buffer = {}
     for i = 1, strawSlots do buffer[i] = { area = 0, liters = 0, inputLiters = 0, strawRatio = 0, effectDensity = 0 } end
+    local slotDuration = opts.slotDuration or 100000
     v.spec_combine = {
         fillUnitIndex = 1, bufferFillUnitIndex = opts.buffer and 2 or nil, bufferUnloadingTime = opts.bufferUnloadingTime or 1000,
         loadingDelay = opts.loadingDelay or 0, unloadingDelay = opts.loadingDelay or 0, loadingDelaySlotsDelayedInsert = false,
         threshingScale = opts.threshingScale or 1, fillLevelBufferTime = 2000, lastDischargeTime = 0,
         lastCuttersArea = 0, lastCuttersFruitType = FruitType.UNKNOWN, lastCuttersOutputFillType = FillType.UNKNOWN, lastCuttersAreaTime = -math.huge,
+        lastInputFruitType = FruitType.UNKNOWN, lastValidInputFruitType = FruitType.UNKNOWN, lastValidInputFillType = FillType.UNKNOWN,
         additives = { available = false, fillTypes = {} },
-        processing = { inputBuffer = { buffer = buffer, fillIndex = 1, dropIndex = strawSlots, slotCount = strawSlots, slotTimer = opts.slotDuration or 100000, slotDuration = opts.slotDuration or 100000 } },
+        -- :589-599: the cursors, the timers and the buffer.
+        processing = { inputBuffer = { buffer = buffer, fillIndex = 1, dropIndex = strawSlots, slotCount = strawSlots, slotTimer = slotDuration, slotDuration = slotDuration,
+                                       activeTimeout = slotDuration * (strawSlots + 2), activeTimer = slotDuration * (strawSlots + 2) } },
+        swath = { isAvailable = false }, workedHectars = 0, numAttachedCutters = 0,
     }
     if (opts.loadingDelay or 0) > 0 then
         v.spec_combine.loadingDelaySlots = slots
+        -- :517-525: every slot invalid after a load; native saves none of them.
         for i = 1, opts.loadingDelay / 1000 * 60 + 1 do slots[i] = { time = -math.huge, fillLevelDelta = 0, fillType = 0, valid = false } end
     end
     v.specClasses = { Combine }
+    -- The vehicle's specialization tables as Vehicle:saveToXMLFile (:1210-1212) and
+    -- SpecializationUtil.raiseEvent (:22-24) read them: the class tables, by name.
+    v.specializations = { ENGINE_FILLUNIT, Combine }
+    v.specializationNames = { "fillUnit", "combine" }
+    v.eventListeners = { onPostLoad = { ENGINE_FILLUNIT, Combine } }
     return v
 end
+
+--- Combine.lua:275-282 VERBATIM: the native combine saves no slot.
+function Combine:saveToXMLFile(xmlFile, key, _)
+    local spec = self.spec_combine
+    if spec.swath.isAvailable then
+        xmlFile:setValue(key .. "#isSwathActive", spec.isSwathActive)
+    end
+    xmlFile:setValue(key .. "#workedHectars", spec.workedHectars)
+    xmlFile:setValue(key .. "#numAttachedCutters", spec.numAttachedCutters)
+end
+--- Combine.lua:207-215 MODELED: the two values the native post-load reads back.
+function Combine:onPostLoad(savegame)
+    local spec = self.spec_combine
+    if savegame == nil then return end
+    spec.workedHectars = savegame.xmlFile:getValue(savegame.key .. ".combine#workedHectars", spec.workedHectars)
+    spec.numAttachedCutters = savegame.xmlFile:getValue(savegame.key .. ".combine#numAttachedCutters", spec.numAttachedCutters)
+end
+
+--- FillUnit.lua:430 and :333 MODELED: each unit's level and type name saved, and on
+--- post-load added back through addFillUnitFillLevel, which sets the unit's last valid
+--- type only when something fills it (:1280); an empty unit's stays UNKNOWN (:1311).
+ENGINE_FILLUNIT = {}
+function ENGINE_FILLUNIT.saveToXMLFile(self, xmlFile, key, _)
+    for i, unit in ipairs(self.spec_fillUnit.fillUnits) do
+        local k = string.format("%s.unit(%d)", key, i - 1)
+        xmlFile:setValue(k .. "#fillLevel", unit.fillLevel)
+        xmlFile:setValue(k .. "#fillType", g_fillTypeManager:getFillTypeNameByIndex(unit.fillType) or "UNKNOWN")
+    end
+end
+function ENGINE_FILLUNIT.onPostLoad(self, savegame)
+    if savegame == nil or not savegame.xmlFile:hasProperty(savegame.key .. ".fillUnit") then return end
+    for i in ipairs(self.spec_fillUnit.fillUnits) do
+        local k = string.format("%s.fillUnit.unit(%d)", savegame.key, i - 1)
+        local level = savegame.xmlFile:getValue(k .. "#fillLevel", 0)
+        local ft = g_fillTypeManager:getFillTypeIndexByName(savegame.xmlFile:getValue(k .. "#fillType", "UNKNOWN"))
+        if level > 0 and ft ~= nil then self:addFillUnitFillLevel(self:getOwnerFarmId(), i, level, ft, ToolType.UNDEFINED, nil) end
+    end
+end
+
+--- Vehicle.lua:1210-1212 VERBATIM: every specialization's class-table saver, by name.
+function ENGINE_SAVE_VEHICLE(self, xmlFile, key, usedModNames)
+    for k, component in pairs(self.specializations) do
+        if component.saveToXMLFile ~= nil then
+            component.saveToXMLFile(self, xmlFile, key .. "." .. self.specializationNames[k], usedModNames)
+        end
+    end
+end
+--- Vehicle.lua:905 raising onPostLoad through SpecializationUtil.raiseEvent (:22-24
+--- VERBATIM): the listener's class table is read at call time.
+function ENGINE_POST_LOAD_VEHICLE(object, savegame)
+    for _, spec in ipairs(object.eventListeners.onPostLoad) do
+        spec.onPostLoad(object, savegame)
+    end
+end
+
+-- ── XMLFile (the engine's savegame files), MODELED in memory ──────────────
+-- create/load/loadIfExists by path; setValue/getValue by full key ("a.b(0)#attr");
+-- hasProperty true when the key or anything under it was written.
+ENGINE_DISK = ENGINE_DISK or {}
+local function xmlObject(path, data)
+    local o = { path = path, data = data }
+    function o:setValue(k, v) self.data[k] = v end
+    function o:getValue(k, d) local v = self.data[k] if v == nil then return d end return v end
+    function o:setInt(k, v) self.data[k] = v end
+    function o:getInt(k, d) return self:getValue(k, d) end
+    function o:setString(k, v) self.data[k] = v end
+    function o:getString(k, d) return self:getValue(k, d) end
+    function o:setBool(k, v) self.data[k] = v end
+    function o:getBool(k, d) return self:getValue(k, d) end
+    function o:hasProperty(k)
+        if self.data[k] ~= nil then return true end
+        for key in pairs(self.data) do
+            if key:sub(1, #k) == k then
+                local rest = key:sub(#k + 1, #k + 1)
+                if rest == "#" or rest == "." or rest == "(" then return true end
+            end
+        end
+        return false
+    end
+    function o:save() ENGINE_DISK[self.path] = self.data return true end
+    function o:delete() end
+    return o
+end
+XMLFile = XMLFile or {}
+XMLFile.create = function(_, path, _root) return xmlObject(path, {}) end
+XMLFile.load = function(_, path) local d = ENGINE_DISK[path] if d == nil then return nil end return xmlObject(path, d) end
+XMLFile.loadIfExists = XMLFile.load
 
 --- A cutter header attached to `combine`, with opts.areas work areas side by side,
 --- each opts.width wide and opts.depth deep from (x0, z0). Its processCutterArea is
