@@ -113,10 +113,10 @@ MUTATIONS = [
     "    if vehicle.spec_fillUnit == nil then return false end\n    if SGHarvestCapture ~= nil then SGHarvestCapture.observeVehicle(vehicle) end", 1)],
   "a header without a fill unit of its own never gets the cutter bracket"),
  ("H2-class-hooks-not-installed", NH,
-  [("    if SGHarvestCapture ~= nil then SGHarvestCapture.installClassHooks({ Cutter = classes.Cutter, Combine = classes.Combine }) end\n", "", 1)],
+  [("    if SGHarvestCapture ~= nil then SGHarvestCapture.installClassHooks({ Cutter = classes.Cutter, Combine = classes.Combine, FSDensityMapUtil = classes.FSDensityMapUtil }) end\n", "", 1)],
   "no cutter frame, no named cutter, no drains"),
  ("M1-main-omits-the-classes", MAIN,
-  [(",\n        Cutter = Cutter, Combine = Combine })", " })", 1)],
+  [(",\n        Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil })", " })", 1)],
   "main.lua never hands the host the Cutter and Combine classes"),
 ]
 

@@ -28,19 +28,50 @@ AccessHandler = AccessHandler or { EVERYONE = 0 }
 g_farmManager = g_farmManager or { updateFarmStats = function() end }
 
 -- ── fruit types (FruitTypeDesc.lua) ─────────────────────────────────────────
-FruitType = { UNKNOWN = 0, WHEAT = 11 }
+FruitType = { UNKNOWN = 0, WHEAT = 11, BARLEY = 12 }
 ENGINE_FRUIT = FruitType
+-- utils bit32, the Lua 5.1 library the engine's scripts call; written arithmetically
+-- because the bench runs Lua 5.3 and the syntax gate parses 5.1.
+bit32 = bit32 or {
+    rshift = function(a, n) return math.floor(a / 2 ^ n) end,
+    band = function(a, b)
+        local r, bit = 0, 1
+        while a > 0 and b > 0 do
+            if a % 2 == 1 and b % 2 == 1 then r = r + bit end
+            a, b, bit = math.floor(a / 2), math.floor(b / 2), bit * 2
+        end
+        return r
+    end,
+}
 local FruitDesc = {}
 FruitDesc.__index = FruitDesc
---- FruitTypeDesc.lua:283-319 MODELED: the per-state yield scale table.
-function FruitDesc:getYieldScale(state) return self.yieldScales[state] or 1 end
+--- FruitTypeDesc.lua:800-802 VERBATIM.
+function FruitDesc:getYieldScale(growthState) return self.yieldScales[growthState] or 1 end
+--- FruitTypeDesc.lua:794-799 VERBATIM.
+function FruitDesc:getGrowthStateByDensityState(state)
+    if state == nil then
+        return nil
+    end
+    return bit32.band(bit32.rshift(state, self.startStateChannel), 2 ^ self.numStateChannels - 1)
+end
+-- The state channels sit at offset 2 in the shared plane, with other bits below them,
+-- so a decode that skipped the shift or the mask would read the wrong state.
 local DESCS = {
     [FruitType.WHEAT] = setmetatable({ index = FruitType.WHEAT, name = "WHEAT", fillTypeIndex = ENGINE_FT.WHEAT, windrowFillTypeIndex = ENGINE_FT.STRAW,
         literPerSqm = 1, windrowLiterPerSqm = 1, hasWindrow = true, chopperType = nil, chopperUseHaulm = false,
         minHarvestingGrowthState = 3, maxHarvestingGrowthState = 4, minForageGrowthState = 3, cutState = 6,
-        harvestTransitions = { [3] = 6, [4] = 6 }, yieldScales = { [3] = 0.5, [4] = 1 }, terrainDataPlaneId = 1 }, FruitDesc),
+        harvestTransitions = { [3] = 6, [4] = 6 }, yieldScales = { [3] = 0.5, [4] = 1 }, terrainDataPlaneId = 1,
+        densityTypeIndex = 1, startStateChannel = 2, numStateChannels = 3 }, FruitDesc),
+    [FruitType.BARLEY] = setmetatable({ index = FruitType.BARLEY, name = "BARLEY", fillTypeIndex = ENGINE_FT.BARLEY, windrowFillTypeIndex = ENGINE_FT.STRAW,
+        literPerSqm = 1, windrowLiterPerSqm = 1, hasWindrow = true, chopperType = nil, chopperUseHaulm = false,
+        minHarvestingGrowthState = 3, maxHarvestingGrowthState = 4, minForageGrowthState = 3, cutState = 6,
+        harvestTransitions = { [3] = 6, [4] = 6 }, yieldScales = { [3] = 0.5, [4] = 1 }, terrainDataPlaneId = 1,
+        densityTypeIndex = 2, startStateChannel = 2, numStateChannels = 3 }, FruitDesc),
 }
 g_fruitTypeManager = {
+    -- FruitTypeManager.lua:472 and :491.
+    getDefaultDataPlaneId = function() return 1 end,
+    getFruitTypeByDensityTypeIndex = function(_, index) for _, d in pairs(DESCS) do if d.densityTypeIndex == index then return d end end return nil end,
     getFruitTypeByIndex = function(_, i) return DESCS[i] end,
     getFruitTypeByFillTypeIndex = function(_, ft) for _, d in pairs(DESCS) do if d.fillTypeIndex == ft then return d end end return nil end,
     getFruitTypeIndexByFillTypeIndex = function(_, ft) for i, d in pairs(DESCS) do if d.fillTypeIndex == ft then return i end end return nil end,
@@ -52,13 +83,39 @@ g_fruitTypeManager = {
 }
 
 -- ── the fruit density plane (MODELED: C) ──────────────────────────────────────
-ENGINE_PLANE = { cells = {} }
+-- One shared plane of 1 m pixels over a 256 m terrain centred on the origin; a pixel
+-- holds one fruit. ENGINE_PLANE.bias adds a constant to cutFruitArea's returned area,
+-- for the bar that needs the native's total and the pixels to disagree.
+ENGINE_PLANE = { cells = {}, size = 256, bias = 0 }
 local function pkey(fruit, px, pz) return fruit .. "|" .. px .. ":" .. pz end
 --- Sow `fruit` at growth `state` on every 1 m pixel of the box [x0, x1) x [z0, z1).
 function ENGINE_PLANE.sow(fruit, x0, z0, x1, z1, state)
-    for px = x0, x1 - 1 do for pz = z0, z1 - 1 do ENGINE_PLANE.cells[pkey(fruit, px, pz)] = state end end
+    for px = x0, x1 - 1 do
+        for pz = z0, z1 - 1 do
+            for other in pairs(DESCS) do ENGINE_PLANE.cells[pkey(other, px, pz)] = nil end
+            ENGINE_PLANE.cells[pkey(fruit, px, pz)] = state
+        end
+    end
 end
 function ENGINE_PLANE.state(fruit, px, pz) return ENGINE_PLANE.cells[pkey(fruit, px, pz)] end
+local function fruitAt(px, pz)
+    for index in pairs(DESCS) do
+        local s = ENGINE_PLANE.cells[pkey(index, px, pz)]
+        if s ~= nil then return DESCS[index], s end
+    end
+    return nil, nil
+end
+-- Engine functions (C, MODELED), their contracts per the LUADOC's Terrain Detail pages.
+function getDensityMapSize(_plane) return ENGINE_PLANE.size end
+function getDensityTypeIndexAtWorldPos(_plane, x, _y, z)
+    local desc = fruitAt(math.floor(x), math.floor(z))
+    return desc ~= nil and desc.densityTypeIndex or 0
+end
+function getDensityStatesAtWorldPos(_plane, x, _y, z)
+    local desc, state = fruitAt(math.floor(x), math.floor(z))
+    if desc == nil then return 0 end
+    return state * 2 ^ desc.startStateChannel + 1   -- the low bit stands for an unrelated channel
+end
 
 FSDensityMapUtil = FSDensityMapUtil or {}
 --- FSDensityMapUtil.lua:22-201 MODELED. Kept: the per-state harvest transitions of
@@ -68,6 +125,10 @@ FSDensityMapUtil = FSDensityMapUtil or {}
 --- spray, plow, lime, weed, stubble and roller factors are 1: the harvest multiplier
 --- they feed is the mission's (held at 1 by the bench).
 function FSDensityMapUtil.cutFruitArea(fruitIndex, sx, sz, wx, wz, hx, hz, _destroySpray, useMinForageState, _excluded, _, _limitToField)
+    if ENGINE_PLANE.throwNext then
+        ENGINE_PLANE.throwNext = false
+        error("native cut failed")
+    end
     local desc = g_fruitTypeManager:getFruitTypeByIndex(fruitIndex)
     if desc == nil or desc.terrainDataPlaneId == nil or desc.cutState == 0 then return 0 end
     local minState = useMinForageState and desc.minForageGrowthState or desc.minHarvestingGrowthState
@@ -93,6 +154,7 @@ function FSDensityMapUtil.cutFruitArea(fruitIndex, sx, sz, wx, wz, hx, hz, _dest
     end
     local growthState, maxArea = minState, 0
     for state, n in pairs(byState) do if n > maxArea then growthState, maxArea = state, n end end
+    if scaled > 0 then scaled = scaled + ENGINE_PLANE.bias end
     return scaled, total, 1, 1, 1, 1, 1, 1, 0, growthState, maxArea, total
 end
 
