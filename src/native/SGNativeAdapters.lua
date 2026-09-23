@@ -1,9 +1,9 @@
 -- =========================================================
--- FS25_StockGuard - Storage and FillUnit carrier adapters (SG2-1 kernel)
+-- FS25_StockGuard - the native carrier adapter (SG2-1, one adapter since SG2-1b)
 -- =========================================================
--- The two adapters SG-1 needs in order to treat native storage and native fill
--- units as carriers. They speak SG-1's own contract, which the first draft of this
--- file did not (ledger d4b7216, six defects, each fixed where it is named below):
+-- The adapter SG-1 needs in order to treat native storage and native fill units as
+-- carriers. It speaks SG-1's own contract, which the first draft of this file did
+-- not (ledger d4b7216, six defects, each fixed where it is named below):
 --
 --   enumerateCarriers()                -> list of { binding }            (defect 1)
 --   resolveCarrier(binding)            -> native carrier or nil, reason
@@ -25,13 +25,36 @@
 -- profileVersion, a sourceDescriptor and quantityBasisKey, as SGRecords
 -- isCarrierBinding requires (SGRecords.lua:85-93). Each carrier is its own
 -- physical quantity, so quantityBasisKey is the carrier key's canonical string.
+--
+-- ONE ADAPTER, TWO KINDS (SG2-1b, Tyson's ruling (B), 2026-09-23). SG2-1 registered
+-- a storage adapter and a fill-unit adapter. SG-1 settles one adapter's carriers per
+-- operation (SGOperations.lua:564), so a silo-to-trailer transfer, whose two ends
+-- were under two adapters, could never be ONE operation. The contract's own shape is
+-- one adapter owning several kinds (SG-1 :238, `carrierKinds` plural; SG-2 :88, :92,
+-- one adapter capturing the source and observing both ends). So there is one
+-- adapter, NATIVE_ADAPTER_ID, and every binding's sourceDescriptor names its kind.
+--
+-- A NEW ID, ON PURPOSE. SG-1 finds a saved carrier's lease by the adapter id it was
+-- saved under, and refuses a restoreBinding that changes owner. Reusing either old id
+-- would reattach half a dev save and not the other half. With a new id every carrier
+-- saved under sgStorage or sgFillUnit finds no lease, its stock goes to SG-1's
+-- history, and the live carriers are read fresh with UNKNOWN history: a clean break,
+-- and dev saves only (StockGuard has shipped no release).
+--
+-- KEYS CANNOT COLLIDE. Under one adapter a placeable's and a vehicle's unique ids
+-- share the nativeOwnerKey space, so the component keys are prefixed by kind:
+-- "storage:<role>:<ordinal>:<partition>:<FILLTYPE>" and "fillUnit:<index>".
 
 SGNativeAdapters = SGNativeAdapters or {}
 local A = SGNativeAdapters
 
-A.STORAGE_ADAPTER_ID  = "sgStorage"
-A.FILLUNIT_ADAPTER_ID = "sgFillUnit"
-A.ADAPTER_VERSION     = 1
+A.NATIVE_ADAPTER_ID   = "sgNative"
+-- The ids SG2-1 registered, kept only so the code that recognises an old dev save's
+-- records can name them. Nothing registers them.
+A.RETIRED_ADAPTER_IDS = { "sgStorage", "sgFillUnit" }
+A.ADAPTER_VERSION     = 2
+A.KIND_STORAGE        = "storage"
+A.KIND_FILL_UNIT      = "fillUnit"
 A.STORAGE_PROFILE     = "NATIVE_STORAGE_SLOT_V1"
 A.FILLUNIT_PROFILE    = "NATIVE_FILL_UNIT_V1"
 A.PROFILE_VERSION     = 1
@@ -179,15 +202,15 @@ function A.storageSlotsOfPlaceable(placeable)
 end
 
 function A.storageComponentKey(role, ordinal, partition, fillTypeName)
-    return role .. ":" .. tostring(ordinal) .. ":" .. partition .. ":" .. fillTypeName
+    return A.KIND_STORAGE .. ":" .. role .. ":" .. tostring(ordinal) .. ":" .. partition .. ":" .. fillTypeName
 end
 
 --- The binding for one fill type slot of one storage slot of a placeable.
 function A.storageBinding(placeable, slot, fillTypeName)
     local ownerKey = persistentIdOf(placeable)
     if ownerKey == nil or fillTypeName == nil then return nil end
-    return bindingOf(A.STORAGE_ADAPTER_ID, ownerKey, A.storageComponentKey(slot.role, slot.ordinal, slot.partition, fillTypeName),
-        A.STORAGE_PROFILE, { role = slot.role, ordinal = slot.ordinal, partition = slot.partition, fillTypeName = fillTypeName })
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.storageComponentKey(slot.role, slot.ordinal, slot.partition, fillTypeName),
+        A.STORAGE_PROFILE, { kind = A.KIND_STORAGE, role = slot.role, ordinal = slot.ordinal, partition = slot.partition, fillTypeName = fillTypeName })
 end
 
 --- Find the placeable and slot holding a given storage object.
@@ -211,15 +234,17 @@ end
 local function parseStorageDescriptor(binding)
     if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil end
     local d = binding.sourceDescriptor
-    if type(d) ~= "table" or type(d.role) ~= "string" or type(d.partition) ~= "string" or type(d.fillTypeName) ~= "string" then return nil end
+    if type(d) ~= "table" or d.kind ~= A.KIND_STORAGE then return nil end
+    if type(d.role) ~= "string" or type(d.partition) ~= "string" or type(d.fillTypeName) ~= "string" then return nil end
     if type(d.ordinal) ~= "number" then return nil end
     -- The descriptor must describe the key it travels with.
     if binding.carrierKey.componentKey ~= A.storageComponentKey(d.role, d.ordinal, d.partition, d.fillTypeName) then return nil end
     return d
 end
 
+--- The storage KIND of the native adapter: its reader for storage bindings.
 ---@param placeables function  () -> list of placeables (injected, so the bench runs the game's path)
-function A.storageAdapterSpec(placeables)
+function A.storageKind(placeables)
     local function placeableByKey(key)
         local mission = g_currentMission
         local system = mission ~= nil and mission.placeableSystem or nil
@@ -233,11 +258,7 @@ function A.storageAdapterSpec(placeables)
         return nil
     end
 
-    local spec = {
-        version        = A.ADAPTER_VERSION,
-        carrierKinds   = { "storage" },
-        materialGroups = {},
-    }
+    local spec = {}
 
     spec.resolveCarrier = function(binding)
         if not isServer() then return nil, "CLIENT" end
@@ -351,14 +372,14 @@ end
 A.consumerUnitsOf = consumerUnitsOf
 
 function A.fillUnitComponentKey(index)
-    return "fillUnit:" .. tostring(index)
+    return A.KIND_FILL_UNIT .. ":" .. tostring(index)
 end
 
 function A.fillUnitBinding(vehicle, index)
     local ownerKey = persistentIdOf(vehicle)
     if ownerKey == nil or type(index) ~= "number" then return nil end
-    return bindingOf(A.FILLUNIT_ADAPTER_ID, ownerKey, A.fillUnitComponentKey(index), A.FILLUNIT_PROFILE,
-        { fillUnitIndex = index, configFileName = type(vehicle.configFileName) == "string" and vehicle.configFileName or "" })
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.fillUnitComponentKey(index), A.FILLUNIT_PROFILE,
+        { kind = A.KIND_FILL_UNIT, fillUnitIndex = index, configFileName = type(vehicle.configFileName) == "string" and vehicle.configFileName or "" })
 end
 
 --- The binding for (vehicle, fill unit index), or nil when that unit is not a
@@ -369,8 +390,9 @@ function A.fillUnitBindingFor(vehicle, index)
     return A.fillUnitBinding(vehicle, index)
 end
 
+--- The fill-unit KIND of the native adapter: its reader for fill-unit bindings.
 ---@param vehicles function  () -> list of vehicles
-function A.fillUnitAdapterSpec(vehicles)
+function A.fillUnitKind(vehicles)
     local function vehicleByKey(key)
         local mission = g_currentMission
         local system = mission ~= nil and mission.vehicleSystem or nil
@@ -384,17 +406,13 @@ function A.fillUnitAdapterSpec(vehicles)
         return nil
     end
 
-    local spec = {
-        version        = A.ADAPTER_VERSION,
-        carrierKinds   = { "fillUnit" },
-        materialGroups = {},
-    }
+    local spec = {}
 
     spec.resolveCarrier = function(binding)
         if not isServer() then return nil, "CLIENT" end
         if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil, "BINDING" end
         local d = binding.sourceDescriptor
-        if type(d) ~= "table" or type(d.fillUnitIndex) ~= "number" then return nil, "DESCRIPTOR" end
+        if type(d) ~= "table" or d.kind ~= A.KIND_FILL_UNIT or type(d.fillUnitIndex) ~= "number" then return nil, "DESCRIPTOR" end
         if binding.carrierKey.componentKey ~= A.fillUnitComponentKey(d.fillUnitIndex) then return nil, "DESCRIPTOR" end
         local vehicle = vehicleByKey(binding.carrierKey.nativeOwnerKey)
         if vehicle == nil then return nil, "VEHICLE_ABSENT" end
@@ -459,5 +477,60 @@ function A.fillUnitAdapterSpec(vehicles)
         return actorCanAccess(actor, native.vehicle)
     end
 
+    return spec
+end
+
+-- ── The native adapter: one registration, both kinds ────────────────────────
+local function kindOf(binding)
+    local d = type(binding) == "table" and binding.sourceDescriptor or nil
+    return type(d) == "table" and d.kind or nil
+end
+
+--- The one native carrier adapter SG-1 registers (SG2-1b). Every callback routes
+--- on the binding's kind; a binding of no known kind is refused, never guessed.
+---@param placeables function  () -> list of placeables
+---@param vehicles function    () -> list of vehicles
+function A.nativeAdapterSpec(placeables, vehicles)
+    local kinds = {
+        [A.KIND_STORAGE] = A.storageKind(placeables),
+        [A.KIND_FILL_UNIT] = A.fillUnitKind(vehicles),
+    }
+    local spec = {
+        version        = A.ADAPTER_VERSION,
+        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT },
+        materialGroups = {},
+        kinds          = kinds,
+    }
+    local function route(binding)
+        return kinds[kindOf(binding)]
+    end
+    spec.resolveCarrier = function(binding)
+        local k = route(binding)
+        if k == nil then return nil, "DESCRIPTOR" end
+        return k.resolveCarrier(binding)
+    end
+    spec.readNativeState = function(binding, native)
+        local k = route(binding)
+        if k == nil then return nil, "DESCRIPTOR" end
+        return k.readNativeState(binding, native)
+    end
+    spec.hasAccess = function(binding, actor)
+        local k = route(binding)
+        return k ~= nil and k.hasAccess(binding, actor) or false
+    end
+    --- Storage keeps its partition rules; a fill-unit binding is its own current
+    --- binding, which is what SG-1 does for an adapter with no restoreBinding.
+    spec.restoreBinding = function(savedBinding, context)
+        local kind = kindOf(savedBinding)
+        if kind == A.KIND_STORAGE then return kinds[A.KIND_STORAGE].restoreBinding(savedBinding, context) end
+        if kind == A.KIND_FILL_UNIT then return savedBinding end
+        return nil, "DESCRIPTOR"
+    end
+    spec.enumerateCarriers = function()
+        local out = {}
+        for _, e in ipairs(kinds[A.KIND_STORAGE].enumerateCarriers()) do out[#out + 1] = e end
+        for _, e in ipairs(kinds[A.KIND_FILL_UNIT].enumerateCarriers()) do out[#out + 1] = e end
+        return out
+    end
     return spec
 end

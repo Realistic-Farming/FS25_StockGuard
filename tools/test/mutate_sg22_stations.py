@@ -259,12 +259,13 @@ MUTATIONS = [
   "the A4 reading is lost: nil never finds the current phase"),
 
  # ── stages (b) and (e) in the host ─────────────────────────────────────────
+ # Re-anchored in SG2-1b, where onDischargeOpen chooses a route: the rules are the same.
  ("G1-host-captures-store-goods", NH,
-  [("    if not okS or store ~= false then return nil end\n", "", 1)],
-  "a station that stores the goods is captured though its path is not carried"),
+  [("        if store == false then\n            route = H.ROUTE_SALE", "        if true then\n            route = H.ROUTE_SALE", 1)],
+  "a station that stores the goods is captured as a paid sale"),
  ("G2-host-captures-unbound-stations", NH,
-  [("    if entry == nil or not entry[SGStationAdapter.SELL] then return nil end",
-    "    if false then return nil end", 1)],
+  [("    if entry == nil then return nil end\n    local okF, farmId = pcall(vehicle.getActiveFarm, vehicle)",
+    "    entry = entry or { [SGStationAdapter.SELL] = true }\n    local okF, farmId = pcall(vehicle.getActiveFarm, vehicle)", 1)],
   "a selling station the host never bound is captured"),
  ("G3-host-settle-consumes-nothing", NH,
   [("    return consumed\nend", "    return nil\nend", 1)],

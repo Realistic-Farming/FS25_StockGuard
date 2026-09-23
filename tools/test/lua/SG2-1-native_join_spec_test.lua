@@ -518,7 +518,7 @@ group("N-storage", function()
     anon.getUniqueId = function() return nil end
     local m = newMission({ placeables = { silo, heap, anon } })
     local sg, host, ok, why = boot(m)
-    T.ok("N1 [reached] the native host installed and registered both adapters: " .. tostring(why), ok == true and sg:status().adapters == 2)
+    T.ok("N1 [reached] the native host installed and registered its one native adapter (SG2-1b): " .. tostring(why), ok == true and sg:status().adapters == 1)
 
     local b0 = NA.storageBinding(silo, { role = "silo", ordinal = 0, partition = "shared" }, "WHEAT")
     local b1b = NA.storageBinding(silo, { role = "silo", ordinal = 1, partition = "shared" }, "BARLEY")
@@ -526,19 +526,19 @@ group("N-storage", function()
     local b1w = NA.storageBinding(silo, { role = "silo", ordinal = 1, partition = "shared" }, "WHEAT")
     T.eq("N2 defect 1: the barrier's enumeration BINDS through the handle (3 held slots)", sg:status().carriers, 3)
     T.ok("N3 defect 2: the binding is a valid SG-1 CarrierBinding", SGRecords.isCarrierBinding(b0))
-    T.eq("N4 with the storage slot profile", b0.profileId .. "/" .. b0.profileVersion .. "/" .. b0.adapterVersion, "NATIVE_STORAGE_SLOT_V1/1/1")
+    T.eq("N4 with the storage slot profile", b0.profileId .. "/" .. b0.profileVersion .. "/" .. b0.adapterVersion, "NATIVE_STORAGE_SLOT_V1/1/2")
     T.eq("N5 defect 3: one carrier per FILL TYPE, with a FILL_TYPE materialRef", stockOf(sg, b0) and stockOf(sg, b0).materialRef.fillTypeName .. "/" .. stockOf(sg, b0).observedAmount, "WHEAT/60")
     T.eq("N6 two fill types in one storage are two carriers", tostring(stockOf(sg, b1b) ~= nil) .. "/" .. tostring(stockOf(sg, b1g) ~= nil), "true/true")
     T.eq("N7 an empty supported slot is not enumerated", carrierOf(sg, b1w), nil)
-    T.eq("N8 defect 5: keyed by the PLACEABLE's unique id and the slot", b0.carrierKey.nativeOwnerKey .. "|" .. b0.carrierKey.componentKey, "placeable:silo1|silo:0:shared:WHEAT")
-    T.eq("N9 the second storage has ordinal 1", b1b.carrierKey.componentKey, "silo:1:shared:BARLEY")
+    T.eq("N8 defect 5: keyed by the PLACEABLE's unique id and the slot", b0.carrierKey.nativeOwnerKey .. "|" .. b0.carrierKey.componentKey, "placeable:silo1|storage:silo:0:shared:WHEAT")
+    T.eq("N9 the second storage has ordinal 1", b1b.carrierKey.componentKey, "storage:silo:1:shared:BARLEY")
     T.eq("N10 quantityBasisKey is the carrier's own key", b0.quantityBasisKey, SGRecords.carrierKeyString(b0.carrierKey))
     T.eq("N11 the unit is LITRE and the store kind ordinary", stockOf(sg, b0).amountUnit .. "/" .. carrierOf(sg, b0).native.storeKind, "LITRE/ordinary_station")
     T.eq("N12 a ManureHeap (not a Storage) is not enumerated", sg:status().carriers, 3)
     T.eq("N13 a placeable with no unique id is not enumerated", carrierOf(sg, NA.storageBinding({ uniqueId = "x", getUniqueId = function() return "x" end }, { role = "silo", ordinal = 0, partition = "shared" }, "WHEAT")), nil)
 
     -- defect 4: hasAccess(binding, actor), as the core calls it.
-    local lease = host.storageLease
+    local lease = host.nativeLease
     local farm1 = { farmId = 1, actorState = "RESOLVED" }
     local farm2 = { farmId = 2, actorState = "RESOLVED" }
     m.accessCalls = {}
@@ -583,10 +583,10 @@ group("N-perfarm", function()
     local f2o0 = NA.storageBinding(silo, { role = "silo", ordinal = 0, partition = "farm2" }, "WHEAT")
     local f1o1 = NA.storageBinding(silo, { role = "silo", ordinal = 1, partition = "farm1" }, "BARLEY")
     T.eq("N30 [reached] four partition slots bound", sg:status().carriers, 4)
-    T.eq("N31 the ordinal is the rank WITHIN the farm, not the flat index (farm2's first storage is ordinal 0)", tostring(stockOf(sg, f2o0) ~= nil) .. "/" .. f2o0.carrierKey.componentKey, "true/silo:0:farm2:WHEAT")
+    T.eq("N31 the ordinal is the rank WITHIN the farm, not the flat index (farm2's first storage is ordinal 0)", tostring(stockOf(sg, f2o0) ~= nil) .. "/" .. f2o0.carrierKey.componentKey, "true/storage:silo:0:farm2:WHEAT")
     T.eq("N32 flat index 3 is farm1 ordinal 1", stockOf(sg, f1o1) and stockOf(sg, f1o1).observedAmount, 10)
     T.eq("N33 a partition's store kind is per_farm_partition", carrierOf(sg, f2o0).native.storeKind, "per_farm_partition")
-    local spec = host.storageLease.spec
+    local spec = host.nativeLease.spec
     T.eq("N34 restoreBinding keeps a partition in multiplayer", spec.restoreBinding(SGValues.copy(f2o0), { farmRestore = { phase = "UNCHANGED" } }) ~= nil, true)
     T.eq("N35 restoreBinding refuses a partition under a native farm merge", select(2, spec.restoreBinding(SGValues.copy(f2o0), { farmRestore = { phase = "MERGED" } })), "PER_FARM_LAYOUT")
     m.missionDynamicInfo.isMultiplayer = false
@@ -638,7 +638,7 @@ group("N-fillunit", function()
     T.eq("N45 an empty unit is a carrier with no stock", tostring(carrierOf(sg, u2).stockId), "nil")
     T.eq("N46 an infinite capacity is reported as unknown, not refused", tostring(carrierOf(sg, u2).native.capacity), "nil")
     T.eq("N47 a nonempty unit with no named fill type is not bound (never an invented material)", carrierOf(sg, NA.fillUnitBinding(weird, 1)), nil)
-    local spec = host.fillUnitLease.spec
+    local spec = host.nativeLease.spec
     T.eq("N47b the adapter itself refuses to read it, before the core has to", select(2, spec.readNativeState(NA.fillUnitBinding(weird, 1), { vehicle = weird, fillUnitIndex = 1 })), "FILL_TYPE_UNNAMED")
     veh.configFileName = "data/vehicles/other.xml"
     T.eq("N48 a different vehicle model under the same id is a changed layout", select(2, spec.resolveCarrier(SGValues.copy(u1))), "LAYOUT_CHANGED")
@@ -752,7 +752,7 @@ group("H", function()
     -- that can keep it unbound is the engine's false return. Mutation H9 survived
     -- the first version of this fixture, where resolution failed first.
     m._vehicles[#m._vehicles + 1] = refused
-    T.ok("H24a [reached] the refused vehicle would resolve if asked", host.fillUnitLease.spec.resolveCarrier(NA.fillUnitBinding(refused, 1)) ~= nil)
+    T.ok("H24a [reached] the refused vehicle would resolve if asked", host.nativeLease.spec.resolveCarrier(NA.fillUnitBinding(refused, 1)) ~= nil)
     T.eq("H24 a false return is preserved", vs:addVehicle(refused), false)
     T.eq("H25 and a refused vehicle is not bound", carrierOf(sg, NA.fillUnitBinding(refused, 1)), nil)
     T.eq("H25b nor observed", refused[SGFillUnitObserver.MARKER], nil)
@@ -815,7 +815,7 @@ group("H", function()
     g_server = {}
     T.eq("H34 a client host registers no adapters", tostring(okClient) .. "/" .. tostring(whyClient) .. "/" .. sg3:status().adapters, "false/CLIENT/0")
     local okServer = NH.new(m3.stockGuard, {}):install()
-    T.eq("H35 twin: the server host registers both", tostring(okServer) .. "/" .. sg3:status().adapters, "true/2")
+    T.eq("H35 twin: the server host registers its one native adapter", tostring(okServer) .. "/" .. sg3:status().adapters, "true/1")
     if NH.current ~= nil then NH.current:teardown() end
     shutdown(sg3, nil)
 end)
