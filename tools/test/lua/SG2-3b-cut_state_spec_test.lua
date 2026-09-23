@@ -54,7 +54,7 @@ function Mission:getFruitPixelsToSqm() return 1 end
 Mission.onFinishedLoading = function(m) return "parent" end
 
 local function newMission()
-    local m = setmetatable({ _server = true, playerUserId = "host", missionInfo = {}, missionDynamicInfo = { isMultiplayer = false }, time = 1000, terrainSize = 256,
+    local m = setmetatable({ _server = true, playerUserId = "host", missionInfo = {}, missionDynamicInfo = { isMultiplayer = false }, time = 1000, terrainSize = 256, fieldGroundSystem = ENGINE_FIELD_GROUND,
         userManager = { getUserByConnection = function() return nil end }, _placeables = {}, _vehicles = {} }, Mission)
     m.accessHandler = { canFarmAccess = function(_, farmId, object) return object ~= nil and object.getOwnerFarmId ~= nil and object:getOwnerFarmId() == farmId end }
     m.placeableSystem = { placeables = m._placeables, getPlaceableByUniqueId = function() return nil end }

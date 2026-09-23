@@ -45,6 +45,22 @@ MUTATIONS = [
   [("    if g_server == nil or type(key) ~= \"string\" or xmlFile == nil then return end", "    if type(key) ~= \"string\" or xmlFile == nil then return end", 1)],
   "a client writes the element"),
 
+ # ── the savegame schema (Bob's verdict on #18) ─────────────────────────
+ ("X1-schema-paths-not-registered", BS,
+  [("    if type(schema) ~= \"table\" or type(schema.register) ~= \"function\" or type(XMLValueType) ~= \"table\" then return false end",
+    "    if true then return false end", 1)],
+  "the element's paths are never registered: setValue sets nothing and logs, nothing survives"),
+ ("X2-schema-hook-not-installed", BS,
+  [("if type(Combine) == \"table\" and type(Vehicle) == \"table\" then B.installSchemaHook(Combine, Vehicle) end\n", "", 1)],
+  "Combine.initSpecialization is never appended, so no mission's schema carries the paths"),
+ ("X3-schema-registered-once-per-process", BS,
+  [("    if rawget(schema, B.MARKER) ~= nil then return false end\n    rawset(schema, B.MARKER, true)",
+    "    if B.registeredOnce then return false end\n    B.registeredOnce = true", 1)],
+  "the second mission's fresh schema (Vehicle.lua:249) lacks the paths: the load reads nil"),
+ ("X4-ground-type-path-not-registered", BS,
+  [("    schema:register(T.STRING, ss .. \"#groundType\", \"Straw slot ground type (FieldChopperType member)\")\n", "", 1)],
+  "one attribute unregistered: its setValue is dropped and the save loses the ground type"),
+
  # ── the restore ────────────────────────────────────────────────────────────
  ("R1-slot-clock-not-rebuilt-on-the-delay", BS,
   [("                    slot.time = time + math.max(0, s.remainingDelay) - (isNumber(spec.loadingDelay) and spec.loadingDelay or 0)",
@@ -90,6 +106,17 @@ MUTATIONS = [
  ("G1-log-once-repeats", BS,
   [("    if B.logged[key] then return end\n", "", 1)],
   "every load logs again"),
+
+ ("R13-straw-identity-not-restored", BS,
+  [("                    slot.strawHaulmFruitTypeIndex, slot.strawGroundType = haulm, ground\n", "", 1)],
+  "the liters come back without the identity the drop reads (:1347-1348)"),
+ ("R14-unknown-straw-identity-guessed", BS,
+  [("                elseif (s.haulmFruit ~= nil and haulm == nil) or (s.groundType ~= nil and ground == nil) then", "                elseif false then", 1)],
+  "a saved identity this game lacks restores the slot with none"),
+ ("S4-straw-identity-not-saved", BS,
+  [("                    strawRatio = s.strawRatio or 0, effectDensity = s.effectDensity or 0,\n                    haulmFruit = fruitName(s.strawHaulmFruitTypeIndex), groundType = chopperTypeName(s.strawGroundType) }",
+    "                    strawRatio = s.strawRatio or 0, effectDensity = s.effectDensity or 0 }", 1)],
+  "the save carries no straw identity"),
 
  # ── the host ───────────────────────────────────────────────────────────────
  ("H1-hooks-not-installed", NH,

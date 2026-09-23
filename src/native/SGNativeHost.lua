@@ -939,7 +939,7 @@ function H.installClassHooks(classes)
     -- SG2-3: the cutter frame and the combine drains are class events (mechanism 3).
     if SGHarvestCapture ~= nil then SGHarvestCapture.installClassHooks({ Cutter = classes.Cutter, Combine = classes.Combine, FSDensityMapUtil = classes.FSDensityMapUtil }) end
     -- SG2-3c: the combine's in-flight buffers survive a save (class-table saver and
-    -- post-load event, Vehicle.lua:1212 and :905).
+    -- post-load event, Vehicle.lua:1212 and :903-906; its savegame paths through Combine.initSpecialization).
     if SGCombineBufferSave ~= nil then SGCombineBufferSave.installClassHooks({ Combine = classes.Combine }) end
     wrapClassMethod(classes.StorageSystem, "addStorage", nil, function(r, storage)
         if r[1] == true then dispatch("onStorageAdded", storage) end

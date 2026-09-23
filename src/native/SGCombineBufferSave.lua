@@ -15,17 +15,32 @@
 -- WHERE IT HANGS. Vehicle:saveToXMLFile calls each specialization's saveToXMLFile
 -- from the class table (Vehicle.lua:1210-1212), under "<vehicle>.<specName>", so
 -- Combine.saveToXMLFile appended writes under the combine's own key. On load the
--- onPostLoad event is raised through the class table as well (SpecializationUtil.lua
--- :22-24, raised at Vehicle.lua:905 after onLoad built the native buffers at :866):
+-- onPostLoad event is raised through the class table as well: Vehicle.lua:903-906
+-- queues SpecializationUtil.raiseAsyncEvent(self, "onPostLoad", self.savegame) after
+-- onLoad built the native buffers at :866, and raiseAsyncEvent (SpecializationUtil.lua
+-- :2-16) reads each listener's onPostLoad from its class table when the task runs:
 -- Combine.onPostLoad appended restores into them. Both are the class table read at
 -- call time (mechanism 3), so the hooks reach every combine of every vehicle type.
+--
+-- WHERE THE PATHS LIVE. The vehicles file is created and loaded with
+-- Vehicle.xmlSchemaSavegame (VehicleSystem.lua:293 and :324), and XMLFile:setValue on
+-- a path that schema does not know sets nothing and logs "Path not registered"
+-- (XMLFile.lua:181-186, :273-294; getValue answers nil). Vehicle.init rebuilds that
+-- schema on every mission load (Vehicle.lua:249, MPLoadingScreen.lua:767), so the
+-- element's paths are registered where native Combine registers its own three
+-- (Combine.lua:81-84): Combine.initSpecialization, appended through the class table
+-- when this file is sourced (MPLoadingScreen.lua:735) and called after Vehicle.init by
+-- SpecializationManager:initSpecializations (SpecializationManager.lua:97-104,
+-- MPLoadingScreen.lua:776) on every mission load.
 --
 -- WHAT IS SAVED (:140, :148). Delay slots: only valid ones, each with its index, its
 -- actual fillLevelDelta, its canonical fill type name and its remaining delay,
 -- max(0, slot.time + loadingDelay - mission.time), plus the slot count as the layout
 -- and loadingDelaySlotsDelayedInsert. The straw input buffer: each slot's remaining
 -- liters, inputLiters, area, strawRatio and effectDensity (only liters is stock; the
--- rest is native process state, :148), the layout (slotCount), the cursors (fillIndex,
+-- rest is native process state, :148), each slot's straw identity the drop reads at
+-- :1347-1348 (strawHaulmFruitTypeIndex by fruit name, strawGroundType by its
+-- FieldChopperType member; both set at :983-991), the layout (slotCount), the cursors (fillIndex,
 -- dropIndex, slotTimer, activeTimer) and the output selector the drop reads
 -- (:1326-1350 takes the fill unit's last valid type, which is UNKNOWN again after a
 -- load with an empty hopper, FillUnit.lua:1311): the combine's lastValidInputFruitType
@@ -88,6 +103,27 @@ local function fruitIndex(name)
     return ok and isNumber(index) and index > 0 and index or nil
 end
 
+--- The FieldChopperType member whose ground value this is, or nil. The value is the
+--- mission's field ground system's (FieldChopperType.lua:5-7), so the member name is
+--- what a save can carry across games.
+local function chopperTypeName(value)
+    if not isNumber(value) or type(FieldChopperType) ~= "table" or type(FieldChopperType.getValueByType) ~= "function" then return nil end
+    for name, member in pairs(FieldChopperType) do
+        if type(name) == "string" and isNumber(member) then
+            local ok, v = pcall(FieldChopperType.getValueByType, member)
+            if ok and v == value then return name end
+        end
+    end
+    return nil
+end
+local function chopperTypeValue(name)
+    if type(name) ~= "string" or type(FieldChopperType) ~= "table" or type(FieldChopperType.getValueByType) ~= "function" then return nil end
+    local member = FieldChopperType[name]
+    if not isNumber(member) then return nil end
+    local ok, v = pcall(FieldChopperType.getValueByType, member)
+    return ok and isNumber(v) and v or nil
+end
+
 local function now()
     local t = g_currentMission ~= nil and g_currentMission.time or nil
     return isNumber(t) and t or 0
@@ -130,7 +166,8 @@ function B.collect(vehicle, time)
         for i, s in ipairs(ib.buffer) do
             if (isNumber(s.liters) and s.liters > 0) or (isNumber(s.inputLiters) and s.inputLiters > 0) or (isNumber(s.area) and s.area > 0) then
                 live[#live + 1] = { index = i, liters = s.liters or 0, inputLiters = s.inputLiters or 0, area = s.area or 0,
-                    strawRatio = s.strawRatio or 0, effectDensity = s.effectDensity or 0 }
+                    strawRatio = s.strawRatio or 0, effectDensity = s.effectDensity or 0,
+                    haulmFruit = fruitName(s.strawHaulmFruitTypeIndex), groundType = chopperTypeName(s.strawGroundType) }
             end
         end
         if #live > 0 then
@@ -172,6 +209,8 @@ function B.write(xmlFile, base, data)
             xmlFile:setValue(sk .. "#area", s.area)
             xmlFile:setValue(sk .. "#strawRatio", s.strawRatio)
             xmlFile:setValue(sk .. "#effectDensity", s.effectDensity)
+            if s.haulmFruit ~= nil then xmlFile:setValue(sk .. "#haulmFruit", s.haulmFruit) end
+            if s.groundType ~= nil then xmlFile:setValue(sk .. "#groundType", s.groundType) end
         end
     end
 end
@@ -200,7 +239,8 @@ function B.read(xmlFile, base)
             if not xmlFile:hasProperty(sk) then break end
             data.straw.slots[#data.straw.slots + 1] = { index = xmlFile:getValue(sk .. "#index"), liters = xmlFile:getValue(sk .. "#liters"),
                 inputLiters = xmlFile:getValue(sk .. "#inputLiters"), area = xmlFile:getValue(sk .. "#area"),
-                strawRatio = xmlFile:getValue(sk .. "#strawRatio"), effectDensity = xmlFile:getValue(sk .. "#effectDensity") }
+                strawRatio = xmlFile:getValue(sk .. "#strawRatio"), effectDensity = xmlFile:getValue(sk .. "#effectDensity"),
+                haulmFruit = xmlFile:getValue(sk .. "#haulmFruit"), groundType = xmlFile:getValue(sk .. "#groundType") }
             m = m + 1
         end
     end
@@ -253,9 +293,14 @@ function B.restore(vehicle, data, time)
         else
             for _, s in ipairs(st.slots) do
                 local slot = isNumber(s.index) and ib.buffer[s.index] or nil
+                local haulm, ground = fruitIndex(s.haulmFruit), chopperTypeValue(s.groundType)
                 if slot == nil then
                     unresolved[#unresolved + 1] = "STRAW_INDEX"
+                elseif (s.haulmFruit ~= nil and haulm == nil) or (s.groundType ~= nil and ground == nil) then
+                    -- A straw identity this game does not know: that slot stays unresolved (:148).
+                    unresolved[#unresolved + 1] = "STRAW_SELECTOR"
                 else
+                    slot.strawHaulmFruitTypeIndex, slot.strawGroundType = haulm, ground
                     slot.liters = isNumber(s.liters) and s.liters or 0
                     slot.inputLiters = isNumber(s.inputLiters) and s.inputLiters or 0
                     slot.area = isNumber(s.area) and s.area or 0
@@ -290,8 +335,8 @@ function B.onSave(vehicle, xmlFile, key)
     B.stats.saved = B.stats.saved + 1
 end
 
---- Appended to Combine.onPostLoad (raised at Vehicle.lua:905 with the savegame, nil
---- for a vehicle that was not loaded from one).
+--- Appended to Combine.onPostLoad (queued at Vehicle.lua:903-906 through
+--- raiseAsyncEvent with the savegame, nil for a vehicle that was not loaded from one).
 function B.onPostLoad(vehicle, savegame, combineClass)
     if g_server == nil or type(savegame) ~= "table" or savegame.xmlFile == nil or type(savegame.key) ~= "string" then return end
     if savegame.resetVehicles then return end
@@ -336,3 +381,68 @@ function B.installClassHooks(classes)
     rawset(Combine, B.MARKER, { saveToXMLFile = originalSave, onPostLoad = originalPostLoad })
     return true
 end
+
+-- ---------------------------------------------------------
+-- The savegame schema
+-- ---------------------------------------------------------
+B.SAVEGAME_BASE = "vehicles.vehicle(?).combine." .. B.ELEMENT
+
+--- Register the element's paths, each with its real type, on a savegame schema.
+--- Vehicle.init builds a fresh schema on every mission load (Vehicle.lua:249), so
+--- this runs once per schema, never once per process.
+function B.registerSavegamePaths(schema)
+    if type(schema) ~= "table" or type(schema.register) ~= "function" or type(XMLValueType) ~= "table" then return false end
+    if rawget(schema, B.MARKER) ~= nil then return false end
+    rawset(schema, B.MARKER, true)
+    local base, T = B.SAVEGAME_BASE, XMLValueType
+    schema:register(T.INT, base .. "#version", "StockGuard buffer save version")
+    schema:register(T.INT, base .. "#slotCount", "Loading delay slot count (the layout)")
+    schema:register(T.BOOL, base .. "#delayedInsert", "loadingDelaySlotsDelayedInsert")
+    local d = base .. ".delaySlot(?)"
+    schema:register(T.INT, d .. "#index", "Delay slot index")
+    schema:register(T.FLOAT, d .. "#fillLevelDelta", "Delay slot fill level delta")
+    schema:register(T.STRING, d .. "#fillType", "Delay slot fill type name")
+    schema:register(T.FLOAT, d .. "#remainingDelay", "Remaining delay in ms")
+    local s = base .. ".straw"
+    schema:register(T.INT, s .. "#slotCount", "Straw input buffer slot count (the layout)")
+    schema:register(T.INT, s .. "#fillIndex", "Straw input buffer fill cursor")
+    schema:register(T.INT, s .. "#dropIndex", "Straw input buffer drop cursor")
+    schema:register(T.FLOAT, s .. "#slotTimer", "Straw input buffer slot timer")
+    schema:register(T.FLOAT, s .. "#activeTimer", "Straw input buffer active timer")
+    schema:register(T.STRING, s .. "#fruitType", "Last valid input fruit type name")
+    local ss = s .. ".slot(?)"
+    schema:register(T.INT, ss .. "#index", "Straw slot index")
+    schema:register(T.FLOAT, ss .. "#liters", "Straw slot liters")
+    schema:register(T.FLOAT, ss .. "#inputLiters", "Straw slot input liters")
+    schema:register(T.FLOAT, ss .. "#area", "Straw slot area")
+    schema:register(T.FLOAT, ss .. "#strawRatio", "Straw slot straw ratio")
+    schema:register(T.FLOAT, ss .. "#effectDensity", "Straw slot effect density")
+    schema:register(T.STRING, ss .. "#haulmFruit", "Straw slot haulm fruit type name")
+    schema:register(T.STRING, ss .. "#groundType", "Straw slot ground type (FieldChopperType member)")
+    return true
+end
+
+--- Append Combine.initSpecialization through the class table, once per process: the
+--- call SpecializationManager:initSpecializations makes after Vehicle.init on every
+--- mission load (SpecializationManager.lua:97-104; MPLoadingScreen.lua:767 and :776),
+--- where native Combine registers its own savegame paths (Combine.lua:81-84). The
+--- schema is read from the Vehicle class when the call comes, so it is that load's.
+function B.installSchemaHook(combineClass, vehicleClass)
+    if type(combineClass) ~= "table" or type(combineClass.initSpecialization) ~= "function" then return false end
+    if rawget(combineClass, B.MARKER .. "Schema") ~= nil then return false end
+    local original = combineClass.initSpecialization
+    combineClass.initSpecialization = function(...)
+        local packn = function(...) return select("#", ...), { ... } end
+        local n, r = packn(original(...))
+        local ok, err = pcall(B.registerSavegamePaths, type(vehicleClass) == "table" and vehicleClass.xmlSchemaSavegame or nil)
+        if not ok then log("schema registration failed (" .. tostring(err) .. ")") end
+        return unpack(r, 1, n)
+    end
+    rawset(combineClass, B.MARKER .. "Schema", original)
+    return true
+end
+
+-- Installed when this file is sourced: MPLoadingScreen.lua:735 sources a mod before
+-- Vehicle.init at :767 and initSpecializations at :776, so the first mission's schema
+-- carries the paths too; the class-table marker keeps a re-source from wrapping twice.
+if type(Combine) == "table" and type(Vehicle) == "table" then B.installSchemaHook(Combine, Vehicle) end

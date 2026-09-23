@@ -27,6 +27,16 @@ MathUtil.areaToHa = MathUtil.areaToHa or function(area, pixelsToSqm) return area
 AccessHandler = AccessHandler or { EVERYONE = 0 }
 g_farmManager = g_farmManager or { updateFarmStats = function() end }
 
+--- FieldChopperType.lua:1-7 VERBATIM (Enum() abbreviated): a chopper type's ground
+--- value is the mission's field ground system's.
+FieldChopperType = { CHOPPER_STRAW = 1, CHOPPER_MAIZE = 2 }
+function FieldChopperType.getValueByType(typeIndex)
+    return g_currentMission.fieldGroundSystem:getChopperTypeValue(typeIndex)
+end
+--- The field ground system MODELED: one density value per chopper type. A spec's
+--- mission carries it as fieldGroundSystem.
+ENGINE_FIELD_GROUND = { getChopperTypeValue = function(_, typeIndex) return 20 + typeIndex end }
+
 -- ── fruit types (FruitTypeDesc.lua) ─────────────────────────────────────────
 FruitType = { UNKNOWN = 0, WHEAT = 11, BARLEY = 12 }
 ENGINE_FRUIT = FruitType
@@ -57,13 +67,15 @@ end
 -- The state channels sit at offset 2 in the shared plane, with other bits below them,
 -- so a decode that skipped the shift or the mask would read the wrong state.
 local DESCS = {
+    -- Wheat chops to a ground type (CHOPPER_STRAW); the model's barley stands in for a
+    -- haulm crop (no chopper type, chopperUseHaulm), so Combine.lua:983-991 runs both ways.
     [FruitType.WHEAT] = setmetatable({ index = FruitType.WHEAT, name = "WHEAT", fillTypeIndex = ENGINE_FT.WHEAT, windrowFillTypeIndex = ENGINE_FT.STRAW,
-        literPerSqm = 1, windrowLiterPerSqm = 1, hasWindrow = true, chopperType = nil, chopperUseHaulm = false,
+        literPerSqm = 1, windrowLiterPerSqm = 1, hasWindrow = true, chopperType = FieldChopperType.CHOPPER_STRAW, chopperUseHaulm = false,
         minHarvestingGrowthState = 3, maxHarvestingGrowthState = 4, minForageGrowthState = 3, cutState = 6,
         harvestTransitions = { [3] = 6, [4] = 6 }, yieldScales = { [3] = 0.5, [4] = 1 }, terrainDataPlaneId = 1,
         densityTypeIndex = 1, startStateChannel = 2, numStateChannels = 3 }, FruitDesc),
     [FruitType.BARLEY] = setmetatable({ index = FruitType.BARLEY, name = "BARLEY", fillTypeIndex = ENGINE_FT.BARLEY, windrowFillTypeIndex = ENGINE_FT.STRAW,
-        literPerSqm = 1, windrowLiterPerSqm = 1, hasWindrow = true, chopperType = nil, chopperUseHaulm = false,
+        literPerSqm = 1, windrowLiterPerSqm = 1, hasWindrow = true, chopperType = nil, chopperUseHaulm = true,
         minHarvestingGrowthState = 3, maxHarvestingGrowthState = 4, minForageGrowthState = 3, cutState = 6,
         harvestTransitions = { [3] = 6, [4] = 6 }, yieldScales = { [3] = 0.5, [4] = 1 }, terrainDataPlaneId = 1,
         densityTypeIndex = 2, startStateChannel = 2, numStateChannels = 3 }, FruitDesc),
@@ -268,6 +280,16 @@ function Combine:addCutterArea(area, liters, inputFruitType, outputFillType, str
             local inputBuffer = spec.processing.inputBuffer
             local slot = inputBuffer.buffer[inputBuffer.fillIndex]
             local fruitTypeDesc = g_fruitTypeManager:getFruitTypeByIndex(inputFruitType)
+            -- :983-991 VERBATIM: the slot's straw identity the drop reads (:1347-1348).
+            if fruitTypeDesc.chopperType == nil then
+                if fruitTypeDesc.chopperUseHaulm then
+                    slot.strawGroundType = nil
+                    slot.strawHaulmFruitTypeIndex = inputFruitType
+                end
+            else
+                slot.strawGroundType = FieldChopperType.getValueByType(fruitTypeDesc.chopperType)
+                slot.strawHaulmFruitTypeIndex = nil
+            end
             local strawLiters = liters / fruitTypeDesc.literPerSqm * (fruitTypeDesc.windrowLiterPerSqm or fruitTypeDesc.literPerSqm)
             slot.area = slot.area + area
             slot.liters = slot.liters + strawLiters
@@ -434,13 +456,22 @@ function ENGINE_NEW_COMBINE(uid, opts)
     end
     v.specClasses = { Combine }
     -- The vehicle's specialization tables as Vehicle:saveToXMLFile (:1210-1212) and
-    -- SpecializationUtil.raiseEvent (:22-24) read them: the class tables, by name.
+    -- SpecializationUtil.raiseAsyncEvent (:2-16) read them: the class tables, by name.
     v.specializations = { ENGINE_FILLUNIT, Combine }
     v.specializationNames = { "fillUnit", "combine" }
     v.eventListeners = { onPostLoad = { ENGINE_FILLUNIT, Combine } }
     return v
 end
 
+--- Combine.lua:81-84 VERBATIM: the native combine's three savegame paths, registered
+--- on the schema Vehicle.init built (the vehicle xml schema entries above them, :60-80,
+--- are abbreviated).
+function Combine.initSpecialization()
+    local schemaSavegame = Vehicle.xmlSchemaSavegame
+    schemaSavegame:register(XMLValueType.BOOL, "vehicles.vehicle(?).combine#isSwathActive", "Swath is active")
+    schemaSavegame:register(XMLValueType.FLOAT, "vehicles.vehicle(?).combine#workedHectars", "Worked hectars")
+    schemaSavegame:register(XMLValueType.INT, "vehicles.vehicle(?).combine#numAttachedCutters", "Number of last attached cutters")
+end
 --- Combine.lua:275-282 VERBATIM: the native combine saves no slot.
 function Combine:saveToXMLFile(xmlFile, key, _)
     local spec = self.spec_combine
@@ -462,6 +493,13 @@ end
 --- post-load added back through addFillUnitFillLevel, which sets the unit's last valid
 --- type only when something fills it (:1280); an empty unit's stays UNKNOWN (:1311).
 ENGINE_FILLUNIT = {}
+--- FillUnit.lua:136-138 VERBATIM: the fill unit's savegame paths.
+function ENGINE_FILLUNIT.initSpecialization()
+    local schemaSavegame = Vehicle.xmlSchemaSavegame
+    schemaSavegame:register(XMLValueType.INT, "vehicles.vehicle(?).fillUnit.unit(?)#index", "Fill Unit index")
+    schemaSavegame:register(XMLValueType.STRING, "vehicles.vehicle(?).fillUnit.unit(?)#fillType", "Fill type")
+    schemaSavegame:register(XMLValueType.FLOAT, "vehicles.vehicle(?).fillUnit.unit(?)#fillLevel", "Fill level")
+end
 function ENGINE_FILLUNIT.saveToXMLFile(self, xmlFile, key, _)
     for i, unit in ipairs(self.spec_fillUnit.fillUnits) do
         local k = string.format("%s.unit(%d)", key, i - 1)
@@ -487,28 +525,87 @@ function ENGINE_SAVE_VEHICLE(self, xmlFile, key, usedModNames)
         end
     end
 end
---- Vehicle.lua:905 raising onPostLoad through SpecializationUtil.raiseEvent (:22-24
---- VERBATIM): the listener's class table is read at call time.
+--- Vehicle.lua:903-906 queues SpecializationUtil.raiseAsyncEvent(self, "onPostLoad",
+--- self.savegame); raiseAsyncEvent (:2-16 VERBATIM in what it reads) queues one task per
+--- listener and reads the listener's class table when the task runs. The vehicle's task
+--- queue is drained here in order, as the loading step does.
 function ENGINE_POST_LOAD_VEHICLE(object, savegame)
-    for _, spec in ipairs(object.eventListeners.onPostLoad) do
-        spec.onPostLoad(object, savegame)
+    object.asyncTasks = {}
+    function object:addAsyncTask(fn) self.asyncTasks[#self.asyncTasks + 1] = fn end
+    local eventName, typeName = "onPostLoad", { savegame }
+    for _, spec in ipairs(object.eventListeners[eventName]) do
+        object:addAsyncTask(function() spec[eventName](object, unpack(typeName)) end)
     end
+    for _, task in ipairs(object.asyncTasks) do task() end
 end
 
--- ── XMLFile (the engine's savegame files), MODELED in memory ──────────────
--- create/load/loadIfExists by path; setValue/getValue by full key ("a.b(0)#attr");
--- hasProperty true when the key or anything under it was written.
+--- Vehicle.lua:249 MODELED: the savegame schema is built fresh on every mission load
+--- (MPLoadingScreen.lua:767); the store and vehicle-type schemas are abbreviated.
+Vehicle = Vehicle or {}
+function Vehicle.init() Vehicle.xmlSchemaSavegame = XMLSchema.new("savegame_vehicles") end
+--- SpecializationManager.lua:97-104 MODELED (the async subtasks run in order): each
+--- specialization's initSpecialization, read from its class table when called
+--- (MPLoadingScreen.lua:776, after Vehicle.init).
+g_specializationManager = {
+    initSpecializations = function()
+        for _, specialization in ipairs({ ENGINE_FILLUNIT, Combine }) do
+            if specialization.initSpecialization ~= nil then specialization.initSpecialization() end
+        end
+    end,
+}
+
+-- ── XMLSchema and XMLFile (the engine's savegame files), MODELED in memory ──
+-- XMLSchema.new(name) and schema:register(valueType, path, description) as Combine.lua
+-- :81-84 calls them: a registered path is keyed with "(?)" for every index. XMLFile
+-- create/load take the schema (VehicleSystem.lua:293, :324); setValue and getValue go
+-- through XMLFile:getValueType (XMLFile.lua:273-294): the path's indices normalised to
+-- "(?)", an unregistered path logs "Path not registered", setValue then sets nothing
+-- (:181-186) and getValue answers nil (:166-168); a file with no schema logs "Unable to
+-- get schema" the same way. The typed setString/getString and their kin, and
+-- hasProperty, read and write the file without the schema (:69-72). ENGINE_XML_ERRORS
+-- counts the errors logged, for the bar.
+XMLValueType = XMLValueType or {}
+for _, id in ipairs({ "INT", "FLOAT", "BOOL", "STRING" }) do XMLValueType[id] = XMLValueType[id] or { id = id } end
+XMLSchema = XMLSchema or {}
+function XMLSchema.new(name)
+    local schema = { name = name, paths = {} }
+    function schema:register(valueType, path, _description) self.paths[path] = { valueTypeId = valueType.id } end
+    return schema
+end
 ENGINE_DISK = ENGINE_DISK or {}
-local function xmlObject(path, data)
-    local o = { path = path, data = data }
-    function o:setValue(k, v) self.data[k] = v end
-    function o:getValue(k, d) local v = self.data[k] if v == nil then return d end return v end
+ENGINE_XML_ERRORS = 0
+ENGINE_XML_ERROR_LOG = {}
+local function xmlObject(path, data, schema)
+    local o = { path = path, data = data, schema = schema }
+    function o:getValueType(k)
+        if self.schema == nil then
+            ENGINE_XML_ERRORS = ENGINE_XML_ERRORS + 1
+            ENGINE_XML_ERROR_LOG[#ENGINE_XML_ERROR_LOG + 1] = "no schema: " .. tostring(self.path) .. " " .. tostring(k)
+            print("[xml] Unable to get schema for xml file " .. tostring(self.path) .. ".")
+            return nil
+        end
+        local normalized = string.gsub(k, "%(%d*%)", "(?)")
+        local pathData = self.schema.paths[normalized]
+        if pathData ~= nil then return pathData.valueTypeId end
+        ENGINE_XML_ERRORS = ENGINE_XML_ERRORS + 1
+        ENGINE_XML_ERROR_LOG[#ENGINE_XML_ERROR_LOG + 1] = "not registered: " .. tostring(k)
+        print("[xml] Failed to validate xml path '" .. tostring(k) .. "' for schema '" .. tostring(self.schema.name) .. "'. Path not registered.")
+        return nil
+    end
+    function o:setValue(k, v) if self:getValueType(k) ~= nil then self.data[k] = v end end
+    function o:getValue(k, d)
+        if self:getValueType(k) == nil then return nil end
+        local v = self.data[k] if v == nil then return d end return v
+    end
+    -- The typed pairs read and write the handle directly, no schema (XMLFile.lua:152-159
+    -- getBool and kin; setString and kin the same way), as StockGuard's own files do.
+    local function typedGet(k, d) local v = o.data[k] if v == nil then return d end return v end
     function o:setInt(k, v) self.data[k] = v end
-    function o:getInt(k, d) return self:getValue(k, d) end
+    function o:getInt(k, d) return typedGet(k, d) end
     function o:setString(k, v) self.data[k] = v end
-    function o:getString(k, d) return self:getValue(k, d) end
+    function o:getString(k, d) return typedGet(k, d) end
     function o:setBool(k, v) self.data[k] = v end
-    function o:getBool(k, d) return self:getValue(k, d) end
+    function o:getBool(k, d) return typedGet(k, d) end
     function o:hasProperty(k)
         if self.data[k] ~= nil then return true end
         for key in pairs(self.data) do
@@ -524,8 +621,8 @@ local function xmlObject(path, data)
     return o
 end
 XMLFile = XMLFile or {}
-XMLFile.create = function(_, path, _root) return xmlObject(path, {}) end
-XMLFile.load = function(_, path) local d = ENGINE_DISK[path] if d == nil then return nil end return xmlObject(path, d) end
+XMLFile.create = function(_, path, _root, schema) return xmlObject(path, {}, schema) end
+XMLFile.load = function(_, path, schema) local d = ENGINE_DISK[path] if d == nil then return nil end return xmlObject(path, d, schema) end
 XMLFile.loadIfExists = XMLFile.load
 
 --- A cutter header attached to `combine`, with opts.areas work areas side by side,
@@ -542,8 +639,8 @@ function ENGINE_NEW_HEADER(uid, combine, opts)
     v.getCutterLoad = function() return 1 end
     v._combine = combine
     v.spec_cutter = {
-        workAreaParameters = { lastArea = 0, lastMultiplierArea = 0, lastLiters = 0, fruitTypeIndicesToUse = { FruitType.WHEAT }, lastFruitTypeToUse = {} },
-        fruitTypeIndices = { FruitType.WHEAT }, fruitTypeConverters = {}, currentConversionFactor = 1, strawRatio = opts.strawRatio or 0.5,
+        workAreaParameters = { lastArea = 0, lastMultiplierArea = 0, lastLiters = 0, fruitTypeIndicesToUse = opts.fruitTypes or { FruitType.WHEAT }, lastFruitTypeToUse = {} },
+        fruitTypeIndices = opts.fruitTypes or { FruitType.WHEAT }, fruitTypeConverters = {}, currentConversionFactor = 1, strawRatio = opts.strawRatio or 0.5,
         lastPrioritizedOutputType = FillType.UNKNOWN, allowsForageGrowthState = false,
     }
     local areas = {}

@@ -6,13 +6,18 @@
 -- neither (Combine.lua:275-282; loadCombineSetup builds every slot invalid, :517-525).
 --
 -- THE ENTRY-POINT BAR IS GROUP S. The engine models, then main.lua's modules and
--- main.lua; the mission through main's appends; a combine and header in the vehicle
--- list at the barrier; a harvest frame in the engine's order; then the engine's own
--- save path (Vehicle:saveToXMLFile's class-table loop, Vehicle.lua:1210-1212, and
--- StockGuard's own file through its save hook), the mission deleted, a fresh mission
--- on the same save directory, the combine built with fresh native buffers and its
--- onPostLoad raised through the class table (SpecializationUtil.lua:22-24), and the
--- barrier. Nothing writes a slot, a stock, a binding or a save key by hand.
+-- main.lua (sourced, as MPLoadingScreen.lua:735 does, before Vehicle.init); the
+-- savegame schema built fresh by Vehicle.init and every specialization's
+-- initSpecialization called through its class table (MPLoadingScreen.lua:767, :776);
+-- the mission through main's appends; a combine and header in the vehicle list at the
+-- barrier; a harvest frame in the engine's order; then the engine's own save path (the
+-- vehicles file created with that schema, VehicleSystem.lua:293; Vehicle:saveToXMLFile's
+-- class-table loop, Vehicle.lua:1210-1212; StockGuard's own file through its save
+-- hook), the mission deleted, a fresh mission on the same save directory (a fresh
+-- schema again), the vehicles file loaded with it (:324), the combine built with fresh
+-- native buffers and its onPostLoad raised through the class table
+-- (SpecializationUtil.lua:2-16, queued at Vehicle.lua:903-906), and the barrier.
+-- Nothing writes a slot, a stock, a binding, a save key or a schema path by hand.
 --
 -- Groups:
 --   S  the entry-point bar: a slot with 60 ms of delay left and its straw survive the
@@ -20,6 +25,8 @@
 --   Z  a slot past its delay at save time is due on the first update after the load
 --   I  an incompatible layout, an unknown fill type, another straw layout, another
 --      version: unresolved, nothing reallocated, SG-1 retires as absent
+--   K  the straw cursors and timer survive the save
+--   H  each straw slot's identity (haulm fruit or ground type, :148) survives the save
 --   N  no live buffer writes no element and restores nothing
 --   R  a savegame with resetVehicles restores nothing
 --   C  no savegame, and a client, do nothing
@@ -53,7 +60,7 @@ function Mission:getFruitPixelsToSqm() return 1 end
 Mission.onFinishedLoading = function(m) return "parent" end
 
 local function newMission(saveDir)
-    local m = setmetatable({ _server = true, playerUserId = "host", missionInfo = { savegameDirectory = saveDir }, missionDynamicInfo = { isMultiplayer = false }, time = 1000, terrainSize = 256,
+    local m = setmetatable({ _server = true, playerUserId = "host", missionInfo = { savegameDirectory = saveDir }, missionDynamicInfo = { isMultiplayer = false }, time = 1000, terrainSize = 256, fieldGroundSystem = ENGINE_FIELD_GROUND,
         userManager = { getUserByConnection = function() return nil end }, _placeables = {}, _vehicles = {} }, Mission)
     m.accessHandler = { canFarmAccess = function(_, farmId, object) return object ~= nil and object.getOwnerFarmId ~= nil and object:getOwnerFarmId() == farmId end }
     m.placeableSystem = { placeables = m._placeables, getPlaceableByUniqueId = function() return nil end }
@@ -68,6 +75,10 @@ local function boot(build, saveDir)
     local m = newMission(saveDir)
     g_server = {}
     g_currentMission = m
+    -- MPLoadingScreen.lua:767 and :776: the savegame schema built fresh, then every
+    -- specialization's initSpecialization through its class table.
+    Vehicle.init()
+    g_specializationManager:initSpecializations()
     local w = {}
     build(m, w)
     Mission00.load(m)
@@ -93,7 +104,7 @@ local VKEY = "vehicles.vehicle(0)"
 --- The engine's saves: the vehicle through Vehicle:saveToXMLFile's specialization
 --- loop, StockGuard's own file through its save hook.
 local function saveWorld(m, sg, combine, dir)
-    local xml = XMLFile.create("vehicles", dir .. "/vehicles.xml", "vehicles")
+    local xml = XMLFile.create("vehicles", dir .. "/vehicles.xml", "vehicles", Vehicle.xmlSchemaSavegame)
     ENGINE_SAVE_VEHICLE(combine, xml, VKEY, {})
     xml:save()
     sg:onSaveToXML(m.missionInfo)
@@ -102,7 +113,7 @@ end
 --- A combine bought back from the save: onLoad's fresh native buffers, then the
 --- onPostLoad event with the savegame (nil for a vehicle not loaded from one).
 local function loadCombine(m, uid, opts, dir, flags)
-    local xml = dir ~= nil and XMLFile.load("vehicles", dir .. "/vehicles.xml") or nil
+    local xml = dir ~= nil and XMLFile.load("vehicles", dir .. "/vehicles.xml", Vehicle.xmlSchemaSavegame) or nil
     local v = combineIn(m, uid, opts)
     local savegame = xml ~= nil and { xmlFile = xml, key = VKEY, resetVehicles = flags ~= nil and flags.resetVehicles or false } or nil
     ENGINE_POST_LOAD_VEHICLE(v, savegame)
@@ -192,6 +203,12 @@ local function liveStraw(v)
     local desc = g_fruitTypeManager:getFruitTypeByIndex(v.spec_combine.lastValidInputFruitType)
     return (#out > 0 and table.concat(out, ",") or "-") .. "/f" .. tostring(ib.fillIndex) .. ":d" .. tostring(ib.dropIndex) .. ":t" .. num(ib.slotTimer) .. "/" .. tostring(desc and desc.name)
 end
+--- A straw slot's identity the drop reads: "<haulm fruit index>:<ground value>".
+local function strawIdentity(v, i)
+    local s = v.spec_combine.processing.inputBuffer.buffer[i]
+    return tostring(s.strawHaulmFruitTypeIndex) .. ":" .. tostring(s.strawGroundType)
+end
+local function schemaHas(path) return Vehicle.xmlSchemaSavegame ~= nil and Vehicle.xmlSchemaSavegame.paths[path] ~= nil end
 local function unresolvedOf(v)
     local r = v.spec_combine.sgBufferRestore
     return r == nil and "nil" or (tostring(r.restored) .. ":" .. table.concat(r.unresolved, ","))
@@ -207,6 +224,11 @@ group("S", function()
         ENGINE_PLANE.sow(FRUIT, 0, 0, 6, 1, 4)
     end, "save1")
     T.ok("S1 [reached] main.lua's load path wrapped the Combine class's saver and its post-load event", host ~= nil and host.ready and rawget(Combine, B.MARKER) ~= nil)
+    local schema1 = Vehicle.xmlSchemaSavegame
+    T.eq("S1b the savegame schema Vehicle.init built carries the element's paths beside native Combine's three, registered through Combine.initSpecialization when the mission loaded",
+        tostring(schemaHas(B.SAVEGAME_BASE .. "#version")) .. "/" .. tostring(schemaHas(B.SAVEGAME_BASE .. ".delaySlot(?)#remainingDelay")) .. "/" .. tostring(schemaHas(B.SAVEGAME_BASE .. ".straw.slot(?)#groundType")) .. "/" .. tostring(schemaHas("vehicles.vehicle(?).combine#workedHectars")),
+        "true/true/true/true")
+    ENGINE_XML_ERRORS, ENGINE_XML_ERROR_LOG = 0, {}
     ENGINE_HARVEST_TICK(w.header, w.combine, 16)
     ENGINE_HARVEST_TICK(nil, w.combine, 40)
     T.eq("S2 [world] 56 ms after the cut its 6 L wait in slot 1 (due at 1116) and its straw sits in input slot 1; the hopper is empty",
@@ -215,6 +237,7 @@ group("S", function()
     T.eq("S3 the vehicle's own save carries the live slot with the 60 ms of delay left, the layout and the insert toggle, and the straw slot with its cursors and fruit; the native values beside it are untouched",
         savedBuffer(xml, VKEY .. ".combine") .. " " .. tostring(xml.data[VKEY .. ".combine#workedHectars"]) .. "/" .. tostring(xml.data[VKEY .. ".fillUnit.unit(0)#fillLevel"]),
         "v1/7:true/d1=6:WHEAT:60/s4:f1:d4:t99944:WHEAT/1=6:6:6:0.5:0.6 0/0")
+    T.eq("S3b every path the save wrote was registered on the schema the file was created with: no 'Path not registered' error, nothing silently dropped", ENGINE_XML_ERRORS, 0)
     -- Quit and load: the combine comes back with onLoad's empty buffers, a hopper whose
     -- last valid type is UNKNOWN again, and a mission clock starting over.
     local m2, sg2, host2, w2 = reload(m, "save1", function(m2, w2)
@@ -223,6 +246,8 @@ group("S", function()
     end)
     T.eq("S4 [world] the reloaded combine holds the slot again with its clock rebuilt on the new mission time (due at 1060), the toggle, the straw slot with its cursors and fruit; the load added nothing to the hopper",
         liveSlots(w2.combine) .. " " .. liveStraw(w2.combine) .. " " .. num(w2.combine:getFillUnitFillLevel(1)) .. " " .. unresolvedOf(w2.combine), "1:6:WHEAT:t960/true 1=6:6:6:0.5:0.6/f1:d4:t99944/WHEAT 0 2:")
+    T.eq("S4b the fresh mission built a fresh schema (Vehicle.lua:249) and the paths were registered on it again; the load read every path through it without an error",
+        tostring(Vehicle.xmlSchemaSavegame ~= schema1) .. "/" .. tostring(schemaHas(B.SAVEGAME_BASE .. "#version")) .. "/" .. num(ENGINE_XML_ERRORS) .. (ENGINE_XML_ERRORS > 0 and (" [" .. table.concat(ENGINE_XML_ERROR_LOG, "; ") .. "]") or ""), "true/true/0")
     local slot1, straw1, hop = slotId(w2.combine, NA.KIND_DELAY_SLOT, 1), slotId(w2.combine, NA.KIND_STRAW_SLOT, 1), hopperId(w2.combine)
     local grain, straw = stockAt(sg2, slot1), stockAt(sg2, straw1)
     T.eq("S5 SG-1 reattached both carriers' stocks across the save: 6 L wheat in the slot, 6 L straw in the input slot (named from the saved fruit, the hopper being empty), nothing retired as absent",
@@ -314,6 +339,37 @@ group("K", function()
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
+-- H. EACH STRAW SLOT'S IDENTITY (:148)
+-- ══════════════════════════════════════════════════════════════════════════
+group("H", function()
+    -- Wheat chops to a ground type: the model's field ground system values CHOPPER_STRAW at 21.
+    local m, sg, host, w, xml = harvestedAndSaved("save16")
+    T.eq("H1 [world] the cut set the straw slot's identity the drop reads (Combine.lua:983-991): CHOPPER_STRAW's ground value, no haulm fruit", strawIdentity(w.combine, 1), "nil:21")
+    T.eq("H2 the save carries it as the FieldChopperType member, not the game-local value", tostring(xml.data[VKEY .. ".combine.stockGuardBuffer.straw.slot(0)#groundType"]) .. "/" .. tostring(xml.data[VKEY .. ".combine.stockGuardBuffer.straw.slot(0)#haulmFruit"]), "CHOPPER_STRAW/nil")
+    local m2, sg2, host2, w2 = reload(m, "save16", function(m2, w2) w2.combine = loadCombine(m2, "vehicle:delay", OPTS, "save16") end)
+    T.eq("H3 the reloaded slot carries the same identity, resolved through this game's field ground system", strawIdentity(w2.combine, 1) .. " " .. unresolvedOf(w2.combine), "nil:21 2:")
+    FSBaseMission.delete(m2)
+    -- A haulm crop (the model's barley): the fruit itself is the identity.
+    local m3, sg3, host3, w3 = boot(function(m, w)
+        w.combine = combineIn(m, "vehicle:delay", { loadingDelay = 100, hopperCapacity = 50, lastValid = ENGINE_FT.BARLEY })
+        w.header = headerIn(m, "vehicle:delayHeader", w.combine, { areas = 1, width = 6, depth = 1, fruitTypes = { ENGINE_FRUIT.BARLEY } })
+        ENGINE_PLANE.sow(ENGINE_FRUIT.BARLEY, 0, 0, 6, 1, 4)
+    end, "save17")
+    ENGINE_HARVEST_TICK(w3.header, w3.combine, 16)
+    ENGINE_HARVEST_TICK(nil, w3.combine, 40)
+    local xml3 = saveWorld(m3, sg3, w3.combine, "save17")
+    T.eq("H4 [world] a haulm crop's cut names the fruit and no ground type, and the save carries the fruit name", strawIdentity(w3.combine, 1) .. " " .. tostring(xml3.data[VKEY .. ".combine.stockGuardBuffer.straw.slot(0)#haulmFruit"]) .. "/" .. tostring(xml3.data[VKEY .. ".combine.stockGuardBuffer.straw.slot(0)#groundType"]), "12:nil BARLEY/nil")
+    local m4, sg4, host4, w4 = reload(m3, "save17", function(m4, w4) w4.combine = loadCombine(m4, "vehicle:delay", { loadingDelay = 100, hopperCapacity = 50, lastValid = ENGINE_FT.BARLEY }, "save17") end)
+    T.eq("H5 the reloaded slot names the fruit again", strawIdentity(w4.combine, 1) .. " " .. unresolvedOf(w4.combine), "12:nil 2:")
+    -- An identity this game does not know: the slot stays unresolved, nothing guessed.
+    ENGINE_DISK["save17/vehicles.xml"][VKEY .. ".combine.stockGuardBuffer.straw.slot(0)#haulmFruit"] = "TRITICALE"
+    local m5, sg5, host5, w5 = reload(m4, "save17", function(m5, w5) w5.combine = loadCombine(m5, "vehicle:delay", { loadingDelay = 100, hopperCapacity = 50, lastValid = ENGINE_FT.BARLEY }, "save17") end)
+    T.eq("H6 a saved haulm fruit this game lacks leaves that straw slot unresolved (STRAW_SELECTOR): no liters put in it, no identity guessed; the delay slot beside it restores",
+        liveStraw(w5.combine):match("^[^/]+") .. " " .. strawIdentity(w5.combine, 1) .. " " .. unresolvedOf(w5.combine), "- nil:nil 1:STRAW_SELECTOR")
+    FSBaseMission.delete(m5)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
 -- N. NOTHING LIVE
 -- ══════════════════════════════════════════════════════════════════════════
 group("N", function()
@@ -355,7 +411,7 @@ group("C", function()
     T.eq("C1 a combine bought new has no savegame: its post-load runs clean, logs no failure and restores nothing", tostring(ok) .. "/" .. failed .. "/" .. liveSlots(bought) .. "/" .. unresolvedOf(bought), "true/0/-/false/nil")
     ENGINE_HARVEST_TICK(w.header, w.combine, 16)
     g_server = nil
-    local xml = XMLFile.create("vehicles", "save9/client.xml", "vehicles")
+    local xml = XMLFile.create("vehicles", "save9/client.xml", "vehicles", Vehicle.xmlSchemaSavegame)
     ENGINE_SAVE_VEHICLE(w.combine, xml, VKEY, {})
     g_server = {}
     T.eq("C2 without a server the saver writes no element (a client never saves)", savedBuffer(xml, VKEY .. ".combine"), "none")
