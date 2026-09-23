@@ -20,13 +20,16 @@
 -- and StockGuard adds no stock, capacity, price or refund.
 --
 -- RECOGNITION IS EXACT FUNCTION IDENTITY. The permitted native references are taken
--- when THIS FILE loads (mod source time), not at mission load: TransportCompany
--- class-wraps UnloadingStation and SellingStation addFillLevelFromTool from its
--- manager constructor at mission load (TransportCompanyManager.lua:2360-2407), and a
--- mission-load capture would record that wrapper as "native", pass the identity test
--- and then silently bypass TransportCompany on every admitted station. With the
--- file-scope baseline, a station whose resolved method is not the baseline is left
--- untouched and the capability is withheld. A SellingStation resolves
+-- when THIS FILE loads (mod source time), not at mission load. TransportCompany
+-- class-wraps UnloadingStation and SellingStation addFillLevelFromTool at ITS OWN
+-- source time: scripts/TransportCompany.lua:12 builds the manager at file scope and
+-- :18 loads it, which installs the delivery hooks (TransportCompanyManager.lua:260,
+-- :2360-2407). A capture taken after that would record the wrapper as "native", pass
+-- the identity test and then silently bypass TransportCompany on every admitted
+-- station. The file-scope baseline protects it ONLY BECAUSE StockGuard's files are
+-- sourced before TransportCompany's; in the other order the baseline itself would be
+-- TransportCompany's wrapper. With the baseline taken first, a station whose resolved
+-- method is not the baseline is left untouched and the capability is withheld. A SellingStation resolves
 -- addFillLevelFromTool to its OWN method, so it is withheld too (its storeGoods
 -- branch reaches storage by a CLASS super call, SellingStation.lua:327, which no
 -- instance slot can see: not carried here, said in the PR).

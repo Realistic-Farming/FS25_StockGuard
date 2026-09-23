@@ -22,6 +22,7 @@
 --   C  a converting chain: the discharge node's converter and the trigger's ratio
 --   G  a sale larger than the captured source
 --   D  a discharge into a silo station: not captured, the F207 correction applies
+--   N  a free-standing sale at another station inside this station's paid phase
 --   L  load order: a class wrap installed after the barrier is still reached
 --   X  teardown
 --
@@ -418,6 +419,36 @@ group("D", function()
     T.eq("D1 a discharge into a silo station is not captured: station TRANSFER is not carried", host.nextDischarge - before, 0)
     T.eq("D2 and lands 50 then 50 through the F207 correction", s1:getFillLevel(WHEAT) .. "/" .. s2:getFillLevel(WHEAT) .. "/" .. out, "50/50/-100.0")
     T.eq("D3 the context is at rest", SGOperationContext.isAtRest(host.context), true)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- N. A SALE AT ANOTHER STATION INSIDE THIS STATION'S PAID PHASE
+-- ══════════════════════════════════════════════════════════════════════════
+-- The phase joins its station's bracket only when that bracket is for the SAME
+-- station (SGNativeSale.lua, the top.binding test). A consumer that sells at a
+-- second station from inside the first one's price call must not be joined to the
+-- first discharge, and must not add its litres to that discharge's paid basis.
+group("N", function()
+    local m, sell, host, trig = S.m, S.sell, S.host, S.trig
+    local pB = newPlaceable(m, "placeable:second")
+    local sellB = SellingStation.newModel()
+    m.storageSystem:addUnloadingStation(sellB, pB)
+    local tr = newTrailer(m, "vehicle:nested", WHEAT, 100)
+    VehicleSystem.addVehicle(m.vehicleSystem, tr)
+    md.seen = {}
+    md.probe = function()
+        md.probe = nil
+        sellB:sellFillType(1, 30, WHEAT, ToolType.TRIGGER, nil)
+        return true
+    end
+    tr:dischargeToObject(tr.node, 50, trig, 1)
+    md.probe = nil
+    local inner, outer = md.seen[1], md.seen[2]
+    T.eq("N1 the second station's sale, inside the first station's bracket, is not joined to it", inner and inner.why, "NO_PARENT")
+    T.eq("N2 [reached] the first station's own sale is joined to its discharge", tostring(outer ~= nil and outer.inputs ~= nil), "true")
+    local ev = host.lastSettlement and host.lastSettlement.report and host.lastSettlement.report.outcomeEvidence or {}
+    T.eq("N3 and the discharge's paid basis is its own 50 L, not 80", ev.paidAmount, 50)
+    T.eq("N4 [native] the second station was still paid, once", #sellB.sold, 1)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
