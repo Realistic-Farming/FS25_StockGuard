@@ -29,7 +29,7 @@
 --   N  no witness: an UNKNOWN portion, never a guessed one
 --   R  refusals: a client, a native error
 --
---!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGHarvestCapture.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
+--!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
 local NH, NA, HC = SGNativeHost, SGNativeAdapters, SGHarvestCapture
 local WHEAT, STRAW = ENGINE_FT.WHEAT, ENGINE_FT.STRAW
@@ -57,7 +57,7 @@ function Mission:getFruitPixelsToSqm() return 1 end
 Mission.onFinishedLoading = function(m) return "parent" end
 
 local function newMission()
-    local m = setmetatable({ _server = true, playerUserId = "host", missionInfo = {}, missionDynamicInfo = { isMultiplayer = false }, time = 1000,
+    local m = setmetatable({ _server = true, playerUserId = "host", missionInfo = {}, missionDynamicInfo = { isMultiplayer = false }, time = 1000, terrainSize = 256,
         userManager = { getUserByConnection = function() return nil end }, _placeables = {}, _vehicles = {} }, Mission)
     m.accessHandler = { canFarmAccess = function(_, farmId, object) return object ~= nil and object.getOwnerFarmId ~= nil and object:getOwnerFarmId() == farmId end }
     m.placeableSystem = { placeables = m._placeables, getPlaceableByUniqueId = function() return nil end }
@@ -105,7 +105,7 @@ end
 local function legsOf(ls, names)
     local out = {}
     for _, a in ipairs(ls and ls.report and ls.report.allocations or {}) do
-        local src = a.source.slotId and ("w" .. (a.source.slotId:match(":w(%d+)$") or a.source.slotId:match(":(%a+)$") or "?")) or (names[a.source.carrierId] or "?")
+        local src = a.source.slotId and ("w" .. (a.source.slotId:match(":w(%d+)") or a.source.slotId:match(":(%a+)$") or "?")) or (names[a.source.carrierId] or "?")
         local dst = a.destination.retire and "retire" or (names[a.destination.carrierId] or "?")
         out[#out + 1] = src .. ">" .. dst .. ":" .. num(a.sourceAmount) .. ":" .. tostring(a.result)
     end
@@ -114,7 +114,8 @@ end
 local function portionsOf(ls)
     local out = {}
     for _, p in ipairs(ls and ls.report and ls.report.outcomeEvidence and ls.report.outcomeEvidence.portions or {}) do
-        out[#out + 1] = num(p.weight) .. ":" .. tostring(p.knowledge) .. ":" .. tostring(p.reason)
+        -- A KNOWN portion names its growth state (SG2-3b); an UNKNOWN one its reason.
+        out[#out + 1] = num(p.weight) .. ":" .. tostring(p.knowledge) .. ":" .. (p.knowledge == "KNOWN" and ("s" .. tostring(p.growthState)) or tostring(p.reason))
     end
     return table.concat(out, ",")
 end
@@ -149,8 +150,8 @@ group("S", function()
         num(w.combine:getFillUnitFillLevel(1)) .. "/" .. num(w.combine.spec_combine.processing.inputBuffer.buffer[1].liters), "6/6")
     local ls = host.lastHarvest
     T.eq("S4 ONE BIRTH for the cut, committed", head(ls), "COMBINE_CUT/COMMITTED")
-    T.eq("S5 its witness is the two cutter calls, weighed by what each added after every wrapper; each an UNKNOWN portion until SG2-3b",
-        portionsOf(ls), "4:UNKNOWN:CUT_STATE_NOT_CARRIED,2:UNKNOWN:CUT_STATE_NOT_CARRIED")
+    T.eq("S5 its witness is the two cutter calls, weighed by what each added after every wrapper; since SG2-3b each a KNOWN portion of the state it cut",
+        portionsOf(ls), "4:KNOWN:s4,2:KNOWN:s3")
     T.eq("S6 grain and straw each take the whole split: neither copies the other's litres",
         legsOf(ls, { [hop] = "hopper", [straw1] = "straw1" }), "w1>hopper:4:BORN,w2>hopper:2:BORN,w1>straw1:4:BORN,w2>straw1:2:BORN")
     local hs, ss = stockAt(sg, hop), stockAt(sg, straw1)
@@ -165,7 +166,7 @@ group("S", function()
     ENGINE_PLANE.sow(FRUIT, 10, 0, 14, 1, 4)
     ENGINE_HARVEST_TICK(late, w.combine, 16)
     T.eq("S10 a header added later is bracketed and its cut is one birth", tostring(late.spec_workArea.workAreas[1]._sgBrackets ~= nil) .. "/" .. head(host.lastHarvest) .. "/" .. portionsOf(host.lastHarvest),
-        "true/COMBINE_CUT/COMMITTED/4:UNKNOWN:CUT_STATE_NOT_CARRIED")
+        "true/COMBINE_CUT/COMMITTED/4:KNOWN:s4")
     FSBaseMission.delete(m)
 end)
 
@@ -326,7 +327,7 @@ group("Z", function()
         if order == "SF_OUTSIDE" then sfWraps(w.header, w.combine, { 1, 2 }, seen) end
         ENGINE_HARVEST_TICK(w.header, w.combine, 16)
         T.eq("Z1 [" .. order .. "] the witness weighs each call after SF's scalar (4 and 2 x 2): the post-chain weights, whichever wraps outside",
-            portionsOf(host.lastHarvest), "4:UNKNOWN:CUT_STATE_NOT_CARRIED,4:UNKNOWN:CUT_STATE_NOT_CARRIED")
+            portionsOf(host.lastHarvest), "4:KNOWN:s4,4:KNOWN:s3")
         T.eq("Z2 [" .. order .. "] SF's zone yield is ONE scalar per call, so a split by weight stays proportional: 8 L born 4:4",
             num(w.combine:getFillUnitFillLevel(1)) .. "/" .. legsOf(host.lastHarvest, { [hopperId(w.combine)] = "hopper", [slotId(w.combine, NA.KIND_STRAW_SLOT, 1)] = "straw1" }),
             "8/w1>hopper:4:BORN,w2>hopper:4:BORN,w1>straw1:4:BORN,w2>straw1:4:BORN")
@@ -353,7 +354,7 @@ group("W", function()
     T.eq("W1 [world] that frame cut 8 L but its end raised before calling the combine", tostring(ok) .. "/" .. num(w.combine:getFillUnitFillLevel(1)), "false/0")
     ENGINE_PLANE.sow(FRUIT, 0, 0, 4, 1, 4)
     ENGINE_HARVEST_TICK(w.header, w.combine, 16)
-    T.eq("W2 the next frame's cut carries only its own witness: the raised frame's calls do not ride on", portionsOf(host.lastHarvest), "4:UNKNOWN:CUT_STATE_NOT_CARRIED")
+    T.eq("W2 the next frame's cut carries only its own witness: the raised frame's calls do not ride on", portionsOf(host.lastHarvest), "4:KNOWN:s4")
     FSBaseMission.delete(m)
 end)
 

@@ -36,10 +36,16 @@
 --   each participant, a full hopper's refusal a LOSS leg (SG-2 :142). Grain and
 --   straw are separate operations, so a leg never joins two materials.
 --
--- NOT HERE (said on the PR): the CUT_STATE_VOLUME_V1 portions (SG2-3b; until then
--- each witness entry is an UNKNOWN portion); the save extension for delay and straw
--- slots (SG2-3c); the straw drop to ground or chopper (SG2-4, tipToGroundAroundLine);
--- a pickup cutter's ground material (no witness, so an UNKNOWN portion until SG2-4).
+--   THE SOURCE PORTIONS (SG2-3b). Inside a cutter call, each direct cutFruitArea call
+--   is read by SGCutState (CUT_STATE_VOLUME_V1): the pixels that actually made their
+--   harvest transition, grouped by growth state and Soil cell. An admitted call's
+--   weight is split across those groups by w = pixels x yieldScale, each one KNOWN
+--   portion with its state, count, scale and Soil snapshot; a call the profile could
+--   not admit stays one UNKNOWN portion that says why (SG-2 :505-511).
+--
+-- NOT HERE (said on the PR): the save extension for delay and straw slots (SG2-3c);
+-- the straw drop to ground or chopper (SG2-4, tipToGroundAroundLine); a pickup
+-- cutter's ground material (no witness, so an UNKNOWN portion until SG2-4).
 
 SGHarvestCapture = SGHarvestCapture or {}
 local HC = SGHarvestCapture
@@ -53,6 +59,7 @@ HC.PATH_DRAIN = "COMBINE_DRAIN"
 HC.PATH_STRAW = "COMBINE_STRAW_ROTATION"
 HC.CLASS_MARKER = "_sgHarvestHooked"
 HC.currentCutter = nil   -- the cutter whose end-of-processing is calling its combine
+HC.activeEntry = nil     -- the witness entry of the cutter call now running (SG2-3b)
 
 local function packn(...)
     return select("#", ...), { ... }
@@ -89,15 +96,20 @@ end
 function HC.cutterOpen(cutter, workArea, _dt)
     local wp = cutterParams(cutter)
     if wp == nil or g_server == nil then return nil end
-    local entry = { openTotal = tonumber(wp.lastMultiplierArea) or 0, workAreaIndex = workArea and workArea.index or nil }
+    local entry = { openTotal = tonumber(wp.lastMultiplierArea) or 0, workAreaIndex = workArea and workArea.index or nil,
+                    previousActive = HC.activeEntry }
     local w = HC.witnessOf(cutter)
     w.calls[#w.calls + 1] = entry
+    -- The cutFruitArea calls this cutter call makes record onto this entry.
+    HC.activeEntry = entry
     return entry
 end
 
 --- The bracket's close: the fruit this call cut, if it cut any (Cutter.lua:634).
 function HC.cutterClose(entry, ok, cutter, _workArea, _dt)
     if entry == nil then return end
+    HC.activeEntry = entry.previousActive
+    entry.previousActive = nil
     local wp = cutterParams(cutter)
     entry.ok = ok
     entry.fruitTypeIndex = wp ~= nil and wp.lastFruitType or nil
@@ -118,7 +130,8 @@ function HC.takeWitness(cutter)
         local nextOpen = w.calls[i + 1] and w.calls[i + 1].openTotal or finalTotal
         local weight = nextOpen - entry.openTotal
         if entry.ok ~= false and weight > 0 then
-            out[#out + 1] = { weight = weight, fruitTypeIndex = entry.fruitTypeIndex, workAreaIndex = entry.workAreaIndex, call = i }
+            out[#out + 1] = { weight = weight, fruitTypeIndex = entry.fruitTypeIndex, workAreaIndex = entry.workAreaIndex, call = i,
+                              cutStates = entry.cutStates }
             sum = sum + weight
         end
     end
@@ -201,12 +214,28 @@ function HC.cutOpen(host, combine, area, liters, inputFruitType, outputFillType)
     host.nextCut = (host.nextCut or 0) + 1
     local callRef = "cut:" .. tostring(host.epoch) .. ":" .. tostring(host.nextCut)
     local owner = SGNativeAdapters.persistentIdOf(cutter or combine) or "?"
-    -- One birth slot per witnessed call; with no witness, one UNKNOWN slot.
+    -- The birth slots: per witnessed call, its CUT_STATE_VOLUME_V1 groups when the
+    -- profile admitted the call, else one UNKNOWN slot saying why; with no witness at
+    -- all, one UNKNOWN slot.
     local portions = {}
     if sum > 0 then
         for i, e in ipairs(entries) do
-            portions[#portions + 1] = { slotId = callRef .. ":w" .. i, nativeCreatorKey = "cutter:" .. owner .. ":" .. tostring(e.workAreaIndex),
-                weight = e.weight, fruitTypeIndex = e.fruitTypeIndex, knowledge = "UNKNOWN", reason = "CUT_STATE_NOT_CARRIED" }
+            local creator = "cutter:" .. owner .. ":" .. tostring(e.workAreaIndex)
+            local cs = e.cutStates ~= nil and #e.cutStates == 1 and e.cutStates[1] or nil
+            if cs ~= nil and cs.admitted == true and (cs.weightSum or 0) > 0 then
+                for k, grp in ipairs(cs.groups) do
+                    portions[#portions + 1] = { slotId = callRef .. ":w" .. i .. ":p" .. k, nativeCreatorKey = creator,
+                        weight = e.weight * grp.weight / cs.weightSum, fruitTypeIndex = cs.fruitIndex, knowledge = "KNOWN", reason = nil,
+                        profile = SGCutState ~= nil and SGCutState.PROFILE or nil, growthState = grp.state, pixels = grp.pixels,
+                        yieldScale = grp.yieldScale, soilCell = grp.cell, soil = grp.soil }
+                end
+            else
+                local reason = "CUT_STATE_NOT_OBSERVED"
+                if cs ~= nil and cs.reason ~= nil then reason = cs.reason
+                elseif e.cutStates ~= nil and #e.cutStates > 1 then reason = "CUT_STATE_SEVERAL_CALLS" end
+                portions[#portions + 1] = { slotId = callRef .. ":w" .. i, nativeCreatorKey = creator,
+                    weight = e.weight, fruitTypeIndex = e.fruitTypeIndex, knowledge = "UNKNOWN", reason = reason }
+            end
         end
     else
         portions[1] = { slotId = callRef .. ":unknown", nativeCreatorKey = "cutter:" .. owner, weight = 1, knowledge = "UNKNOWN",
@@ -284,7 +313,8 @@ function HC.cutClose(host, frame, ok, returned)
             local evidencePortions = {}
             for _, portion in ipairs(t.portions) do
                 evidencePortions[#evidencePortions + 1] = { slotId = portion.slotId, weight = portion.weight, fruitTypeIndex = portion.fruitTypeIndex,
-                    knowledge = portion.knowledge, reason = portion.reason }
+                    knowledge = portion.knowledge, reason = portion.reason, profile = portion.profile, growthState = portion.growthState,
+                    pixels = portion.pixels, yieldScale = portion.yieldScale, soilCell = portion.soilCell, soil = portion.soil }
             end
             local report = {
                 participantsAfter = after,
@@ -456,6 +486,8 @@ end
 function HC.installClassHooks(classes)
     if g_server == nil then return false end
     classes = classes or {}
+    -- SG2-3b: the source portions of each direct cut (mechanism 4, a table function).
+    if SGCutState ~= nil and classes.FSDensityMapUtil ~= nil then SGCutState.installOn(classes.FSDensityMapUtil) end
     -- A new cutter frame starts a new witness (Cutter.lua:729-768).
     wrapWithSelf(classes.Cutter, "onStartWorkAreaProcessing", function(original, self, ...)
         HC.resetWitness(self)
