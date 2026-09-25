@@ -646,6 +646,12 @@ function H:onDischargeOpen(vehicle, dischargeNode, emptyLiters, object, targetFi
         -- A converting chain changes type or amount: a CONVERT needs a registered
         -- conversion basis (later SG-2 slices), so it is not carried here.
         if factor ~= 1 or ratio ~= 1 or paidFillType ~= fillType then return nil end
+        -- MAINTENANCE row 141: a converter entry can change the type at factor 1
+        -- (FillTypeManager.lua:492-498), and fillType is already the node's converted type,
+        -- so the discharged type must also be the source unit's own, as the vehicle branch
+        -- requires; otherwise a wheat stock's history would be carried onto barley.
+        local okS, sourceType = pcall(vehicle.getFillUnitFillType, vehicle, dischargeNode.fillUnitIndex)
+        if not okS or sourceType ~= fillType then return nil end
         local list = { { binding = binding, kind = A.KIND_FILL_UNIT, vehicle = vehicle, fillUnitIndex = dischargeNode.fillUnitIndex } }
         storageParticipants(self, station, station.targetStorages, paidFillType, farmId, list)
         participants, captureList = self:transferParticipants(list)
