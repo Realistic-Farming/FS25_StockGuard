@@ -31,7 +31,10 @@
 --   Mission00:setMissionInfo mission00.lua:98 (queues map tasks); cancelLoading
 --     read by the next task; OnInGameMenuMenu menu.lua:66 (flush + teardown)
 --   DensityMapHeightManager sortHeightTypes :187, loadFromXMLFile lowercase
---     tipTypeMappings :150-164, initialize :350 (overlap warning :378),
+--     tipTypeMappings :150-164, initialize :350 (overlap warning :378;
+--     heightToDensityValue :374, the updater :382, forceTypeConversion :398-408),
+--   SnowSystem:onTerrainLoad SnowSystem.lua:89-125 (1 / heightToDensityValue :108),
+--     FSBaseMission terrain order :1375 initialize, :1384 snow, :1391 TERRAIN target,
 --     heightTypeFirstChannel/NumChannels :117-118
 --   FSBaseMission densityMapHeightXMLLoad :1372 (loadFromXMLFile then
 --     initialize), missionInfo:getIsDensityMapValid :1933, onFinishedLoading :701
@@ -699,7 +702,21 @@ function SGCapacity.installHooks(ctl)
                 controller:markGroundInitialized(updater ~= nil)
                 return unpack(results)
             end
-            -- FAILED: native initialize is skipped; completion happens at finished loading.
+            -- FAILED (MAINTENANCE row 140; Tyson's ruling 2026-09-26, DEVIATES from the SG-6
+            -- brief's "skips native initialize" in service of its 4.9, "failure returns the
+            -- user to a usable loading/mod-selection route"). Skipping native initialize left
+            -- heightToDensityValue and the updater unset (DensityMapHeightManager.lua:374,
+            -- :382), so the terrain load died in SnowSystem:onTerrainLoad (1 / nil,
+            -- SnowSystem.lua:108) before hitLoadingTarget(TERRAIN) (FSBaseMission.lua:1375,
+            -- :1384, :1391), and finished loading, where the failure is presented, never came.
+            -- So native initialize runs, with the saved mapping WITHHELD: with no
+            -- tipTypeMappings native requests no type conversion (:398-408), so it never
+            -- interprets a saved raster under a mapping SG-6 refused (the reason the brief
+            -- skipped it, "refuse before initialization"). The ground is NOT marked
+            -- initialized, the phase stays FAILED, and the finished-loading wrapper presents
+            -- the failure and cancels the load; nothing is saved.
+            hm.tipTypeMappings = nil
+            return superFunc(hm, isServer, ...)
         end)
     end
 
