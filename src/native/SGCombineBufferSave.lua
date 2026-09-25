@@ -422,9 +422,12 @@ function B.registerSavegamePaths(schema)
     return true
 end
 
---- Append Combine.initSpecialization through the class table, once per process: the
---- call SpecializationManager:initSpecializations makes after Vehicle.init on every
---- mission load (SpecializationManager.lua:97-104; MPLoadingScreen.lua:767 and :776),
+--- Append Combine.initSpecialization through the class table, once per mission load:
+--- SpecializationManager:loadMapData re-sources Combine.lua on every mission load
+--- (MPLoadingScreen.lua:352), so each load's class table is new and takes the append
+--- once. It hooks the call SpecializationManager:initSpecializations makes after
+--- Vehicle.init on every mission load (SpecializationManager.lua:97-104;
+--- MPLoadingScreen.lua:767 and :776),
 --- where native Combine registers its own savegame paths (Combine.lua:81-84). The
 --- schema is read from the Vehicle class when the call comes, so it is that load's.
 function B.installSchemaHook(combineClass, vehicleClass)

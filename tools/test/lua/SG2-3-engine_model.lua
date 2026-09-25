@@ -413,25 +413,122 @@ local function fillUnitFunctions(v)
         if u.fillLevel == 0 then u.fillType = FillType.UNKNOWN end
         return u.fillLevel - before
     end
+    -- FillUnit.lua:739-745 and :774-783 VERBATIM, over each unit's supportedFillTypes and
+    -- the fillTypeChangeThreshold FillUnit loads (0.05 by default, :273; :785-790).
+    v.getFillTypeChangeThreshold = function(self) return self.spec_fillUnit.fillTypeChangeThreshold end
+    v.getFillUnitSupportsFillType = function(self, fillUnitIndex, fillType)
+        local spec = self.spec_fillUnit
+        if spec.fillUnits[fillUnitIndex] == nil then
+            return false
+        else
+            return spec.fillUnits[fillUnitIndex].supportedFillTypes[fillType]
+        end
+    end
+    v.getFillUnitAllowsFillType = function(self, fillUnitIndex, fillType)
+        local spec = self.spec_fillUnit
+        if spec.fillUnits[fillUnitIndex] == nil or not self:getFillUnitSupportsFillType(fillUnitIndex, fillType) then
+            return false
+        end
+        if fillType == spec.fillUnits[fillUnitIndex].fillType then
+            return true
+        end
+        return spec.fillUnits[fillUnitIndex].fillLevel / math.max(spec.fillUnits[fillUnitIndex].capacity, 0.0001) <= self:getFillTypeChangeThreshold()
+    end
+end
+
+-- ── Dischargeable's discharge (vehicles/specializations/Dischargeable.lua) ─────
+-- :3-5 VERBATIM.
+Dischargeable.DISCHARGE_STATE_OFF = 0
+Dischargeable.DISCHARGE_STATE_OBJECT = 1
+Dischargeable.DISCHARGE_STATE_GROUND = 2
+--- :751-765 VERBATIM, with the `local spec = self.spec_dischargeable` the decompile
+--- drops restored (the OBJECT test at :761 reads spec). The server runs it each frame of
+--- an unload (:470, :505); the OBJECT state hands the raycast's object and fill unit to
+--- dischargeToObject through the instance slot. The ground state is SG2-4's; it is
+--- reached only with dischargeHitTerrain, which no SG2-3d vehicle sets.
+function Dischargeable:discharge(dischargeNode, emptyLiters)
+    local spec = self.spec_dischargeable
+    local dischargedLiters = 0
+    local minDropReached = true
+    local hasMinDropFillLevel = true
+    local object, fillUnitIndex = self:getDischargeTargetObject(dischargeNode)
+    dischargeNode.currentDischargeObject = nil
+    if object == nil then
+        if dischargeNode.dischargeHitTerrain and self.spec_dischargeable.currentDischargeState == Dischargeable.DISCHARGE_STATE_GROUND then
+            dischargedLiters, minDropReached, hasMinDropFillLevel = self:dischargeToGround(dischargeNode, emptyLiters)
+        end
+    elseif spec.currentDischargeState == Dischargeable.DISCHARGE_STATE_OBJECT then
+        return self:dischargeToObject(dischargeNode, emptyLiters, object, fillUnitIndex), minDropReached, hasMinDropFillLevel
+    end
+    return dischargedLiters, minDropReached, hasMinDropFillLevel
+end
+--- :702-704 VERBATIM: the object and fill unit the raycast found (:1167-1176).
+function Dischargeable.getDischargeTargetObject(_, dischargeNode)
+    return dischargeNode.dischargeObject, dischargeNode.dischargeFillUnitIndex
+end
+
+--- The raycast's result, as :1167-1176 leaves it on the node, and the state the
+--- discharge runs in: what one server frame of an overload sees. MODELED: the raycast
+--- itself is C.
+function ENGINE_AIM_DISCHARGE(vehicle, object, fillUnitIndex)
+    local node = vehicle.spec_dischargeable.dischargeNodes[1]
+    node.dischargeObject, node.dischargeFillUnitIndex = object, fillUnitIndex
+    vehicle.spec_dischargeable.currentDischargeState = object ~= nil and Dischargeable.DISCHARGE_STATE_OBJECT or Dischargeable.DISCHARGE_STATE_OFF
+    return node
+end
+
+--- A trailer: FillUnit's functions COPIED into the instance (Vehicle.lua:486,
+--- copyTypeFunctionsInto). opts: level, fillType, capacity, ownerFarmId, supported
+--- (fill type -> true; default WHEAT).
+function ENGINE_NEW_TRAILER(uid, opts)
+    opts = opts or {}
+    local v = { uniqueId = uid, configFileName = "data/vehicles/trailer.xml", ownerFarmId = opts.ownerFarmId or 1, activeFarm = opts.ownerFarmId or 1, isServer = true,
+        rootNode = { x = 0, z = 0 } }
+    local unit = { fillLevel = opts.level or 0, capacity = opts.capacity or 10000, fillType = FillType.UNKNOWN, lastValidFillType = FillType.UNKNOWN,
+        supportedFillTypes = opts.supported or { [ENGINE_FT.WHEAT] = true } }
+    if (opts.level or 0) > 0 then unit.fillType, unit.lastValidFillType = opts.fillType or ENGINE_FT.WHEAT, opts.fillType or ENGINE_FT.WHEAT end
+    v.spec_fillUnit = { fillUnits = { unit }, fillTypeChangeThreshold = 0.05 }
+    fillUnitFunctions(v)
+    v.getUniqueId = function(self) return self.uniqueId end
+    v.getOwnerFarmId = function(self) return self.ownerFarmId end
+    v.getActiveFarm = function(self) return self.activeFarm end
+    v.specClasses = {}
+    v.specializations = { ENGINE_FILLUNIT }
+    v.specializationNames = { "fillUnit" }
+    v.eventListeners = { onPostLoad = { ENGINE_FILLUNIT } }
+    return v
 end
 
 --- A combine with its hopper (fill unit 1), an optional buffer fill unit (2), an
 --- optional loading delay (opts.loadingDelay ms, slots per :520), and a straw input
---- buffer of opts.strawSlots slots. Its functions are COPIED into the instance.
+--- buffer of opts.strawSlots slots. Its functions are COPIED into the instance,
+--- Dischargeable's too (a combine overloads through its pipe's discharge node, fill
+--- unit 1; opts.converter is that node's fill type converter).
 function ENGINE_NEW_COMBINE(uid, opts)
     opts = opts or {}
     local v = { uniqueId = uid, configFileName = "data/vehicles/combine.xml", ownerFarmId = 1, activeFarm = 1, isServer = true,
         currentUpdateDistance = 0, rootNode = { x = 0, z = 0 } }
-    local units = { { fillLevel = opts.hopperLevel or 0, capacity = opts.hopperCapacity or 10000, fillType = FillType.UNKNOWN, lastValidFillType = opts.lastValid or ENGINE_FT.WHEAT } }
+    local grain = { [ENGINE_FT.WHEAT] = true, [ENGINE_FT.BARLEY] = true }
+    local units = { { fillLevel = opts.hopperLevel or 0, capacity = opts.hopperCapacity or 10000, fillType = FillType.UNKNOWN, lastValidFillType = opts.lastValid or ENGINE_FT.WHEAT, supportedFillTypes = grain } }
     if (opts.hopperLevel or 0) > 0 then units[1].fillType = ENGINE_FT.WHEAT end
-    if opts.buffer then units[2] = { fillLevel = 0, capacity = opts.bufferCapacity or 500, fillType = FillType.UNKNOWN, lastValidFillType = ENGINE_FT.WHEAT } end
-    v.spec_fillUnit = { fillUnits = units }
+    if opts.buffer then units[2] = { fillLevel = 0, capacity = opts.bufferCapacity or 500, fillType = FillType.UNKNOWN, lastValidFillType = ENGINE_FT.WHEAT, supportedFillTypes = grain } end
+    v.spec_fillUnit = { fillUnits = units, fillTypeChangeThreshold = 0.05 }
     fillUnitFunctions(v)
     v.getUniqueId = function(self) return self.uniqueId end
     v.getOwnerFarmId = function(self) return self.ownerFarmId end
     v.getActiveFarm = function(self) return self.activeFarm end
     v.getIsAIActive = function() return false end
     v.addCutterArea = Combine.addCutterArea
+    -- Dischargeable's registered functions (Dischargeable.lua:93, :95, :97, :101), copied.
+    v.discharge = Dischargeable.discharge
+    v.dischargeToObject = Dischargeable.dischargeToObject
+    v.getDischargeFillType = Dischargeable.getDischargeFillType
+    v.getDischargeTargetObject = Dischargeable.getDischargeTargetObject
+    v.spec_fillVolume = { unloadInfos = { {} } }
+    v.getFillVolumeUnloadInfo = function(self, index) return self.spec_fillVolume.unloadInfos[index] end
+    v.spec_dischargeable = { currentDischargeState = Dischargeable.DISCHARGE_STATE_OFF,
+        dischargeNodes = { { index = 1, fillUnitIndex = 1, toolType = ToolType.DISCHARGEABLE, info = {}, unloadInfoIndex = 1, fillTypeConverter = opts.converter,
+                             canDischargeToVehicle = true } } }
     local slots = {}
     local strawSlots = opts.strawSlots or 4
     local buffer = {}
