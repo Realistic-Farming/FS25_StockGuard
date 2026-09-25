@@ -29,6 +29,7 @@
 --   R  a trigger target still takes the station route
 --   N  a native throw: the frame closes, nothing settles twice
 --   D  a delay-slot drain, then an overload: the history end to end
+--   G  the log line: the first carried overload says so once; a per-side one never
 --
 --!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
@@ -400,4 +401,36 @@ group("D", function()
         "VEHICLE_DISCHARGE/COMMITTED/" .. tostring(hopStockId))
     T.eq("D4 the slot's property reached the trailer, known, over its 6 L: cut, drain, overload", props(stockAt(sg, tr)), "KNOWN:0.2:6")
     FSBaseMission.delete(m)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- G. THE LOG LINE
+-- ══════════════════════════════════════════════════════════════════════════
+group("G", function()
+    local lines = {}
+    local realPrint = print
+    print = function(s) lines[#lines + 1] = tostring(s) realPrint(s) end
+    local ok, err = pcall(function()
+        NH.logged = {}
+        -- A per-side overload first (another farm's trailer): no line.
+        local m, sg, host, w = boot(function(m, w) harvestWorld(m, w, nil, { ownerFarmId = 2 }) end)
+        ENGINE_HARVEST_TICK(w.header, w.combine, 16)
+        overload(w.combine, w.trailer, 1, 6)
+        FSBaseMission.delete(m)
+        -- Then two carried overloads: one line, the first's.
+        m, sg, host, w = boot(function(m, w) harvestWorld(m, w) end)
+        ENGINE_HARVEST_TICK(w.header, w.combine, 16)
+        overload(w.combine, w.trailer, 1, 4)
+        overload(w.combine, w.trailer, 1, 2)
+        FSBaseMission.delete(m)
+    end)
+    print = realPrint
+    if not ok then error(err, 0) end
+    local carried = {}
+    for _, l in ipairs(lines) do
+        if l:find("FIRST VEHICLE OVERLOAD CARRIED", 1, true) then carried[#carried + 1] = l end
+    end
+    T.eq("G1 one line for the first carried overload, none for the per-side one or the second carried one",
+        tostring(#carried) .. " " .. tostring(carried[1]),
+        "1 [StockGuard] native: FIRST VEHICLE OVERLOAD CARRIED: 4.0 L of WHEAT from data/vehicles/combine.xml into data/vehicles/trailer.xml as one transfer.")
 end)

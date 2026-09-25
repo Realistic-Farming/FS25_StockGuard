@@ -73,6 +73,16 @@ end
 
 local function log(msg) print("[StockGuard] native: " .. tostring(msg)) end
 
+-- THE IN-GAME EVIDENCE for SG2-3d. A carried overload and a per-side one look the same to
+-- a player and to sgStatus's counts, so the first overload carried as one transfer says so
+-- once, with the amount and both vehicles: the log line an in-game check reads.
+H.logged = H.logged or {}
+local function logOnce(key, msg)
+    if H.logged[key] then return end
+    H.logged[key] = true
+    log(msg)
+end
+
 ---@param handle table   g_currentMission.stockGuard
 ---@param sources table  { placeables = fn, vehicles = fn }
 function H.new(handle, sources)
@@ -827,6 +837,11 @@ function H:onDischargeClose(frame, ok)
     local consumed
     if d ~= nil and d.route == H.ROUTE_TRANSFER then
         consumed = self:settleTransfer(frame, ok, d.transfer) or {}
+        if d.transfer ~= nil and d.transfer.nativePath == "VEHICLE_DISCHARGE" and d.transfer.outcome == "COMMITTED" then
+            local ev = self.lastSettlement ~= nil and self.lastSettlement.report ~= nil and self.lastSettlement.report.outcomeEvidence or {}
+            logOnce("vehicleOverload", string.format("FIRST VEHICLE OVERLOAD CARRIED: %.1f L of %s from %s into %s as one transfer.",
+                tonumber(ev.destinationTotal) or 0, tostring(ev.fillTypeName), tostring(d.vehicle.configFileName), tostring(d.target ~= nil and d.target.configFileName)))
+        end
     else
         consumed = self:settleDischarge(frame, ok) or {}
     end
