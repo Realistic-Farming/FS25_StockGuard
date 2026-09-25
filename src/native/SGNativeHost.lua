@@ -542,7 +542,62 @@ local function storageParticipants(host, station, storages, fillType, farmId, li
     return list
 end
 
---- Before the native discharge. Two routes open a context and capture:
+--- [SG2-3d] A VEHICLE TARGET: a combine overloading into a trailer. The OBJECT state of
+--- Dischargeable:discharge (:751-765) calls dischargeToObject with a vehicle and its fill
+--- unit when the target is an ordinary vehicle; the target is credited
+--- emptyLiters * factor under the source's active farm and the source debited
+--- accepted / factor under its owner farm (:807-817). SG-2 :88: bracket the real
+--- operation, capture the source and its pre-operation snapshot, observe the actual
+--- source decrease and destination increase, and do not treat a conversion as a plain
+--- transfer. Admitted only when:
+---   * the target is another vehicle (not the source) and not a trigger (object.target nil),
+---     with a fill unit at targetFillUnitIndex;
+---   * the discharge factor is exactly 1 AND the discharged type is the source unit's own:
+---     a converting node is a conversion, not carried, and a converter entry can change
+---     the type at factor 1 (FillTypeManager.lua:492-498), which is a conversion too;
+---   * both owner farms are equal: a cross-farm overload keeps the per-side path (Tyson's
+---     ruling: whether provenance may cross farms with the goods is not decided);
+---   * both ends bind as fill-unit carriers.
+--- Then ONE TRANSFER, source and target, through transferParticipants, settled at the
+--- close by settleTransfer from each side's actual net change. A nearly full target
+--- accepts less and the source is debited only by what was accepted (:812-814), so no
+--- loss leg: the rest stays in the source. The native call is never changed or rescaled.
+--- Returns (handled, frame): handled false leaves the caller's trigger routes to decide.
+function H:openVehicleDischarge(vehicle, dischargeNode, emptyLiters, object, targetFillUnitIndex, fillType, factor)
+    if type(object) ~= "table" or object == vehicle or object.target ~= nil then return false, nil end
+    if type(object.spec_fillUnit) ~= "table" or type(object.spec_fillUnit.fillUnits) ~= "table" then return false, nil end
+    -- A vehicle target from here on: anything not admitted keeps today's per-side path.
+    if object.spec_fillUnit.fillUnits[targetFillUnitIndex] == nil then return true, nil end
+    if factor ~= 1 then return true, nil end
+    local okS, sourceType = pcall(vehicle.getFillUnitFillType, vehicle, dischargeNode.fillUnitIndex)
+    if not okS or sourceType ~= fillType then return true, nil end
+    if type(vehicle.getOwnerFarmId) ~= "function" or type(object.getOwnerFarmId) ~= "function" then return true, nil end
+    local okA, farmA = pcall(vehicle.getOwnerFarmId, vehicle)
+    local okB, farmB = pcall(object.getOwnerFarmId, object)
+    if not okA or not okB or farmA == nil or farmA ~= farmB then return true, nil end
+    local list = {
+        { binding = A.fillUnitBindingFor(vehicle, dischargeNode.fillUnitIndex), kind = A.KIND_FILL_UNIT, vehicle = vehicle, fillUnitIndex = dischargeNode.fillUnitIndex },
+        { binding = A.fillUnitBindingFor(object, targetFillUnitIndex), kind = A.KIND_FILL_UNIT, vehicle = object, fillUnitIndex = targetFillUnitIndex },
+    }
+    local participants, captureList = self:transferParticipants(list)
+    if participants == nil then return true, nil end
+    local frame = SGOperationContext.open(self.context, vehicle, H.DISCHARGE_FRAME)
+    if frame == nil then return true, nil end
+    self.nextDischarge = self.nextDischarge + 1
+    local d = {
+        route = H.ROUTE_TRANSFER, vehicle = vehicle, fillUnitIndex = dischargeNode.fillUnitIndex, target = object,
+        targetFillUnitIndex = targetFillUnitIndex, farmId = farmA, dischargeFillType = fillType, dischargeFactor = factor,
+        callRef = "discharge:" .. tostring(self.epoch) .. ":" .. tostring(self.nextDischarge),
+    }
+    frame.discharge = d
+    local cap, why = self.handle.captureOperation(self.nativeLease, "TRANSFER", captureList)
+    d.transfer = { capture = cap, captureFailure = why, participants = participants, nativePath = "VEHICLE_DISCHARGE", callRef = d.callRef,
+                   requested = emptyLiters, fillType = fillType }
+    return true, frame
+end
+
+--- Before the native discharge. A vehicle target is decided first (openVehicleDischarge).
+--- Otherwise two station routes open a context and capture:
 ---   SALE     a sale-bracketed station's paid route (getStoreGoods false): the
 ---            source retires as SG2-2 settles it;
 ---   TRANSFER an admitted unloading station, or a selling station that only STORES
@@ -553,6 +608,8 @@ function H:onDischargeOpen(vehicle, dischargeNode, emptyLiters, object, targetFi
     if not self.ready or type(dischargeNode) ~= "table" then return nil end
     local okT, fillType, factor = pcall(vehicle.getDischargeFillType, vehicle, dischargeNode)
     if not okT then return nil end
+    local handled, vehicleFrame = self:openVehicleDischarge(vehicle, dischargeNode, emptyLiters, object, targetFillUnitIndex, fillType, factor)
+    if handled then return vehicleFrame end
     local station, ratio, paidFillType = triggerOf(object, fillType)
     local entry = station ~= nil and self.stations[station] or nil
     if entry == nil then return nil end
