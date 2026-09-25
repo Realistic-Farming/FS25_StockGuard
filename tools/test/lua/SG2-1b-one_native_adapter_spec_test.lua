@@ -401,7 +401,7 @@ end)
 -- ══════════════════════════════════════════════════════════════════════════
 group("C", function()
     local m, sg, host, lease, w = boot(function(m, ss, w)
-        w.c = { store(0, 500) }
+        w.c = { store(0, 1000) }
         w.p = newSilo(m, "placeable:C", w.c)
         w.us = UnloadingStation.newModel()
         w.us:addTargetStorage(w.c[1])
@@ -411,6 +411,7 @@ group("C", function()
         w.tType = newTrailer(m, "vehicle:type", WHEAT, 100)
         w.tHalf = newTrailer(m, "vehicle:half", WHEAT, 100)
         w.tPlain = newTrailer(m, "vehicle:plain", WHEAT, 100)
+        w.tNodeType = newTrailer(m, "vehicle:nodetype", WHEAT, 100, { converter = { [WHEAT] = { targetFillTypeIndex = BARLEY, conversionFactor = 1 } } })
     end)
     local before = host.nextDischarge
     unload(w.tRatio, w.us, { [WHEAT] = { ratio = 0.5, outgoingFillType = BARLEY } })
@@ -426,6 +427,10 @@ group("C", function()
     T.eq("C5 a discharge factor other than 1 is not carried", host.nextDischarge - before, 0)
     unload(w.tHalf, w.us, { [WHEAT] = { ratio = 0.5, outgoingFillType = WHEAT } })
     T.eq("C5b a trigger ratio other than 1 that keeps the type is not carried either", num(w.c[1]:getFillLevel(WHEAT)) .. "/" .. tostring(host.nextDischarge - before), "250/0")
+    -- MAINTENANCE row 141: the node itself changes the type, at factor 1 and trigger ratio 1.
+    unload(w.tNodeType, w.us)
+    T.eq("C5c a discharge node converting wheat to barley at factor 1 is not carried: the discharged type is not the source's own",
+        num(w.tNodeType:getFillUnitFillLevel(1)) .. "/" .. num(w.c[1]:getFillLevel(BARLEY)) .. "/" .. tostring(host.nextDischarge - before), "0/250/0")
     unload(w.tPlain, w.us)
     T.eq("C6 [twin] an identity unload into the same station IS carried", tostring(host.nextDischarge - before) .. "/" .. head(host.lastSettlement), "1/STATION_UNLOAD/COMMITTED")
     FSBaseMission.delete(m)

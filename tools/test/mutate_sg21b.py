@@ -34,6 +34,9 @@ NH = "src/native/SGNativeHost.lua"
 SA = "src/native/SGStationAdapter.lua"
 
 MUTATIONS = [
+ ("M141-node-type-change-carried", NH,
+  [("        local okS, sourceType = pcall(vehicle.getFillUnitFillType, vehicle, dischargeNode.fillUnitIndex)\n        if not okS or sourceType ~= fillType then return nil end\n", "", 1)],
+  "a node converting the type at factor 1 is carried as a plain station transfer (MAINTENANCE row 141)"),
  # ── one adapter, both kinds ────────────────────────────────────────────────
  ("N1-registers-a-retired-id", NA,
   [('A.NATIVE_ADAPTER_ID   = "sgNative"', 'A.NATIVE_ADAPTER_ID   = "sgStorage"', 1)],
