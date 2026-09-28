@@ -302,7 +302,8 @@ group("R", function()
     local applied = cns.modules[SGTransport.MODULE_ID].applyView(pubs[remote])
     T.eq("R6 NS-7's publication applies on the client with the stock row", tostring(applied.outcome) .. "|" .. shown(cm.stockGuard), "APPLIED|READY/true/STOCK:5000")
     local ok, why = cm.stockGuard.requestView(FARM, {})
-    T.eq("R7 a pure client's requestView on NS7 still answers ROUTE (unchanged, out of scope)", tostring(ok) .. "/" .. tostring(why), "false/ROUTE")
+    T.eq("R7 a pure NS7 client's requestView sends by SGViewRequestEvent (MAINTENANCE row 163); with no server connection in this bench it is refused, and the view is untouched",
+        tostring(ok) .. "/" .. tostring(why) .. "|" .. shown(cm.stockGuard), "false/NO_SERVER_CONNECTION|READY/true/STOCK:5000")
     FSBaseMission.delete(cm)
     g_currentMission = serverM
     stop(serverM)

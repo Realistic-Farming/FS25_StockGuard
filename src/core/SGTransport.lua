@@ -13,8 +13,11 @@
 -- OBJECT (NS-7 hands the producer context.connection; its own "c<serial>"
 -- ids are never assumed), "local" for the listen host.
 --
--- Without NS-7 the dedicated pair SGViewRequestEvent (client to server:
--- selection, paging tail) and SGViewStateEvent (server to one connection:
+-- A selection change travels by SGViewRequestEvent (client to server:
+-- selection, paging tail) on either route; with NS-7 the server answers only
+-- through the scoped module.
+--
+-- Without NS-7 the dedicated pair SGViewRequestEvent and SGViewStateEvent (server to one connection:
 -- the same token array plus session/epoch/publication ordering) carries the
 -- identical application bytes and outcomes. Never both transports for one
 -- replica, never a public broadcast. SGCommandRequestEvent /
@@ -215,9 +218,13 @@ end
 --- NS-7 never delivers to the local stream, and the engine loopback runs an event
 --- with no stream (Connection.lua:71-74), so the fallback request never passes its
 --- version check and a state event sent back is refused by hostOnClient. A
---- dedicated server has no local farmer and projects nothing. A pure client on the
---- fallback sends the request event; on NS-7 its subscription belongs to NS-7.
---- Returns true when the request was taken.
+--- dedicated server has no local farmer and projects nothing.
+--- A pure client sends the request event to the server on either route. On NS7 the
+--- server sets that connection's selection and marks the scoped module dirty, and
+--- NS-7's buildView reads it (SG-1/NS-7 brief :502, :508); on the fallback the server
+--- answers with a state event. The client clears its view for the change only when
+--- the request is actually sent: a refused or failed request leaves the current view
+--- and its expected key as they were. Returns true when the request was taken.
 function TR:requestView(selection, readOptions, sender)
     selection = selection or { route = "STOCK", selectionKind = "FARM" }
     local sg = self.stockGuard
@@ -229,15 +236,24 @@ function TR:requestView(selection, readOptions, sender)
         sg:onViewRequest(nil, selection, readOptions)
         return true
     end
-    local key, why = self:expectSelection(selection, readOptions)
-    if key == nil then return false, why end
-    if self.route ~= "FALLBACK" then return false, "ROUTE" end
+    local normalized, why = SGViews.normalizeSelection(selection.route or SGViews.ROUTE_STOCK, selection)
+    if normalized == nil then return false, why end
+    local options, whyO = SGViews.normalizeReadOptions(normalized, readOptions, false)
+    if options == nil then return false, whyO end
+    if self.route ~= "FALLBACK" and self.route ~= "NS7" then return false, "ROUTE" end
     if SGViewRequestEvent == nil then return false, "EVENT_CLASS" end
     local connection = sender
     if connection == nil and g_client ~= nil and type(g_client.getServerConnection) == "function" then connection = g_client:getServerConnection() end
     if connection == nil or type(connection.sendEvent) ~= "function" then return false, "NO_SERVER_CONNECTION" end
+    local c = self.client
+    local before = { c.expectedKey, c.request, c.replica, c.state, c.reason, c.usable, c.credentials }
+    self:expectSelection(selection, readOptions)
     local ok = pcall(function() connection:sendEvent(SGViewRequestEvent.new(selection, readOptions)) end)
-    return ok, ok and nil or "SEND_FAILED"
+    if not ok then
+        c.expectedKey, c.request, c.replica, c.state, c.reason, c.usable, c.credentials = before[1], before[2], before[3], before[4], before[5], before[6], before[7]
+        return false, "SEND_FAILED"
+    end
+    return true
 end
 
 -- ---------------------------------------------------------
