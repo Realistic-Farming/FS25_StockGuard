@@ -518,6 +518,7 @@ function SG:sendViewState(connection, state, reason, tokens)
     local event = SGViewStateEvent.new(self.serverSession, self.views.viewEpoch, self.publicationId, state, reason, tokens or {})
     if connection == nil then
         -- Listen-host projection: apply the detached bytes locally.
+        self.transport.localActorWaiting = state == "WAITING" and reason == "ACTOR_WAITING"
         self:onViewState(event)
         -- Once per mission, so log.txt shows the host's own view reached READY.
         local replica = self.transport.client.replica
@@ -542,9 +543,17 @@ end
 
 --- Republish the local player's detached view after a dirty mark (from update),
 --- on every route. The actor is resolved again at each publication.
+--- The host's own player does not exist at the restore barrier: onStartMission
+--- creates it later (FSBaseMission.lua:365-377), and until then getFarmId()
+--- answers nil on a server (:1067-1071), so the first view is ACTOR_WAITING. No
+--- message marks the player's arrival, so while the last local view waited on
+--- the actor, it is published again as soon as the actor resolves.
 function SG:publishLocal()
     local t = self.transport
-    if not t.localSubscribed or not t.localDirty or not self:isServer() or g_dedicatedServer ~= nil then return end
+    if not t.localSubscribed or not self:isServer() or g_dedicatedServer ~= nil then return end
+    if not t.localDirty then
+        if not t.localActorWaiting or self:resolveActorFor(nil).actorState == "WAITING" then return end
+    end
     t.localDirty = false
     self:publishTo(nil)
 end

@@ -58,6 +58,7 @@ function TR.new(views, commands)
     self.dirty = false
     self.localSubscribed = false     -- a server with a local player reads its own detached view
     self.localDirty = false
+    self.localActorWaiting = false   -- the last local view waited on the host's own player
     return self
 end
 
@@ -300,6 +301,7 @@ function TR:teardown()
     self.registered = false
     self.localSubscribed = false
     self.localDirty = false
+    self.localActorWaiting = false
     self.selections = setmetatable({}, { __mode = "k" })
     self:clearReplica("MISSION_END")
 end

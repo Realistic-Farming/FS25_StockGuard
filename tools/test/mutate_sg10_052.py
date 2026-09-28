@@ -15,6 +15,9 @@
 #   - the dedicated clause of the barrier's self-subscription;
 #   - the dedicated clause of SG:publishLocal;
 #   - the dedicated clause of SG:onViewRequest's local branch.
+# Also not run: resetting localActorWaiting in SGTransport.new and teardown. nil and
+# false read the same, and after teardown localSubscribed is false, so publishLocal
+# returns before it reads the flag.
 #
 # Anchors are written with "\n"; in a CRLF file they are matched as "\r\n".
 #
@@ -76,6 +79,15 @@ MUTATIONS = [
  ("M15-host-view-logged-every-time", SG,
   [("            self.localViewLogged = true\n", "", 1)],
   "the host-view line is printed on every republish, flooding log.txt"),
+ ("M16-no-republish-when-player-appears", SG,
+  [("        if not t.localActorWaiting or self:resolveActorFor(nil).actorState == \"WAITING\" then return end\n", "        return\n", 1)],
+  "the host's view waits on its player forever once the player exists (Bob's BLOCKER)"),
+ ("M17-actor-wait-never-recorded", SG,
+  [("        self.transport.localActorWaiting = state == \"WAITING\" and reason == \"ACTOR_WAITING\"\n", "", 1)],
+  "nothing remembers the view waited on the host's player, so its arrival republishes nothing"),
+ ("M18-republish-every-waiting-tick", SG,
+  [("if not t.localActorWaiting or self:resolveActorFor(nil).actorState == \"WAITING\" then return end", "if not t.localActorWaiting then return end", 1)],
+  "while the host's player does not exist, every tick publishes another waiting view"),
 ]
 
 

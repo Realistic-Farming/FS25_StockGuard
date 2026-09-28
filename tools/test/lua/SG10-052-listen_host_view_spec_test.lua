@@ -102,7 +102,15 @@ end
 local Mission = {}
 Mission.__index = Mission
 function Mission:getIsServer() return self._server end
-function Mission:getFarmId(connection) if connection == nil then return self._localFarm end return self._farms[connection] end
+--- FSBaseMission.lua:1067-1071: on a server the local farm is nil until the host's own
+--- player exists, which onStartMission creates after the restore barrier (:365-377).
+function Mission:getFarmId(connection)
+    if connection == nil then
+        if self._server and g_localPlayer == nil then return nil end
+        return self._localFarm
+    end
+    return self._farms[connection]
+end
 Mission.onFinishedLoading = function(m) return "parent" end
 
 local function newMission(opts)
@@ -140,9 +148,17 @@ local function boot(opts)
     return m, StockGuard.hostOf(m), silo
 end
 
+--- onStartMission on the host (FSBaseMission.lua:365-377): Player.createServerInstance
+--- with isOwner, which PlayerSystem:addPlayer makes g_localPlayer (PlayerSystem.lua:279).
+--- Then one host tick.
+local function start(m)
+    g_localPlayer = { userId = m.playerUserId }
+    FSBaseMission.update(m, 16)
+end
+
 local function stop(m)
     FSBaseMission.delete(m)
-    g_server, g_client, g_dedicatedServer = nil, nil, nil
+    g_server, g_client, g_dedicatedServer, g_localPlayer = nil, nil, nil, nil
 end
 
 -- ── readers ───────────────────────────────────────────────────────────────
@@ -173,7 +189,13 @@ group("S", function()
     local h = m.stockGuard
     T.eq("S1 the real selectRoute chose NS7 and registered the module", tostring(sg.transport.route) .. "/" .. tostring(ns.modules[SGTransport.MODULE_ID] ~= nil), "NS7/true")
     T.eq("S2 the native kernel enumerated the silo at the barrier, nothing hand-filled", h.getStatus().adapters .. "/" .. h.getStatus().carriers .. "/" .. h.getStatus().stocks, "1/1/1")
-    T.eq("S3 the host's own view is READY after the barrier with the silo's stock row, before any page asks", shown(h), "READY/true/STOCK:5000")
+    T.eq("S3 at the barrier the host's own player does not exist yet: its view waits on the actor", shown(h) .. "|" .. tostring(h.getClientView().reason), "UNAVAILABLE/false/|ACTOR_WAITING")
+    local waiting = sg.publicationId
+    FSBaseMission.update(m, 16)
+    FSBaseMission.update(m, 16)
+    T.eq("S3a ticks before the player exists publish nothing", sg.publicationId, waiting)
+    start(m)
+    T.eq("S3b the tick after the host's player appears shows the silo's stock row, with no stock change and no page asking", shown(h), "READY/true/STOCK:5000")
     local ok, why = h.requestView(FARM, {})
     T.eq("S4 the handle's requestView is taken on NS7, not refused as ROUTE", tostring(ok) .. "/" .. tostring(why), "true/nil")
     T.eq("S5 and getClientView reads the detached server view", shown(h), "READY/true/STOCK:5000")
@@ -209,6 +231,7 @@ group("F", function()
     local m, sg = boot({ client = client, multiplayer = true })
     m._users[toClient] = MakeUser("host", true)
     m._farms[toClient] = 1
+    start(m)
     local h = m.stockGuard
     T.eq("F1 with no NetworkSync the route is FALLBACK", tostring(sg.transport.route), "FALLBACK")
     -- DIFFERENCE, the two barriers this repairs. The loopback runs the event with no
@@ -255,6 +278,7 @@ end)
 group("R", function()
     local ns = newNetworkSync(true)
     local m, sg = boot({ networkSync = ns, multiplayer = true })
+    start(m)
     local remote = newConnection(9, false)
     m._users[remote] = MakeUser("u9", false)
     m._farms[remote] = 1
@@ -267,6 +291,7 @@ group("R", function()
     T.eq("R4 the host's own projection sent nothing to the remote", remote.sent, 0)
     -- The remote's own process: a pure client whose NS7 module applies the publication.
     local serverM = m
+    g_localPlayer = nil
     local cns = newNetworkSync(false)
     local cm = newMission({ server = false, networkSync = cns, multiplayer = true })
     g_server, g_currentMission = nil, cm
@@ -290,8 +315,8 @@ group("P", function()
     local ns = newNetworkSync(true)
     local m, sg = boot({ networkSync = ns })
     local h = m.stockGuard
+    start(m)
     T.eq("P1 READY before the change", shown(h), "READY/true/STOCK:5000")
-    g_localPlayer = { userId = "host" }
     m._localFarm = 2
     sg:onPlayerFarmChanged(g_localPlayer)
     T.eq("P2 the local player's farm change clears the host's view before any tick", shown(h), "UNAVAILABLE/false/")
@@ -302,7 +327,6 @@ group("P", function()
     T.eq("P4 another player's farm change does not clear the host's view", shown(h), "READY/true/")
     FSBaseMission.update(m, 16)
     T.eq("P5 and the republish after its dirty mark re-reads the local actor", shown(h), "READY/true/STOCK:5000")
-    g_localPlayer = nil
     stop(m)
 end)
 
