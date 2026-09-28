@@ -53,7 +53,7 @@ MUTATIONS = [
   [("    self.dirty = true\n    self.localDirty = true\n", "    self.dirty = true\n", 1)],
   "a material change never marks the host's view dirty"),
  ("M7-teardown-keeps-subscription", TR,
-  [("    self.localSubscribed = false\n    self.localDirty = false\n    self.selections = setmetatable", "    self.localDirty = false\n    self.selections = setmetatable", 1)],
+  [("    self.localSubscribed = false\n    self.localDirty = false\n    self.localActorWaiting = false\n    self.selections = setmetatable", "    self.localDirty = false\n    self.localActorWaiting = false\n    self.selections = setmetatable", 1)],
   "teardown leaves the local subscription live"),
  ("M8-barrier-no-self-subscription", SG,
   [("    if self:isServer() and g_dedicatedServer == nil and not self.transport.localSubscribed then\n        self.transport:requestView({ route = \"STOCK\", selectionKind = \"FARM\" }, {})\n    end\n", "", 1)],
