@@ -41,8 +41,12 @@ MUTATIONS = [
     "    local normalized, why = SGViews.normalizeSelection(selection.route or SGViews.ROUTE_STOCK, selection)\n", 1)],
   "an invalid selection is sent to the server"),
  ("N6-success-reports-failure", TR,
-  [('        return false, "SEND_FAILED"\n    end\n    return true\nend', '        return false, "SEND_FAILED"\n    end\n    return true, "SEND_FAILED"\nend', 1)],
+  [("        pcall(self.networkSync.requestScopedFull, self.networkSync, TR.MODULE_ID)\n    end\n    return true\nend",
+    "        pcall(self.networkSync.requestScopedFull, self.networkSync, TR.MODULE_ID)\n    end\n    return true, \"SEND_FAILED\"\nend", 1)],
   "a sent request answers with a failure reason again (the old idiom)"),
+ ("N7-no-fresh-full", TR,
+  [("        pcall(self.networkSync.requestScopedFull, self.networkSync, TR.MODULE_ID)\n", "", 1)],
+  "a request for the selection already held leaves the page empty: NS-7 never resends an unchanged view (Bob's BLOCKER)"),
 ]
 
 def sha(b): return hashlib.sha256(b).hexdigest()

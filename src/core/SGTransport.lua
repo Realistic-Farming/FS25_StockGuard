@@ -253,6 +253,14 @@ function TR:requestView(selection, readOptions, sender)
         c.expectedKey, c.request, c.replica, c.state, c.reason, c.usable, c.credentials = before[1], before[2], before[3], before[4], before[5], before[6], before[7]
         return false, "SEND_FAILED"
     end
+    -- NS-7 never resends an unchanged view (NetworkSyncScoped.lua:702-706), so a
+    -- request for the selection already held would leave the cleared view empty.
+    -- A fresh generation is answered with a forced FULL of the connection's current
+    -- selection (:775-829), whichever of the two events the server takes first
+    -- (brief :508, requestScopedFull recovers the selected view).
+    if self.route == "NS7" and self.networkSync ~= nil and type(self.networkSync.requestScopedFull) == "function" then
+        pcall(self.networkSync.requestScopedFull, self.networkSync, TR.MODULE_ID)
+    end
     return true
 end
 

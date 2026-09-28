@@ -80,7 +80,7 @@ end
 -- context, previous and forceFull (:608-660), then hands a FULL to the client's
 -- module; on the client the consumer's applyView.
 local function newNetworkSync(isServer)
-    local ns = { modules = {}, subscriptions = {}, serial = 0, dirtyMarks = 0 }
+    local ns = { modules = {}, subscriptions = {}, serial = 0, dirtyMarks = 0, fullRequests = 0, pendingSubscribes = {} }
     function ns:_isServer() return isServer end
     function ns:getScopedCapabilities() return { bootstrapVersion = 1, protocolVersions = { 1 }, ready = true, reasonCode = "READY" } end
     function ns:registerScopedModule(id, spec) self.modules[id] = spec return true end
@@ -89,11 +89,26 @@ local function newNetworkSync(isServer)
     function ns:subscribe(connection, actor, clientNs)
         self.serial = self.serial + 1
         self.subscriptions[connection] = { connectionId = "c" .. self.serial, actor = actor, previous = nil, clientNs = clientNs }
+        clientNs.server, clientNs.connection = self, connection
+    end
+    --- Client: requestScopedFull (:926-938) clears the module and starts a new
+    --- generation; its SUBSCRIBE reaches the server with the next network tick, where
+    --- _scopedOnSubscribe answers it with a forced FULL (:775-829).
+    function ns:requestScopedFull(modId)
+        self.fullRequests = self.fullRequests + 1
+        if self.modules[modId] ~= nil then self.modules[modId].clearView("NEW_GENERATION") end
+        if self.server ~= nil then self.server.pendingSubscribes[self.connection] = true end
+        return true
     end
     --- Build one publication per subscription in the server process; deliver each
     --- in the client's process unless `hold` is set.
     function ns:publishAll(hold)
         local out = {}
+        for connection in pairs(self.pendingSubscribes) do
+            local sub = self.subscriptions[connection]
+            if sub ~= nil then sub.previous = nil end   -- the new generation's forced FULL
+        end
+        self.pendingSubscribes = {}
         for connection, sub in pairs(self.subscriptions) do
             local spec = self.modules[SGTransport.MODULE_ID]
             local context = { connection = connection, connectionId = sub.connectionId, userId = sub.actor.userId, farmId = sub.actor.farmId,
@@ -230,15 +245,25 @@ group("S", function()
     w.sns:subscribe(w.toClient, w.ssg:resolveActorFor(w.toClient), w.cns)
     w.sns:publishAll()
     T.eq("S3 NS-7's first publication gives the client its FARM view", shown(h), BOTH)
+    -- A reader's natural first call: open the page and request the FARM view it holds.
+    h.requestView(FARM, {})
+    T.eq("S3a asking again for the FARM view it holds: sent, cleared while it changes, a fresh FULL asked of NS-7",
+        w.toServer.sent .. "/" .. w.cns.fullRequests .. "|" .. shown(h), "1/1|UNAVAILABLE/false/nil/")
+    w.sns:publishAll()
+    T.eq("S3b the forced FULL brings both rows back, with no stock change (the view itself is UNCHANGED)", shown(h), BOTH)
     local marks = w.sns.dirtyMarks
     local ok, why = h.requestView(YARD, {})
-    T.eq("S4 the client's requestView on NS7 is sent, not refused as ROUTE", tostring(ok) .. "/" .. tostring(why) .. "/" .. w.toServer.sent, "true/nil/1")
-    T.eq("S5 while the selection changes the client shows nothing", shown(h) .. "|" .. tostring(h.getClientView().reason), "UNAVAILABLE/false/nil/|SELECTION_CHANGING")
+    T.eq("S4 the client's requestView on NS7 is sent, not refused as ROUTE", tostring(ok) .. "/" .. tostring(why) .. "/" .. w.toServer.sent, "true/nil/2")
+    -- NS-7's own clear of the new generation calls the consumer with its reason (_scopedClientClear).
+    T.eq("S5 while the selection changes the client shows nothing", shown(h) .. "|" .. tostring(h.getClientView().reason), "UNAVAILABLE/false/nil/|NEW_GENERATION")
     T.eq("S6 the server now holds GROUND for this connection and marked NS-7 dirty",
         w.ssg.transport:selectionFor(w.toClient).normalized.selectionKind .. "/" .. tostring(w.sns.dirtyMarks > marks), "GROUND/true")
     w.sns:publishAll()
     T.eq("S7 NS-7's next publication brings the yard heap, the one row inside the footprint", shown(h), "READY/true/GROUND/BARLEY:800")
-    T.ok("S8 two sends in a row", h.requestView(FARM, {}) and w.toServer.sent == 2)
+    h.requestView(YARD, {})
+    w.sns:publishAll()
+    T.eq("S7a asking again for the same footprint keeps the heap's row", shown(h), "READY/true/GROUND/BARLEY:800")
+    T.ok("S8 every request crossed the wire", h.requestView(FARM, {}) and w.toServer.sent == 4)
     w.sns:publishAll()
     T.eq("S9 and back at FARM both rows return", shown(h), BOTH)
     h.requestView(EMPTY, {})
@@ -278,6 +303,7 @@ group("F", function()
     w.toServer.fail = true
     local ok, why = h.requestView(YARD, {})
     T.eq("F1 a send that fails answers SEND_FAILED and leaves the FARM view showing", tostring(ok) .. "/" .. tostring(why) .. "|" .. shown(h), "false/SEND_FAILED|" .. BOTH)
+    T.eq("F1b and asks NS-7 for nothing", w.cns.fullRequests, 0)
     w.toServer.fail = false
     w.ssg.transport:markDirty()
     w.sns:publishAll()
