@@ -27,6 +27,11 @@
 -- A present NS-7 that refuses the module registration leaves the route
 -- UNAVAILABLE (reported), never a unilateral fallback that could split the
 -- server and its clients across two transports.
+--
+-- Neither transport reaches a server's own local player (SG10-052), so a single
+-- player or listen host reads a detached server view through the host on every
+-- route: requestView hands the selection to the host, which builds it through
+-- buildView in the trusted local context and applies it locally.
 -- =========================================================
 
 SGTransport = SGTransport or {}
@@ -51,6 +56,8 @@ function TR.new(views, commands)
     self.registered = false
     self.stockGuard = nil            -- back pointer set by the host
     self.dirty = false
+    self.localSubscribed = false     -- a server with a local player reads its own detached view
+    self.localDirty = false
     return self
 end
 
@@ -202,10 +209,25 @@ function TR:expectSelection(selection, readOptions)
     return self.client.expectedKey
 end
 
---- Fallback client subscription: compute the expected key and send the
---- request event to the server. Returns true when an event was sent.
+--- Client subscription. A server with a local player (single player or a listen
+--- host) reads its own detached server view through the host, on every route:
+--- NS-7 never delivers to the local stream, and the engine loopback runs an event
+--- with no stream (Connection.lua:71-74), so the fallback request never passes its
+--- version check and a state event sent back is refused by hostOnClient. A
+--- dedicated server has no local farmer and projects nothing. A pure client on the
+--- fallback sends the request event; on NS-7 its subscription belongs to NS-7.
+--- Returns true when the request was taken.
 function TR:requestView(selection, readOptions, sender)
     selection = selection or { route = "STOCK", selectionKind = "FARM" }
+    local sg = self.stockGuard
+    if sg ~= nil and sg:isServer() then
+        if g_dedicatedServer ~= nil then return false, "DEDICATED_SERVER" end
+        local key, why = self:expectSelection(selection, readOptions)
+        if key == nil then return false, why end
+        self.localSubscribed = true
+        sg:onViewRequest(nil, selection, readOptions)
+        return true
+    end
     local key, why = self:expectSelection(selection, readOptions)
     if key == nil then return false, why end
     if self.route ~= "FALLBACK" then return false, "ROUTE" end
@@ -262,6 +284,7 @@ end
 
 function TR:markDirty()
     self.dirty = true
+    self.localDirty = true
     if self.route == "NS7" and self.networkSync ~= nil and type(self.networkSync.markDirty) == "function" then
         pcall(self.networkSync.markDirty, self.networkSync, TR.MODULE_ID)
     end
@@ -275,6 +298,8 @@ function TR:teardown()
     self.routeReason = "MISSION_END"
     self.networkSync = nil
     self.registered = false
+    self.localSubscribed = false
+    self.localDirty = false
     self.selections = setmetatable({}, { __mode = "k" })
     self:clearReplica("MISSION_END")
 end

@@ -25,7 +25,8 @@
 --                              enumeration, staged metadata restore, SITE and
 --                              route retries, capacity publication.
 --   update(dt)                 route and SITE retries until resolved, pending
---                              command completion polling, fallback republish
+--                              command completion polling, fallback republish,
+--                              the local player's view republish
 --   delete()                   teardown: token withdrawn first, wrappers
 --                              restored only when still ours, message
 --                              subscriptions removed, leases dead.
@@ -281,6 +282,11 @@ function SG:onFinishedLoadingObserved()
     self.views.ready = true
     self.views.reasonCode = "READY"
     self.transport:markDirty()
+    -- A server's own local player subscribes itself, as a fallback client does and
+    -- as NS-7 subscribes a remote one; a dedicated server has no local player.
+    if self:isServer() and g_dedicatedServer == nil and not self.transport.localSubscribed then
+        self.transport:requestView({ route = "STOCK", selectionKind = "FARM" }, {})
+    end
     log("restore-complete barrier observed; views READY")
 end
 
@@ -386,6 +392,7 @@ function SG:update(dt)
     if self:isServer() then
         if self.commands:pollPending() > 0 then self.transport:markDirty() end
         self:publishAllFallback()
+        self:publishLocal()
     end
 end
 
@@ -421,7 +428,11 @@ function SG:onPlayerFarmChanged(subject)
         if type(subject.getUserId) == "function" then local ok, id = pcall(subject.getUserId, subject) if ok then userId = id end end
         if userId == nil and subject.userId ~= nil then userId = subject.userId end
     end
+    local isLocal = subject == nil or g_localPlayer == nil or subject == g_localPlayer or (userId ~= nil and g_localPlayer.userId == userId)
     if self:isServer() then
+        -- The server's own local player: its detached view is cleared at once and
+        -- republished for the new farm on the next tick, never shown in between.
+        if isLocal and self.transport.localSubscribed then self.transport:clearReplica("FARM_CHANGED") end
         if userId ~= nil then
             self.commands:withdrawUser(userId, "FARM_CHANGED")
         else
@@ -431,7 +442,6 @@ function SG:onPlayerFarmChanged(subject)
         end
         self.transport:markDirty()
     else
-        local isLocal = subject == nil or g_localPlayer == nil or subject == g_localPlayer or (userId ~= nil and g_localPlayer.userId == userId)
         if isLocal then
             self.transport:clearReplica("FARM_CHANGED")
             if self.transport.route == "FALLBACK" and self.transport.client.request ~= nil then
@@ -461,10 +471,23 @@ end
 --- A view request sets the connection's selection on either route. Only the
 --- FALLBACK route answers with a state event; on NS7 the scoped module
 --- publishes after the dirty mark, never both transports for one replica.
+--- No connection is this server's own local player (SGTransport:requestView):
+--- its detached view is built and projected here on every route, and a
+--- dedicated server has no local player to project to.
 function SG:onViewRequest(connection, selection, readOptions)
     if not self:isServer() then return end
     local actor = self:resolveActorFor(connection)
     local ok, why = self.transport:setSelection(connection, selection, readOptions)
+    if connection == nil then
+        if g_dedicatedServer ~= nil then return end
+        if not ok then
+            self:sendViewState(nil, "UNAVAILABLE", why, nil)
+            return
+        end
+        self.transport.localDirty = false
+        self:publishTo(nil, actor)
+        return
+    end
     if self.transport.route == "NS7" then
         self.transport:markDirty()
         return
@@ -496,6 +519,12 @@ function SG:sendViewState(connection, state, reason, tokens)
     if connection == nil then
         -- Listen-host projection: apply the detached bytes locally.
         self:onViewState(event)
+        -- Once per mission, so log.txt shows the host's own view reached READY.
+        local replica = self.transport.client.replica
+        if state == "READY" and replica ~= nil and not self.localViewLogged then
+            self.localViewLogged = true
+            log(string.format("host view READY for the local player on route %s: %d row(s)", tostring(self.transport.route or "WAITING"), #(replica.rows or {})))
+        end
         return
     end
     if connection.isReadyForEvents ~= true and connection.sendEvent == nil then return end
@@ -509,6 +538,15 @@ function SG:publishAllFallback()
     for connection in pairs(self.fallbackSubscribers) do
         if connection ~= nil and connection.isConnected ~= false then self:publishTo(connection) end
     end
+end
+
+--- Republish the local player's detached view after a dirty mark (from update),
+--- on every route. The actor is resolved again at each publication.
+function SG:publishLocal()
+    local t = self.transport
+    if not t.localSubscribed or not t.localDirty or not self:isServer() or g_dedicatedServer ~= nil then return end
+    t.localDirty = false
+    self:publishTo(nil)
 end
 
 -- Client side of the fallback route: publications are applied in order.
