@@ -8,7 +8,19 @@
 // A test declares which real src files to load with a header line:
 //   --!load: src/config/Constants.lua, src/SoilFertilitySystem.lua
 //
+// A test may ask for the MOD'S OWN ENVIRONMENT with a second header line:
+//   --!env: modenv
+// The engine loads every mod chunk in its own environment (mods.lua:489-495): a
+// table whose __index is the real global table and, for a mod that is not a DLC,
+// whose _G is ITSELF. With this header the prelude and the tools/test/lua/ models
+// (the engine side) load in the real global table, and every src/ file and the test
+// itself load under `local _ENV` shaped exactly like that, so a source that reaches
+// an engine global the wrong way fails on the bench the way it fails in a game
+// (ported from FS25_SoilFertilizer's runner, where the same switch has run since
+// 2026-09).
+//
 // Usage:  node run-tests.mjs
+//         SG_TEST_ONLY=<file>[,<file>...] node run-tests.mjs   (only those test files)
 // Exit:   0 = all assertions passed, 1 = any failure or Lua load error.
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -25,6 +37,19 @@ function parseDeps(src) {
   if (!m) return [];
   return m[1].split(",").map((s) => s.trim()).filter(Boolean);
 }
+
+function wantsModEnv(src) {
+  return /--!env:\s*modenv\b/.test(src);
+}
+
+// The mod's own environment, as mods.lua:489-495 builds it. `_G` on the right-hand
+// side is evaluated before the local takes effect, so it is the real global table.
+const MOD_ENV_SWITCH = [
+  "-- <<< modEnv: the mod's own environment (mods.lua:489-495) >>>",
+  "local _ENV = setmetatable({}, { __index = _G })",
+  "_ENV._G = _ENV",
+  "",
+].join("\n");
 
 // Run one Lua program string, return { rc, out } with stdout captured.
 function runLua(program) {
@@ -45,7 +70,17 @@ function runLua(program) {
   return { rc, out, errMsg };
 }
 
-const testFiles = readdirSync(LUA_DIR).filter((f) => f.endsWith("_test.lua")).sort();
+// SG_TEST_ONLY=<file>[,<file>...] runs only the named test files (a targeted run, one
+// mutant against the files that load the code it changes). A name that matches no file
+// is an error, so a typo cannot pass as an empty green run.
+const only = (process.env.SG_TEST_ONLY || "").split(",").map((s) => s.trim()).filter(Boolean);
+const allTests = readdirSync(LUA_DIR).filter((f) => f.endsWith("_test.lua")).sort();
+const unknownOnly = only.filter((f) => !allTests.includes(f));
+if (unknownOnly.length > 0) {
+  console.log(c.red(`SG_TEST_ONLY names no such test file: ${unknownOnly.join(", ")}`));
+  process.exit(1);
+}
+const testFiles = only.length > 0 ? allTests.filter((f) => only.includes(f)) : allTests;
 if (testFiles.length === 0) {
   console.log(c.yellow("No *_test.lua files found in tools/test/lua/."));
   process.exit(0);
@@ -64,13 +99,23 @@ for (const tf of testFiles) {
   // function scope; the SG2-2 bench, the first to load everything main.lua sources
   // plus main.lua itself, passed Lua's 200-active-locals limit and could not load.
   const parts = [prelude];
+  const modEnv = wantsModEnv(testSrc);
+  let switched = false;
   for (const d of deps) {
+    if (modEnv && !switched && !d.startsWith("tools/")) {
+      parts.push(MOD_ENV_SWITCH);
+      switched = true;
+    }
     try {
       parts.push(`-- <<< ${d} >>>\ndo\n` + readFileSync(join(REPO_ROOT, d), "utf8") + `\nend`);
     } catch {
       console.log(c.red(`✗ ${tf}: cannot read declared dependency '${d}'`));
       hadError = true;
     }
+  }
+  if (modEnv && !switched) {
+    parts.push(MOD_ENV_SWITCH);
+    switched = true;
   }
   parts.push(`-- <<< test: ${tf} >>>\n` + testSrc);
   parts.push("\nT.summary()\n");

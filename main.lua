@@ -58,6 +58,9 @@ source(modDirectory .. "src/native/SGNativeSale.lua")
 source(modDirectory .. "src/native/SGCutState.lua")
 source(modDirectory .. "src/native/SGHarvestCapture.lua")
 source(modDirectory .. "src/native/SGCombineBufferSave.lua")
+-- SG2-4a: SG_NATIVE_MATERIAL_SAVE_V1 (the native save boundary) and the ground kind with its save.
+source(modDirectory .. "src/native/SGNativeMaterialSave.lua")
+source(modDirectory .. "src/native/SGGround.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
@@ -99,7 +102,7 @@ end
 local function installNativeKernel(mission)
     if mission == nil or mission.stockGuard == nil or type(mission.getIsServer) ~= "function" or not mission:getIsServer() then return end
     SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem,
-        Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil })
+        Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil, SavegameController = SavegameController })
     local host = SGNativeHost.new(mission.stockGuard, {
         placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
         vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,
@@ -107,6 +110,12 @@ local function installNativeKernel(mission)
     })
     local ok, why = host:install()
     print("[StockGuard] native kernel " .. (ok and "installed: native carrier adapter registered (storage and fill-unit kinds)" or ("not installed: " .. tostring(why))))
+    -- SG2-4a: the ground section and SG2's own save participant, then the boundary goes live.
+    local sg = stockGuardOf(mission)
+    if sg ~= nil and SGGround ~= nil then
+        local ground, whyGround = SGGround.attach(sg)
+        print("[StockGuard] native material save " .. (ground ~= nil and ("live: " .. SGNativeMaterialSave.PROFILE .. ", sg2Ground participant registered") or ("not live: " .. tostring(whyGround))))
+    end
 end
 
 StockGuardHooks = StockGuardHooks or {}
