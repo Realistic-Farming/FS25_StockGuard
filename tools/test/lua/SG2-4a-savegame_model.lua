@@ -8,7 +8,7 @@
 --   :328-333 addSaveTask and :334-343 executeSaveTask VERBATIM for the density-map task
 --   (the other task kinds are not modeled); :366-372 onSaveTaskComplete VERBATIM;
 --   :373-436 onSaveStartComplete with the career XML call (:384), the fruit and haulm
---   branch (:393-423) and the height branch (:556-568) VERBATIM, then executeSaveTask
+--   branch (:392-423) and the height branch (:556-568) VERBATIM, then executeSaveTask
 --   (:588-595); the weed, info-layer, navigation, growth, snow, split-shape, collision,
 --   occluder and metadata writes between them are OMITTED (none touches the career
 --   chain or the height map); :672-690 onSaveComplete with its directory and callback;

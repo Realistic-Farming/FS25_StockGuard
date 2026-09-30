@@ -11,7 +11,7 @@
 --
 --   THE ATTEMPT. SavegameController:onSaveStartComplete (:373) is wrapped on the class
 --   table; the engine reaches it by name (saveWriteSavegameStart(..., "onSaveStartComplete",
---   self), :730), so the call resolves through the class at call time. On a successful
+--   self), :726), so the call resolves through the class at call time. On a successful
 --   start (errorCode == Savegame.ERROR_OK with a staging directory, :375) one attempt is
 --   allocated from SG-1's own save counter (SGSave:openAttempt), so the StockGuard
 --   envelope written inside the chain carries the same attempt id, and every registered
@@ -31,7 +31,7 @@
 --   images, {mapId, nativeFilename}. Each image must be one the controller will save
 --   itself under that same map id: the controller saves one file per filename, the
 --   first id met in its own order (fruit planes and haulms in g_fruitTypeManager's
---   order, :393-423, then the height map, :556), so the set is rebuilt in that order
+--   order, :392-423, then the height map, :556), so the set is rebuilt in that order
 --   and a descriptor naming another id for a file, or a file the controller does not
 --   save, invalidates that participant. Only fruit, haulm and height images are
 --   supported (the bounded participant contract, not an open framework). An image, or
