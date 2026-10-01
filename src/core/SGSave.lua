@@ -191,7 +191,7 @@ function S:buildEnvelope(context)
         saveAttemptId = self.saveAttemptId,
         nativeSnapshotKey = self.nativeSnapshotKey,
         initializedSections = {},
-        coreValues = self.operations:serializeCore(),
+        coreValues = self.operations:serializeCore(self:sectionOwnedCarriers()),
         sections = {},
         nativeAssociations = { saveAttemptId = self.saveAttemptId, nativeSnapshotKey = self.nativeSnapshotKey },
     }
@@ -233,7 +233,7 @@ function S:buildEnvelope(context)
                 e.sections[pl.spec.sectionId] = { schemaVersion = pl.spec.schemaVersion, payload = {} }
                 table.insert(e.initializedSections, pl.spec.sectionId)
             end
-            setPath(e.sections[pl.spec.sectionId].payload, pl.spec.collectionPath, self.operations:serializePending())
+            setPath(e.sections[pl.spec.sectionId].payload, pl.spec.collectionPath, self.operations:serializePending(self:sectionOwnedCarriers()))
         end
     end
     table.sort(e.initializedSections)
@@ -242,6 +242,23 @@ function S:buildEnvelope(context)
     end
     self.lastEnvelope = e
     return e, failed
+end
+
+--- SG2-4b: the carriers a registered section persists itself (its ownsCarrier), or nil
+--- when no section claims any. A claim that errors claims nothing.
+function S:sectionOwnedCarriers()
+    local claims = {}
+    for _, lease in self.registry:each(SGRegistry.KIND_SAVE_SECTION) do
+        if type(lease.spec.ownsCarrier) == "function" then claims[#claims + 1] = lease.spec.ownsCarrier end
+    end
+    if #claims == 0 then return nil end
+    return function(carrierKey)
+        for _, claim in ipairs(claims) do
+            local ok, owned = pcall(claim, carrierKey)
+            if ok and owned == true then return true end
+        end
+        return false
+    end
 end
 
 --- SG2-4a: a native save attempt allocates its id from the envelope's own counter, so

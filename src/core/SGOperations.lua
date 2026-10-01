@@ -42,6 +42,7 @@ local isFinite = SGValues.isFinite
 local isInteger = SGValues.isInteger
 local nonempty = SGRecords.nonemptyString
 
+O.RETIRED_LIMIT = 256
 O.OUTCOME_COMMITTED = "COMMITTED"
 O.OUTCOME_NO_OP = "NO_OP"
 O.OUTCOME_UNRESOLVED = "UNRESOLVED"
@@ -62,7 +63,8 @@ function O.new(registry, loadEpoch)
     self.openHandles = {}          -- operationId -> handle (public part)
     self.handleState = {}          -- operationId -> { before, lease }
     self.retiredStocks = {}        -- stockId -> retired StockRecord (historical, bounded)
-    self.retiredLimit = 256
+    self.retiredLimit = O.RETIRED_LIMIT
+    self.retiredClasses = {}       -- SG2-4b: { name, owns(carrierKey) }, each its own budget
     self.pending = {}              -- carrierId -> pending record (the canonical collection)
     self.onChanged = nil           -- function(kind, id)
     self._deferred = nil           -- queued notifications during a replacement
@@ -217,16 +219,34 @@ end
 -- of a long session evicted every historical stock before touching an ordinary one,
 -- which is exactly the data loss B10 was opened for, moved to a longer session.
 -- Each set now gets its own budget and each is evicted oldest-first within itself.
+--
+-- SG2-4b: a member section that persists a class of carriers itself (the ground cells,
+-- SGGround) registers that class here, and its retired stocks get a budget of their own,
+-- ordinary and historical apart as above, so a mass restore mismatch on the ground can
+-- never evict a silo's or a trailer's unresolved history (SG-2 :259).
+local function retiredClassOf(self, s)
+    -- Classified once per retired record; setRetiredClass clears the marks.
+    if s.retiredClass ~= nil then return s.retiredClass end
+    local class = "core"
+    for _, c in ipairs(self.retiredClasses) do
+        local ok, owned = pcall(c.owns, s.carrierKey)
+        if ok and owned == true then class = c.name break end
+    end
+    s.retiredClass = class
+    return class
+end
+
 local function pruneRetired(self)
-    local ordinary, historical = 0, 0
+    local counts = {}
     for _, s in pairs(self.retiredStocks) do
-        if s.historical then historical = historical + 1 else ordinary = ordinary + 1 end
+        local key = retiredClassOf(self, s) .. (s.historical and ":historical" or ":ordinary")
+        counts[key] = (counts[key] or 0) + 1
     end
 
-    local function evictOldest(wantHistorical)
+    local function evictOldest(key)
         local oldest, oldestRev = nil, nil
         for id, s in pairs(self.retiredStocks) do
-            if (s.historical == true) == wantHistorical then
+            if retiredClassOf(self, s) .. (s.historical and ":historical" or ":ordinary") == key then
                 if oldestRev == nil or SGValues.compareDecimal(s.dataRevision, oldestRev) < 0 then
                     oldest, oldestRev = id, s.dataRevision
                 end
@@ -237,8 +257,18 @@ local function pruneRetired(self)
         return true
     end
 
-    while ordinary > self.retiredLimit and evictOldest(false) do ordinary = ordinary - 1 end
-    while historical > self.retiredLimit and evictOldest(true) do historical = historical - 1 end
+    for key, n in pairs(counts) do
+        while n > self.retiredLimit and evictOldest(key) do n = n - 1 end
+    end
+end
+
+--- SG2-4b: give the retired stocks of carriers `owns(carrierKey)` selects a budget of their own.
+function O:setRetiredClass(name, owns)
+    if type(name) ~= "string" or name == "" or name == "core" or type(owns) ~= "function" then return false end
+    for _, s in pairs(self.retiredStocks) do s.retiredClass = nil end
+    for _, c in ipairs(self.retiredClasses) do if c.name == name then c.owns = owns return true end end
+    self.retiredClasses[#self.retiredClasses + 1] = { name = name, owns = owns }
+    return true
 end
 
 local function retireStock(self, stock, reason)
@@ -1328,9 +1358,12 @@ end
 
 --- Canonical serialized collection (sorted rows keyed by the lossless
 --- carrier key token encoding).
-function O:serializePending()
+function O:serializePending(exclude)
     local ids = {}
-    for id in pairs(self.pending) do ids[#ids + 1] = id end
+    for id in pairs(self.pending) do
+        local carrier = self.carriers[id]
+        if exclude == nil or carrier == nil or not exclude(carrier.binding.carrierKey) then ids[#ids + 1] = id end
+    end
     table.sort(ids)
     local rows = {}
     for _, id in ipairs(ids) do
@@ -1675,10 +1708,14 @@ local function serializeStock(s)
     }
 end
 
-function O:serializeCore()
+--- The saved records of the carriers `pick(carrierKey)` selects (nil selects all): the
+--- carrier rows, their live stocks and the unresolved historical stocks, in id order.
+function O:collectRecords(pick)
     local carriers = {}
     local ids = {}
-    for id in pairs(self.carriers) do ids[#ids + 1] = id end
+    for id, c in pairs(self.carriers) do
+        if pick == nil or pick(c.binding.carrierKey) then ids[#ids + 1] = id end
+    end
     table.sort(ids)
     for _, id in ipairs(ids) do
         local c = self.carriers[id]
@@ -1687,17 +1724,29 @@ function O:serializeCore()
     end
     local stocks = {}
     local sids = {}
-    for id in pairs(self.stocks) do sids[#sids + 1] = id end
+    for id, s in pairs(self.stocks) do
+        if pick == nil or pick(s.carrierKey) then sids[#sids + 1] = id end
+    end
     table.sort(sids)
     for _, id in ipairs(sids) do stocks[#stocks + 1] = serializeStock(self.stocks[id]) end
     -- Unresolved historical stocks (carrier absent or mismatched at the last
     -- load) travel until a load resolves them; bounded by the retired limit.
     local historical = {}
     local hids = {}
-    for id, s in pairs(self.retiredStocks) do if s.historical then hids[#hids + 1] = id end end
+    for id, s in pairs(self.retiredStocks) do
+        if s.historical and (pick == nil or pick(s.carrierKey)) then hids[#hids + 1] = id end
+    end
     table.sort(hids)
     for _, id in ipairs(hids) do historical[#historical + 1] = serializeStock(self.retiredStocks[id]) end
-    return { schemaVersion = 2, revision = self.revision, nextStock = self.nextStock, carriers = carriers, stocks = stocks, historical = historical }
+    return { carriers = carriers, stocks = stocks, historical = historical }
+end
+
+--- SG_SAVE_2.coreValues. SG2-4b: `exclude(carrierKey)` names the carriers a member save
+--- section persists itself (the ground cells, in extensions.sg2Ground's payload, SG-2
+--- :563); their carriers, stocks and history stay out of the ordinary envelope.
+function O:serializeCore(exclude)
+    local r = self:collectRecords(exclude ~= nil and function(k) return not exclude(k) end or nil)
+    return { schemaVersion = 2, revision = self.revision, nextStock = self.nextStock, carriers = r.carriers, stocks = r.stocks, historical = r.historical }
 end
 
 local function validateSavedStock(s, i, label, carrierIds)

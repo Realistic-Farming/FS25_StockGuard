@@ -63,6 +63,9 @@ source(modDirectory .. "src/native/SGCombineBufferSave.lua")
 -- SG2-4a: SG_NATIVE_MATERIAL_SAVE_V1 (the native save boundary) and the ground kind with its save.
 source(modDirectory .. "src/native/SGNativeMaterialSave.lua")
 source(modDirectory .. "src/native/SGGround.lua")
+-- SG2-4b: the ground cell sampler and the ground observer (the line bracket, the tip, the deferrals).
+source(modDirectory .. "src/native/SGGroundSampler.lua")
+source(modDirectory .. "src/native/SGGroundObserver.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
@@ -110,11 +113,13 @@ local function installNativeKernel(mission)
     if mission == nil or mission.stockGuard == nil or type(mission.getIsServer) ~= "function" or not mission:getIsServer() then return end
     SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem,
         Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil, SavegameController = SavegameController,
-        Dischargeable = Dischargeable })
+        Dischargeable = Dischargeable, Leveler = Leveler, Shovel = Shovel })
     local host = SGNativeHost.new(mission.stockGuard, {
         placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
         vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,
         storageSystem = function() return mission.storageSystem end,
+        -- SG2-4b: the ground of this mission (attached below), for the ground carrier kind.
+        ground = function() local sg = stockGuardOf(mission) return sg ~= nil and sg.ground or nil end,
     })
     local ok, why = host:install()
     print("[StockGuard] native kernel " .. (ok and "installed: native carrier adapter registered (storage and fill-unit kinds)" or ("not installed: " .. tostring(why))))
