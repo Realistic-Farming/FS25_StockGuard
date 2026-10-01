@@ -19,6 +19,8 @@
 #   - the WHEEL frame's replay of held observations: a wheel brush moves no fill unit;
 #   - a removal that gains or changes type (the area's fault path): no native caller of the
 #     three removal methods can, so only a foreign writer between the reads could;
+#   - the walk's bound in anyTracked (walking past the box's area): it changes the cost, never
+#     the answer;
 #   - logging and logOnce text.
 #
 # EQUIVALENT, run and kept in the list so they stay visible:
@@ -27,6 +29,8 @@
 #     Leveler :206 and :236 before :264), and its report settles the operation first. The early
 #     settle guards a foreign or future order.
 #   - B08 (any frame admitted as a worked patch): no native caller smooths inside a TIP or DROP frame.
+#   - B27 (an outer frame's pending line settled inside a wheel call): no native caller runs a
+#     wheel call inside a Shovel or Leveler WORK frame.
 #   - A06 (the area's own untracked check): the shared read already returns nothing when no
 #     tracked cell is in the envelope (B03 kills that one).
 #   - A11 (a clear retires the whole cell): every native clear empties the cells it covers.
@@ -64,8 +68,8 @@ MUTATIONS = [
   [("    if tracked == nil or next(tracked) == nil then return false end\n", "    if true then return false end\n", 1)],
   "no brush is ever read (E3)"),
  ("B05-anytracked-scan-misses", BR,
-  [("                if tracked[SGGround.cellKey(x, z)] ~= nil then return true end\n", "", 1)],
-  "the small-envelope scan never finds a tracked cell (E3)"),
+  [("        if x ~= nil and x >= x0 and x <= x1 and z >= z0 and z <= z1 then return true end\n", "", 1)],
+  "the walk of the tracked index never finds a tracked cell (E3, T1)"),
  ("B06-work-as-wheel", BR,
   [("    if gf.kind == G.WORK then profile = B.WORKED_PATCH\n", "    if gf.kind == G.WORK then profile = B.WHEEL_REDISTRIBUTION\n", 1)],
   "a shovel or leveler brush is not a worked patch: unchanged core cells keep their facts (E3, E5)"),
@@ -113,7 +117,7 @@ MUTATIONS = [
   [("        B.stats.unframed = B.stats.unframed + 1\n        G.reconcileChanges(host, pre.sampler, changes)\n", "        B.stats.unframed = B.stats.unframed + 1\n", 1)],
   "an unframed brush leaves its tracked cells stale (U1)"),
  ("B20-no-wheel-frame", BR,
-  [("        local okOpen, result = pcall(B.openWheelFrame, host, self.vehicle)\n", "        local okOpen, result = true, nil\n", 1)],
+  [("        local okOpen, result = pcall(B.openWheelFrame, host, entry.vehicle)\n", "        local okOpen, result = true, nil\n", 1)],
   "a wheel brush runs unframed (H1)"),
  ("B21-no-wheel-class", MAIN,
   [(", WheelDestruction = WheelDestruction })", ", WheelDestruction = nil })", 1)],
@@ -126,9 +130,22 @@ MUTATIONS = [
   [("    if SGGroundBrush ~= nil then SGGroundBrush.remove() end\n", "", 1)],
   "the brush bracket outlives the mission (L1)"),
  ("B24-pending-settle-after-capture", BR,
-  [("    local wgf = G.currentFrame(host)\n    if wgf ~= nil then G.settlePending(host, wgf, true) end\n    local gf = B.currentFrame(host)\n",
-    "    local gf = B.currentFrame(host)\n", 1)],
+  [("    local wgf = (not inWheel) and G.currentFrame(host) or nil\n    if wgf ~= nil then G.settlePending(host, wgf, true) end\n    local gf = (not inWheel) and B.currentFrame(host) or nil\n",
+    "    local gf = (not inWheel) and B.currentFrame(host) or nil\n", 1)],
   "the frame's pending line is not settled before the brush is read (K9)"),
+ ("B25-eager-wheel-frame", BR,
+  [("        B.wheelStack[#B.wheelStack + 1] = entry\n",
+    "        B.wheelStack[#B.wheelStack + 1] = entry\n        local eagerHost = SGNativeHost ~= nil and SGNativeHost.current or nil\n        if eagerHost ~= nil then B.lazyWheelFrame(eagerHost) end\n", 1)],
+  "every wheel call opens its WHEEL frame at once, brush or no brush (H6, H7)"),
+ ("B26-wheel-stack-not-popped", BR,
+  [("            if table.remove(B.wheelStack, i) == entry then break end\n", "            if B.wheelStack[i] == entry then break end\n", 1)],
+  "a finished wheel call stays on the stack (H8)"),
+ ("B27-outer-settle-in-wheel", BR,
+  [("    local wgf = (not inWheel) and G.currentFrame(host) or nil\n", "    local wgf = G.currentFrame(host)\n", 1)],
+  "equivalent unless a wheel call runs inside a WORK frame (no native caller does)"),
+ ("B28-anytracked-no-box-fallback", BR,
+  [("    if walked <= area then return false end\n", "    do return false end\n", 1)],
+  "an index larger than the box answers no without reading the box (T2)"),
  # ── the polygon methods ─────────────────────────────────────────────────────
  ("A01-restore-observed", AR,
   [("    if not host.ready or host.nativeLease == nil then return nil end\n    R.stats.calls = R.stats.calls + 1\n",

@@ -78,6 +78,7 @@ B.WORKED_PATCH = "NATIVE_WORKED_PATCH_V1"
 B.WHEEL_REDISTRIBUTION = "NATIVE_WHEEL_REDISTRIBUTION_V1"
 
 B.bracket = B.bracket          -- { table, original, wrapper } while ours is in the chain
+B.wheelStack = {}              -- the wheel calls in progress, innermost last: { vehicle, host, frame }
 B.stats = B.stats or { brushes = 0, untracked = 0, unframed = 0, settled = 0, abandoned = 0, unobserved = {}, faults = {}, refused = {} }
 B.logged = B.logged or {}
 
@@ -142,23 +143,27 @@ end
 -- ---------------------------------------------------------
 -- Shared with the area methods
 -- ---------------------------------------------------------
---- Does the rectangle hold a tracked cell? Answers from whichever side is smaller.
+--- Does the rectangle hold a tracked cell? Answers from whichever side is smaller, with
+--- no count kept anywhere: the tracked index is walked at most as far as the rectangle's
+--- area, and only an index larger than that falls back to the rectangle's own pixels
+--- (Bob's #27 MINOR: a fixed threshold built a key per pixel of every field-tool clear).
 function B.anyTracked(sampler, x0, z0, x1, z1)
     local tracked = sampler.tracked
     if tracked == nil or next(tracked) == nil then return false end
     local area = (x1 - x0 + 1) * (z1 - z0 + 1)
-    if area <= 4096 then
-        for z = z0, z1 do
-            for x = x0, x1 do
-                if tracked[SGGround.cellKey(x, z)] ~= nil then return true end
-            end
-        end
-        return false
-    end
+    local walked = 0
     for key in pairs(tracked) do
+        walked = walked + 1
+        if walked > area then break end
         local x, z = key:match("^(-?%d+):(-?%d+)$")
         x, z = tonumber(x), tonumber(z)
         if x ~= nil and x >= x0 and x <= x1 and z >= z0 and z <= z1 then return true end
+    end
+    if walked <= area then return false end
+    for z = z0, z1 do
+        for x = x0, x1 do
+            if tracked[SGGround.cellKey(x, z)] ~= nil then return true end
+        end
     end
     return false
 end
@@ -261,11 +266,15 @@ end
 --- Before the native brush. Returns the record, or nil when it is not observed.
 function B.beforeBrush(host, call)
     if not host.ready or host.nativeLease == nil then return nil end
+    -- Inside a wheel call the brush belongs to that call's WHEEL frame, which does not exist
+    -- yet: it opens below, only once the brush reaches a tracked cell. Until then it is the
+    -- innermost frame in all but name, so no outer frame settles or counts for it.
+    local inWheel = B.wheelStack[#B.wheelStack] ~= nil
     -- A pending line operation of the frame has seen its unit side land: it settles first,
     -- so the brush never joins its pool (:251).
-    local wgf = G.currentFrame(host)
+    local wgf = (not inWheel) and G.currentFrame(host) or nil
     if wgf ~= nil then G.settlePending(host, wgf, true) end
-    local gf = B.currentFrame(host)
+    local gf = (not inWheel) and B.currentFrame(host) or nil
     local sampler, whyS = host:groundSampler()
     if sampler == nil then count(B.stats.unobserved, whyS) return nil end
     local reach = math.max(isFinite(call.radius) and call.radius or 0, isFinite(call.outerRadius) and call.outerRadius or 0)
@@ -276,6 +285,7 @@ function B.beforeBrush(host, call)
     local x0, z0, x1, z1 = sampler:lineEnvelope(call.x, call.z, call.x, call.z, 0, reach)
     local pre = B.readBefore(host, B.stats, gf, x0, z0, x1, z1)
     if pre == nil then return nil end
+    if inWheel then gf = B.lazyWheelFrame(host) end
     pre.call = call
     if gf ~= nil then
         local profile, refused = B.admit(gf, call)
@@ -493,21 +503,45 @@ function B.closeWheelFrame(host, frame)
     for _, obs in ipairs(frame.observations) do host:replayObservation(obs) end
 end
 
---- Around the native smoothHeightAtPosition: a WHEEL frame for the wheel's vehicle.
+--- Around the native smoothHeightAtPosition. The engine calls it for every destruction
+--- node of every moving vehicle, each update (WheelDestruction.lua:67-80), and its own
+--- height-type gate is inside (:108-109), so most calls move nothing StockGuard holds. The
+--- call is only pushed here; B.beforeBrush opens its WHEEL frame once a brush in it reaches
+--- a tracked cell (Bob's #27 cost MAJOR), and the frame closes when the call returns.
 function B.wheelAround(original, self, ...)
-    local host = SGNativeHost ~= nil and SGNativeHost.current or nil
-    local frame = nil
-    if host ~= nil and g_server ~= nil and type(self) == "table" then
-        local okOpen, result = pcall(B.openWheelFrame, host, self.vehicle)
-        if okOpen then frame = result else logOnce("wheelOpen", "wheel frame failed to open (" .. tostring(result) .. ")") end
+    local entry = nil
+    if g_server ~= nil and type(self) == "table" then
+        entry = { vehicle = self.vehicle }
+        B.wheelStack[#B.wheelStack + 1] = entry
     end
     local n, r = packn(pcall(original, self, ...))
-    if frame ~= nil then
-        local okClose, err = pcall(B.closeWheelFrame, host, frame)
-        if not okClose then logOnce("wheelClose", "wheel frame failed to close (" .. tostring(err) .. ")") end
+    if entry ~= nil then
+        for i = #B.wheelStack, 1, -1 do
+            if table.remove(B.wheelStack, i) == entry then break end
+        end
+        if entry.frame ~= nil then
+            local okClose, err = pcall(B.closeWheelFrame, entry.host, entry.frame)
+            if not okClose then logOnce("wheelClose", "wheel frame failed to close (" .. tostring(err) .. ")") end
+        end
     end
     if not r[1] then error(r[2], 0) end
     return unpack(r, 2, n)
+end
+
+--- The WHEEL frame of the innermost wheel call, opened now if it is not yet. Returns the
+--- frame's ground state, or nil when no frame could open (the brush is then unframed).
+function B.lazyWheelFrame(host)
+    local entry = B.wheelStack[#B.wheelStack]
+    if entry == nil then return nil end
+    if entry.frame == nil then
+        local okOpen, result = pcall(B.openWheelFrame, host, entry.vehicle)
+        if okOpen then
+            entry.frame, entry.host = result, host
+        else
+            logOnce("wheelOpen", "wheel frame failed to open (" .. tostring(result) .. ")")
+        end
+    end
+    return entry.frame ~= nil and entry.frame.ground or nil
 end
 
 --- The WheelDestruction class slot smoothHeightAtPosition, called through `self:` from

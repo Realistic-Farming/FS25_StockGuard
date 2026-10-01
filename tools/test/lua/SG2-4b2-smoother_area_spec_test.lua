@@ -395,7 +395,40 @@ group("H", function()
         tostring(fresh.smoothHeightAtPosition == wW and recAgain.wrapper == wW and recAgain.original == oW and oW ~= wW), "true")
     ENGINE_WHEEL_SMOOTH(ENGINE_NEW_WHEEL(w.leveler), 10, 10)
     T.eq("H5 and its brush settles in that frame", last(host), "GROUND_NATIVE_WHEEL_REDISTRIBUTION_V1/COMMITTED")
+    -- Ordinary traffic (Bob's #27 cost MAJOR): the engine calls the slot for every node of every
+    -- moving vehicle, so a wheel that reaches no tracked cell must open no frame at all.
+    local fx, fz = CX + 60, CZ + 60
+    ENGINE_GROUND.put(fx, fz, ENGINE_HT.WHEAT.index, 40)
+    local wd2 = ENGINE_NEW_WHEEL(w.leveler)
+    local s0, d0, f0, g0, u0 = ENGINE_GROUND.smoothCalls, host.nextDischarge, host.lastGroundFrame, groundCount(sg), B.stats.untracked
+    local wx, wz = centreOf(fx, fz)
+    ENGINE_WHEEL_SMOOTH(wd2, wx, wz)
+    T.eq("H6 a wheel's brush over material StockGuard holds nothing for (laid by the map, untracked): the brush runs, no WHEEL frame opens, nothing binds",
+        tostring(ENGINE_GROUND.smoothCalls - s0) .. "/" .. tostring(host.nextDischarge - d0) .. "/" .. tostring(host.lastGroundFrame == f0)
+            .. "/" .. tostring(groundCount(sg) - g0) .. "/" .. tostring(B.stats.untracked - u0),
+        "1/0/true/0/1")
+    local bx, bz = centreOf(CX - 60, CZ - 60)
+    s0, d0 = ENGINE_GROUND.smoothCalls, host.nextDischarge
+    ENGINE_WHEEL_SMOOTH(wd2, bx, bz)
+    T.eq("H7 a wheel over bare ground, where the engine's own gate runs no brush: no WHEEL frame opens",
+        tostring(ENGINE_GROUND.smoothCalls - s0) .. "/" .. tostring(host.nextDischarge - d0), "0/0")
+    T.eq("H8 every wheel call leaves the stack as it found it", #B.wheelStack, 0)
     FSBaseMission.delete(m)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- T. WHICH SIDE ANSWERS anyTracked (Bob's #27 MINOR): the smaller, with no count kept
+-- ══════════════════════════════════════════════════════════════════════════
+group("T", function()
+    local function index(n)
+        local t = {}
+        for i = 1, n do t[SGGround.cellKey(i * 10, 0)] = "cell" .. i end
+        return { tracked = t }
+    end
+    T.eq("T1 an index smaller than the box is walked: a tracked cell inside answers yes, none inside answers no",
+        tostring(B.anyTracked(index(2), 9, -1, 11, 1)) .. "/" .. tostring(B.anyTracked(index(2), 0, 5, 2, 7)), "true/false")
+    T.eq("T2 an index larger than the box (40 cells, a 3 x 3 box) falls back to the box's own pixels, both ways",
+        tostring(B.anyTracked(index(40), 399, -1, 401, 1)) .. "/" .. tostring(B.anyTracked(index(40), 0, 5, 2, 7)), "true/false")
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
