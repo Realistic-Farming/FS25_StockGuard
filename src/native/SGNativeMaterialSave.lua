@@ -96,7 +96,7 @@ M.CAPABILITY = 1
 M.READY = "READY"
 M.UNAVAILABLE = "UNAVAILABLE"
 M.PENDING = "PENDING"
-M.CLASS_MARKER = "_sgNativeMaterialSave"
+M.HOOK_ID = "nativeMaterialSave"
 M.GUARDED_GLOBAL = "prepareSaveDensityMapToFile"
 M.SUPPORTED_IMAGES = { FRUIT = true, HAULM = true, HEIGHT = true }
 
@@ -579,16 +579,12 @@ local function aroundSaveComplete(original, controller, errorCode, finalSavegame
     return original(controller, errorCode, finalSavegameDirectory, ...)
 end
 
+--- One wrapper per class and name for the process, rebound by every install (SGClassHook,
+--- MAINTENANCE row 187): after a mods reload the live wrapper runs this module's code and
+--- reads this module's M.current.
 local function wrapClass(class, name, around)
     if type(class) ~= "table" or type(class[name]) ~= "function" then return false end
-    local marks = rawget(class, M.CLASS_MARKER) or {}
-    rawset(class, M.CLASS_MARKER, marks)
-    if marks[name] ~= nil then return false end
-    local original = class[name]
-    local wrapper = function(self, ...) return around(original, self, ...) end
-    class[name] = wrapper
-    marks[name] = { original = original, wrapper = wrapper }
-    return true
+    return SGClassHook.wrap(class, name, M.HOOK_ID, around, M) ~= false
 end
 
 --- Install on the injected classes: SavegameController's start and result, and the
@@ -602,8 +598,9 @@ function M.installClassHooks(classes)
     if type(SC) == "table" and type(SC.onSaveStartComplete) == "function" and type(SC.onSaveComplete) == "function" then
         wrapClass(SC, "onSaveStartComplete", aroundSaveStart)
         wrapClass(SC, "onSaveComplete", aroundSaveComplete)
-        local marks = rawget(SC, M.CLASS_MARKER)
-        M.hooks.controller = marks ~= nil and marks.onSaveStartComplete ~= nil and marks.onSaveComplete ~= nil
+        -- A wrapper that dispatches to THIS module, never merely "a mark exists".
+        M.hooks.controller = SGClassHook.boundTo(SC, "onSaveStartComplete", M.HOOK_ID, M)
+            and SGClassHook.boundTo(SC, "onSaveComplete", M.HOOK_ID, M)
     end
     wrapClass(classes.Combine, "onUpdateTick", function(original, self, ...)
         if M.hold("Combine.onUpdateTick", original, self, ...) then return end

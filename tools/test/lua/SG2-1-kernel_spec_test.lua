@@ -7,7 +7,7 @@
 -- reaches the code. A fixture that falls out early reports "refused" exactly like
 -- a working guard, so a negative assertion is worth only what its twin proves.
 --
---!load: src/core/SGValues.lua, src/native/SGOperationContext.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua
+--!load: src/core/SGClassHook.lua, src/core/SGValues.lua, src/native/SGOperationContext.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua
 
 local C  = SGOperationContext
 local SB = SGStorageBracket
@@ -159,7 +159,9 @@ end
 do
     local S = newStorageClass()
     SB.install(S, nil)
-    T.eq("B10 a second install is refused rather than stacking", (SB.install(S, nil)), false)
+    local first = S.setFillLevel
+    local ok2, how2 = SB.install(S, nil)
+    T.eq("B10 a second install rebinds the one wrapper rather than stacking (MAINTENANCE row 187)", tostring(ok2) .. "/" .. tostring(how2) .. "/" .. tostring(S.setFillLevel == first), "true/REBOUND/true")
 
     T.eq("B11 teardown restores our own brackets", (SB.uninstall(S)), true)
     T.eq("B12 and a second teardown reports nothing to do", (SB.uninstall(S)), false)

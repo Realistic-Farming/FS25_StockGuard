@@ -27,6 +27,8 @@ StockGuardModDirectory = StockGuardModDirectory
 StockGuardModName = StockGuardModName or g_currentModName or "FS25_StockGuard"
 local modDirectory = StockGuardModDirectory
 
+-- MAINTENANCE row 187: one rebindable hook per engine method, before every module that hooks.
+source(modDirectory .. "src/core/SGClassHook.lua")
 source(modDirectory .. "src/capacity/SGSha256.lua")
 source(modDirectory .. "src/capacity/SGCanonicalProfile.lua")
 source(modDirectory .. "src/capacity/SGWireFormats.lua")
@@ -86,9 +88,14 @@ local function onMissionLoad(mission)
         sg:installFinishedLoadingObserver()
     end
 end
-if Mission00 ~= nil and Mission00.load ~= nil and not SGCapacity._missionLoadAppended then
-    SGCapacity._missionLoadAppended = true   -- once per process, even if this file is re-sourced
-    Mission00.load = Utils.appendedFunction(Mission00.load, onMissionLoad)
+-- MAINTENANCE row 187: every engine hook below is one SGClassHook record per process. A
+-- mods reload sources this file again (on PC into a fresh environment, mods.lua:482-493),
+-- and each install REBINDS its record, so one copy runs, this file's newest. A record is
+-- never an Utils.appendedFunction closure: those cannot be unlinked once made.
+StockGuardHooks = StockGuardHooks or {}
+StockGuardHooks.ID = "stockGuardMain"
+if Mission00 ~= nil and Mission00.load ~= nil then
+    SGClassHook.append(Mission00, "load", StockGuardHooks.ID, onMissionLoad, StockGuard)
 end
 
 local function stockGuardOf(mission)
@@ -102,7 +109,8 @@ end
 local function installNativeKernel(mission)
     if mission == nil or mission.stockGuard == nil or type(mission.getIsServer) ~= "function" or not mission:getIsServer() then return end
     SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem,
-        Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil, SavegameController = SavegameController })
+        Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil, SavegameController = SavegameController,
+        Dischargeable = Dischargeable })
     local host = SGNativeHost.new(mission.stockGuard, {
         placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
         vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,
@@ -118,44 +126,42 @@ local function installNativeKernel(mission)
     end
 end
 
-StockGuardHooks = StockGuardHooks or {}
-if not StockGuardHooks.installed then
-    StockGuardHooks.installed = true
+do
     if Mission00 ~= nil and Mission00.loadMission00Finished ~= nil then
-        Mission00.loadMission00Finished = Utils.appendedFunction(Mission00.loadMission00Finished, function(mission)
+        SGClassHook.append(Mission00, "loadMission00Finished", StockGuardHooks.ID, function(mission)
             local sg = stockGuardOf(mission)
             if sg ~= nil then
                 pcall(sg.onLoadMission00Finished, sg)
                 local ok, err = pcall(installNativeKernel, mission)
                 if not ok then print("[StockGuard] native kernel install failed: " .. tostring(err)) end
             end
-        end)
+        end, StockGuard)
     end
     if FSBaseMission ~= nil and FSBaseMission.delete ~= nil then
-        FSBaseMission.delete = Utils.prependedFunction(FSBaseMission.delete, function(mission)
+        SGClassHook.prepend(FSBaseMission, "delete", StockGuardHooks.ID, function(mission)
             if SGNativeHost ~= nil and SGNativeHost.current ~= nil then pcall(SGNativeHost.current.teardown, SGNativeHost.current) end
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.delete, sg) end
-        end)
+        end, StockGuard)
     end
     if FSBaseMission ~= nil and FSBaseMission.update ~= nil then
-        FSBaseMission.update = Utils.appendedFunction(FSBaseMission.update, function(mission, dt)
+        SGClassHook.append(FSBaseMission, "update", StockGuardHooks.ID, function(mission, dt)
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.update, sg, dt) end
             if SGNativeHost ~= nil and SGNativeHost.current ~= nil and sg ~= nil then pcall(SGNativeHost.current.update, SGNativeHost.current, dt) end
-        end)
+        end, StockGuard)
     end
     if FSBaseMission ~= nil and FSBaseMission.onConnectionClosed ~= nil then
-        FSBaseMission.onConnectionClosed = Utils.prependedFunction(FSBaseMission.onConnectionClosed, function(mission, connection, reason)
+        SGClassHook.prepend(FSBaseMission, "onConnectionClosed", StockGuardHooks.ID, function(mission, connection, reason)
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.onConnectionClosed, sg, connection) end
-        end)
+        end, StockGuard)
     end
     if FSCareerMissionInfo ~= nil and FSCareerMissionInfo.saveToXMLFile ~= nil then
-        FSCareerMissionInfo.saveToXMLFile = Utils.appendedFunction(FSCareerMissionInfo.saveToXMLFile, function(missionInfo)
+        SGClassHook.append(FSCareerMissionInfo, "saveToXMLFile", StockGuardHooks.ID, function(missionInfo)
             local sg = stockGuardOf(g_currentMission)
             if sg ~= nil then pcall(sg.onSaveToXML, sg, missionInfo) end
-        end)
+        end, StockGuard)
     end
 end
 

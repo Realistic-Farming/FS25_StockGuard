@@ -57,7 +57,7 @@ HC.DRAIN_FRAME = "COMBINE_DRAIN"
 HC.PATH_CUT = "COMBINE_CUT"
 HC.PATH_DRAIN = "COMBINE_DRAIN"
 HC.PATH_STRAW = "COMBINE_STRAW_ROTATION"
-HC.CLASS_MARKER = "_sgHarvestHooked"
+HC.HOOK_ID = "harvestCapture"
 HC.currentCutter = nil   -- the cutter whose end-of-processing is calling its combine
 HC.activeEntry = nil     -- the witness entry of the cutter call now running (SG2-3b)
 
@@ -471,14 +471,7 @@ end
 -- ---------------------------------------------------------
 local function wrapWithSelf(class, name, around)
     if type(class) ~= "table" or type(class[name]) ~= "function" then return false end
-    local marks = rawget(class, HC.CLASS_MARKER) or {}
-    rawset(class, HC.CLASS_MARKER, marks)
-    if marks[name] ~= nil then return false end
-    local original = class[name]
-    local wrapper = function(self, ...) return around(original, self, ...) end
-    class[name] = wrapper
-    marks[name] = { original = original, wrapper = wrapper }
-    return true
+    return SGClassHook.wrap(class, name, HC.HOOK_ID, around, HC) == "INSTALLED"
 end
 
 --- Install once per process. Cutter and Combine are injected so the bench runs these

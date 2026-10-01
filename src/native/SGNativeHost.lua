@@ -986,24 +986,21 @@ function H.dispatchDischargeClose(token, ok)
     if not okC then log("onDischargeClose failed (" .. tostring(err) .. ")") end
 end
 
-H.HOOK_MARKER = "_sgNativeHostHooked"
+H.HOOK_ID = "nativeHost"
 
 --- Wrap one class method, preserving arguments and every return. `after` sees the
---- returns; `before` runs first. Idempotent per class and name.
+--- returns; `before` runs first. One wrapper per class and name for the process
+--- (SGClassHook, MAINTENANCE row 187): a later install, this module's or a re-sourced
+--- one's after a mods reload, rebinds it, so dispatch reaches the module that installed
+--- last instead of the one that made the wrapper.
 local function wrapClassMethod(class, name, before, after)
     if type(class) ~= "table" or type(class[name]) ~= "function" then return false end
-    class[H.HOOK_MARKER] = class[H.HOOK_MARKER] or {}
-    if class[H.HOOK_MARKER][name] ~= nil then return false end
-    local original = class[name]
-    local wrapper = function(self, ...)
+    return SGClassHook.wrap(class, name, H.HOOK_ID, function(original, self, ...)
         if before ~= nil then before(...) end
         local n, r = packn(original(self, ...))
         if after ~= nil then after(r, ...) end
         return unpack(r, 1, n)
-    end
-    class[name] = wrapper
-    class[H.HOOK_MARKER][name] = { original = original, wrapper = wrapper }
-    return true
+    end, H) ~= false
 end
 H.wrapClassMethod = wrapClassMethod
 
@@ -1013,6 +1010,9 @@ H.wrapClassMethod = wrapClassMethod
 function H.installClassHooks(classes)
     if g_server == nil then return false, "CLIENT" end
     classes = classes or {}
+    -- MAINTENANCE row 187: the native dischargeToObject from the live class at each
+    -- mission's install; the engine builds a new Dischargeable at every savegame start.
+    if SGDischargeCapture ~= nil then SGDischargeCapture.setNative(classes.Dischargeable) end
     if classes.Storage ~= nil then SGStorageBracket.install(classes.Storage, H.dispatchStorageChange) end
     -- SG2-3: the cutter frame and the combine drains are class events (mechanism 3).
     if SGHarvestCapture ~= nil then SGHarvestCapture.installClassHooks({ Cutter = classes.Cutter, Combine = classes.Combine, FSDensityMapUtil = classes.FSDensityMapUtil }) end

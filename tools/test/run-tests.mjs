@@ -42,6 +42,54 @@ function wantsModEnv(src) {
   return /--!env:\s*modenv\b/.test(src);
 }
 
+// A test may ask for a MODS RELOAD with a third header line (MAINTENANCE row 187):
+//   --!reload: src/StockGuard.lua, ..., main.lua
+// The named files are embedded as text, and ENGINE_RELOAD_MODS(mode) sources them again,
+// each as its own chunk, the way reloadDlcsAndMods does at the main menu
+// (mods.lua:1173-1211, then loadModDesc :482-493 and loadMod :976-1000). The engine's own
+// scripts (the tools/ models) are not sourced again, as a mods reload leaves them.
+//   mode "fresh"  PC: a NEW environment, { __index = the real global table, _G = itself }
+//                 (mods.lua:482, :489-493). Every module table and flag starts over.
+//   mode "same"   console: the SAME environment table is reused (mods.lua:483-485), so
+//                 module tables and their flags survive, while chunk locals start over.
+// It returns the environment the files ran in.
+function parseReload(src) {
+  const m = src.match(/--!reload:\s*(.+)/);
+  if (!m) return [];
+  return m[1].split(",").map((s) => s.trim()).filter(Boolean);
+}
+function longBracket(text) {
+  let eq = "=";
+  while (text.includes("]" + eq + "]")) eq += "=";
+  return ["[" + eq + "[\n", "]" + eq + "]"];
+}
+function reloadPart(files) {
+  const entries = files.map((f) => {
+    const text = readFileSync(join(REPO_ROOT, f), "utf8");
+    const [open, close] = longBracket(text);
+    return `  { name = ${JSON.stringify(f)}, text = ${open}${text}${close} },`;
+  });
+  return [
+    "-- <<< reload: the mod sourced again by a mods reload (mods.lua:1173-1211) >>>",
+    "local ENGINE_RELOAD_SOURCES = {",
+    ...entries,
+    "}",
+    "function ENGINE_RELOAD_MODS(mode)",
+    "  local env",
+    "  if mode == 'same' then env = _ENV",
+    "  elseif mode == 'fresh' then env = setmetatable({}, { __index = getmetatable(_ENV).__index }); env._G = env",
+    "  else error('ENGINE_RELOAD_MODS: mode must be fresh or same') end",
+    "  for _, s in ipairs(ENGINE_RELOAD_SOURCES) do",
+    "    local chunk, err = load(s.text, '=' .. s.name, 't', env)",
+    "    if chunk == nil then error('reload ' .. s.name .. ': ' .. tostring(err)) end",
+    "    chunk()",
+    "  end",
+    "  return env",
+    "end",
+    "",
+  ].join("\n");
+}
+
 // The mod's own environment, as mods.lua:489-495 builds it. `_G` on the right-hand
 // side is evaluated before the local takes effect, so it is the real global table.
 const MOD_ENV_SWITCH = [
@@ -116,6 +164,21 @@ for (const tf of testFiles) {
   if (modEnv && !switched) {
     parts.push(MOD_ENV_SWITCH);
     switched = true;
+  }
+  const reloadFiles = parseReload(testSrc);
+  if (reloadFiles.length > 0) {
+    if (!modEnv) {
+      console.log(c.red(`✗ ${tf}: --!reload needs --!env: modenv (a reload replaces the mod's environment)`));
+      hadError = true;
+      continue;
+    }
+    try {
+      parts.push(reloadPart(reloadFiles));
+    } catch {
+      console.log(c.red(`✗ ${tf}: cannot read a --!reload file`));
+      hadError = true;
+      continue;
+    }
   }
   parts.push(`-- <<< test: ${tf} >>>\n` + testSrc);
   parts.push("\nT.summary()\n");

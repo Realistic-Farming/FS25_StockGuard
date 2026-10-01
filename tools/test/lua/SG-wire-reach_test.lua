@@ -26,7 +26,7 @@
 --      shows up as "attempt to compare number with nil" rather than as a quiet
 --      empty list.
 --
---!load: src/capacity/SGWireFormats.lua
+--!load: src/core/SGClassHook.lua, src/capacity/SGWireFormats.lua
 
 local WF = SGWireFormats
 

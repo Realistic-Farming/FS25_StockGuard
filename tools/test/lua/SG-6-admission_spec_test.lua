@@ -1,5 +1,5 @@
 -- SG-6: native material capacity admission contract (StockGuard core).
---!load: src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua
+--!load: src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua
 -- Part 1 is the delivered reference bar (Office Tyson/StockGuard-First-Family-
 -- 2026-09-15/reference-tests/SG-6-admission_spec_test.lua) kept as shipped minus
 -- its trailing summary call. Part 2 (appended below) drives the built core.
@@ -700,7 +700,11 @@ do
     local finishedCalls = 0
     FSBaseMission = { onFinishedLoading = function(self) finishedCalls = finishedCalls + 1 return "native" end,
         onConnectionRequestAnswer = function(self, connection, answer) self.answered = answer end }
+    -- events/BaseMissionFinishedLoadingEvent.lua:16-28, readStream and writeStream VERBATIM
+    -- (readStream added for MAINTENANCE row 187: StockGuard's replacement is now a record
+    -- over the engine's method, which the engine always defines).
     BaseMissionFinishedLoadingEvent = { writeStream = function(self, s) streamWriteFloat32(s, self.posX) streamWriteFloat32(s, self.posY) streamWriteFloat32(s, self.posZ) streamWriteFloat32(s, self.viewDistanceCoeff) end,
+        readStream = function(self, s, connection) self.posX = streamReadFloat32(s) self.posY = streamReadFloat32(s) self.posZ = streamReadFloat32(s) self.viewDistanceCoeff = streamReadFloat32(s) self:run(connection) end,
         run = function(self, connection) self.ran = (self.ran or 0) + 1 end }
     ConnectionRequestAnswerEvent = { new = function(answer) return { answer = answer } end }
     local shown = {}
