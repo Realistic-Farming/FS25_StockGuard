@@ -128,7 +128,7 @@ function H:install()
     if self.handle == nil or type(self.handle.registerCarrierAdapter) ~= "function" then return false, "NO_HANDLE" end
     local host = self
 
-    local spec = A.nativeAdapterSpec(self.sources.placeables, self.sources.vehicles)
+    local spec = A.nativeAdapterSpec(self.sources.placeables, self.sources.vehicles, function() return host:groundSampler() end)
     local enumerateNative = spec.enumerateCarriers
     spec.enumerateCarriers = function()
         host.ready = true
@@ -141,10 +141,23 @@ function H:install()
     self.nativeLease, why = self.handle.registerCarrierAdapter(A.NATIVE_ADAPTER_ID, spec)
     if self.nativeLease == nil then return false, "NATIVE_ADAPTER:" .. tostring(why) end
     H.current = self
+    -- SG2-4b: the line bracket on the engine global (process-wide, dispatching to this host).
+    if SGGroundObserver ~= nil then
+        local okLine, whyLine = SGGroundObserver.install()
+        if not okLine then log("ground line bracket not installed: " .. tostring(whyLine)) end
+    end
     return true
 end
 
+--- SG2-4b: the ground sampler of this mission's height layer, bound on first use.
+function H:groundSampler()
+    local ground = type(self.sources.ground) == "function" and self.sources.ground() or nil
+    if ground == nil then return nil, "NO_GROUND" end
+    return ground:sampler()
+end
+
 function H:teardown()
+    if SGGroundObserver ~= nil then SGGroundObserver.remove() end
     self:unbindAllStations()
     if H.current == self then H.current = nil end
     self.ready = false
@@ -236,7 +249,10 @@ end
 function H:onFillUnitMovement(vehicle, fillUnitIndex, accepted, fillTypeIndex, cause)
     if not self.ready then return end
     if SGOperationContext.current(self.context) ~= nil then
-        SGOperationContext.observe(self.context, { source = "FILL_UNIT", vehicle = vehicle, fillUnitIndex = fillUnitIndex, accepted = accepted, fillType = fillTypeIndex, cause = cause })
+        local obs = { source = "FILL_UNIT", vehicle = vehicle, fillUnitIndex = fillUnitIndex, accepted = accepted, fillType = fillTypeIndex, cause = cause }
+        SGOperationContext.observe(self.context, obs)
+        -- SG2-4b: inside a ground frame this may be a pending operation's unit side landing.
+        if SGGroundObserver ~= nil then SGGroundObserver.onUnitObserved(self, obs) end
         return
     end
     if fillUnitIndex == nil then
@@ -268,6 +284,8 @@ function H:observeVehicle(vehicle)
     if vehicle.spec_dischargeable ~= nil then
         SGDischargeCapture.install(vehicle, H.dispatchDischargeOpen, H.dispatchDischargeClose)
     end
+    -- SG2-4b: the tip frame (dischargeToGround) and the Leveler callback deferral.
+    if SGGroundObserver ~= nil then SGGroundObserver.observeVehicle(vehicle) end
     return SGFillUnitObserver.install(vehicle, H.dispatchFillUnitMovement)
 end
 
@@ -1023,6 +1041,8 @@ function H.installClassHooks(classes)
     -- name through the class) and the Combine drain deferral, installed after the drain
     -- bracket above so the deferral is its outermost wrapper.
     if SGNativeMaterialSave ~= nil then SGNativeMaterialSave.installClassHooks({ SavegameController = classes.SavegameController, Combine = classes.Combine }) end
+    -- SG2-4b: the Shovel and Leveler work listeners and the class half of the Leveler callback.
+    if SGGroundObserver ~= nil then SGGroundObserver.installClassHooks({ Leveler = classes.Leveler, Shovel = classes.Shovel }) end
     wrapClassMethod(classes.StorageSystem, "addStorage", nil, function(r, storage)
         if r[1] == true then dispatch("onStorageAdded", storage) end
     end)

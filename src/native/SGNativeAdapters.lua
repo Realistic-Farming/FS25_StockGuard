@@ -631,6 +631,109 @@ function A.combineSlotKind(vehicles, kind)
     return spec
 end
 
+-- ── Ground cells (SG2-4b) ───────────────────────────────────────────────────
+--
+-- ONE CARRIER PER NATIVE HEIGHT PIXEL (SG-2 :158-160; SG-1 :104, :220). The grain is the
+-- terrain-height pixel; its current contents are one stock. The key names the layer, never
+-- a runtime density-map id: nativeOwnerKey is a digest of the map key and the layer
+-- descriptor (SGGround.currentIdentity), componentKey is ground:<x>:<z>, and the
+-- descriptor carries both in full, so a changed map or layer resolves nothing.
+--
+-- BOUND ONLY BY THE OBSERVER AND THE GROUND RESTORE. There is no enumeration: a world scan
+-- is not how ground is found (:168). A ground cell is not published in the CARRIERS view
+-- (:577), so no actor is granted access to it here; SG-5's bounded inspection is later.
+A.KIND_GROUND = "ground"
+A.GROUND_PROFILE = "NATIVE_GROUND_CELL_V1"
+A.groundOwnerKeys = A.groundOwnerKeys or {}
+
+--- The layer's owner key: "ground:" and the first 24 hex digits of the SHA-256 of
+--- mapKey|layerDescriptor. Memoized per layer string.
+function A.groundOwnerKey(identity)
+    if type(identity) ~= "table" or type(identity.mapKey) ~= "string" or type(identity.layerDescriptor) ~= "string" then return nil end
+    local s = identity.mapKey .. "|" .. identity.layerDescriptor
+    local key = A.groundOwnerKeys[s]
+    if key == nil then
+        local _, hex = SGSha256.digest(s)
+        if hex == nil then return nil end
+        key = "ground:" .. hex:sub(1, 24)
+        A.groundOwnerKeys[s] = key
+    end
+    return key
+end
+
+function A.groundComponentKey(x, z)
+    return A.KIND_GROUND .. ":" .. tostring(x) .. ":" .. tostring(z)
+end
+
+--- The binding of pixel (x, z) on a layer identity (SGGround.currentIdentity), or nil.
+function A.groundBindingOf(identity, x, z)
+    local ownerKey = A.groundOwnerKey(identity)
+    if ownerKey == nil or type(x) ~= "number" or type(z) ~= "number" then return nil end
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.groundComponentKey(x, z), A.GROUND_PROFILE,
+        { kind = A.KIND_GROUND, x = x, z = z, mapKey = identity.mapKey, layer = identity.layerDescriptor })
+end
+
+--- The binding of pixel (x, z) on the sampler's layer, or nil.
+function A.groundBinding(sampler, x, z)
+    if type(sampler) ~= "table" or not sampler:inMap(x, z) then return nil end
+    return A.groundBindingOf(sampler.identity, x, z)
+end
+
+--- Is this carrier key a ground cell of the native adapter?
+function A.isGroundKey(carrierKey)
+    return type(carrierKey) == "table" and carrierKey.adapterId == A.NATIVE_ADAPTER_ID
+        and type(carrierKey.componentKey) == "string" and carrierKey.componentKey:sub(1, #A.KIND_GROUND + 1) == A.KIND_GROUND .. ":"
+end
+
+--- The ground KIND of the native adapter.
+---@param samplers function  () -> the current SGGroundSampler, or nil and a reason
+function A.groundKind(samplers)
+    local spec = {}
+
+    spec.resolveCarrier = function(binding)
+        if not isServer() then return nil, "CLIENT" end
+        if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil, "BINDING" end
+        local d = binding.sourceDescriptor
+        if type(d) ~= "table" or d.kind ~= A.KIND_GROUND or type(d.x) ~= "number" or type(d.z) ~= "number" then return nil, "DESCRIPTOR" end
+        if binding.carrierKey.componentKey ~= A.groundComponentKey(d.x, d.z) then return nil, "DESCRIPTOR" end
+        local sampler, why = nil, "NO_SAMPLER"
+        if samplers ~= nil then sampler, why = samplers() end
+        if sampler == nil then return nil, why or "NO_SAMPLER" end
+        local identity = sampler.identity
+        if d.mapKey ~= identity.mapKey or d.layer ~= identity.layerDescriptor then return nil, "LAYER_CHANGED" end
+        if binding.carrierKey.nativeOwnerKey ~= A.groundOwnerKey(identity) then return nil, "LAYER_CHANGED" end
+        if not sampler:inMap(d.x, d.z) then return nil, "OUT_OF_MAP" end
+        return { sampler = sampler, x = d.x, z = d.z }
+    end
+
+    --- The pixel as the sampler proves it (SGGroundSampler.readCell); a refused read is
+    --- an unreadable carrier, never a guessed amount.
+    spec.readNativeState = function(binding, native)
+        if not isServer() then return nil, "CLIENT" end
+        if type(native) ~= "table" or type(native.sampler) ~= "table" then return nil, "NATIVE" end
+        local cell, why = native.sampler:readCell(native.x, native.z)
+        if cell == nil then return nil, why end
+        return A.groundState(native.sampler, cell)
+    end
+
+    spec.enumerateCarriers = function() return {} end
+    spec.hasAccess = function() return false end
+    return spec
+end
+
+--- A sampled cell as SG-1 NativeState.
+function A.groundState(sampler, cell)
+    local wx, wz = sampler:cellCentre(cell.x, cell.z)
+    return {
+        materialRef = cell.raw > 0 and { kind = "FILL_TYPE", fillTypeName = cell.fillTypeName } or nil,
+        amount = cell.liters,
+        unit = A.UNIT,
+        storeKind = "ground",
+        x = wx,
+        z = wz,
+    }
+end
+
 -- ── The native adapter: one registration, both kinds ────────────────────────
 local function kindOf(binding)
     local d = type(binding) == "table" and binding.sourceDescriptor or nil
@@ -641,16 +744,18 @@ end
 --- on the binding's kind; a binding of no known kind is refused, never guessed.
 ---@param placeables function  () -> list of placeables
 ---@param vehicles function    () -> list of vehicles
-function A.nativeAdapterSpec(placeables, vehicles)
+---@param samplers function|nil () -> the current ground sampler (SG2-4b)
+function A.nativeAdapterSpec(placeables, vehicles, samplers)
     local kinds = {
         [A.KIND_STORAGE] = A.storageKind(placeables),
         [A.KIND_FILL_UNIT] = A.fillUnitKind(vehicles),
         [A.KIND_DELAY_SLOT] = A.combineSlotKind(vehicles, A.KIND_DELAY_SLOT),
         [A.KIND_STRAW_SLOT] = A.combineSlotKind(vehicles, A.KIND_STRAW_SLOT),
+        [A.KIND_GROUND] = A.groundKind(samplers),
     }
     local spec = {
         version        = A.ADAPTER_VERSION,
-        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT },
+        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT, A.KIND_GROUND },
         materialGroups = {},
         kinds          = kinds,
     }
@@ -680,6 +785,8 @@ function A.nativeAdapterSpec(placeables, vehicles)
         -- A Combine buffer slot keeps its own binding: its restoration with the native
         -- slot is the save extension's (SG2-3c); without it the slot finds nothing.
         if kind == A.KIND_DELAY_SLOT or kind == A.KIND_STRAW_SLOT then return savedBinding end
+        -- A ground cell keeps its own binding; resolveCarrier refuses a changed layer.
+        if kind == A.KIND_GROUND then return savedBinding end
         return nil, "DESCRIPTOR"
     end
     spec.enumerateCarriers = function()

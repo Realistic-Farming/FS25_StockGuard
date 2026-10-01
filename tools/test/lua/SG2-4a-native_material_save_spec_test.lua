@@ -580,16 +580,17 @@ group("C", function()
         .. tostring((select(2, GR.decodeRuns({ { z = 1, x = -1, n = 1, fillType = "WHEAT", liters = 1, generation = 1 } }, {})))) .. "/"
         .. tostring((select(2, GR.decodeRuns({ { z = 1, x = 1, n = 1, fillType = "WHEAT", liters = 1, generation = 0 } }, {})))),
         "RUN:1:PROPERTY/RUN:1:COORDINATES/RUN:1:GENERATION")
-    -- A populated ground through a real save and reload. The cells are bench-made (the one
-    -- hand-populated fixture in this file; nothing produces a cell before SG2-4b).
+    -- SG2-4b: the payload is built from SG-1's own ground records at the freeze (the
+    -- producer is SGGroundObserver), so a cell map set on the ground object by hand is not
+    -- the source and is not written. The populated round trip through the real producer is
+    -- SG2-4b's entry-point bar (SG2-4b-ground_observer_spec_test.lua E8-E9).
     resetEngine()
     local m, sg = boot(nil, "c_save", { index = 20 })
     sg.ground.cells, sg.ground.properties = cells, props
     nativeSave(m, false, "c_final")
     local m2, sg2 = reload(m, "c_final", nil, { index = 20 })
-    local restored, n = sg2.ground.cells, 0
-    local equal = true
-    for k, c in pairs(cells) do n = n + 1 local b = restored[k] if b == nil or b.liters ~= c.liters or b.property ~= c.property then equal = false end end
-    T.eq("C5 a populated ground set survives a real save and reload: every cell and its shared property", readiness(sg2) .. "/" .. n .. "/" .. tostring(equal) .. "/" .. tostring(sg2.ground.properties.p1 and sg2.ground.properties.p1.moisture), "READY/nil/6/true/0.5")
+    local n = 0
+    for _ in pairs(sg2.ground.cells) do n = n + 1 end
+    T.eq("C5 a cell map set by hand is not the payload's source (SG-1's ground records are, since SG2-4b): the reload is READY with no cells", readiness(sg2) .. "/" .. n, "READY/nil/0")
     FSBaseMission.delete(m2)
 end)

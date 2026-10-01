@@ -234,6 +234,8 @@ function G:registerSaveSection(sectionId, spec)
     if not positiveInt(spec.schemaVersion) then return nil, "SCHEMA_VERSION" end
     if spec.dependencies ~= nil and not stringList(spec.dependencies) then return nil, "DEPENDENCIES" end
     if not isFn(spec.serialize) or not isFn(spec.stageLoad) or not isFn(spec.commitLoad) or not isFn(spec.clearReadiness) then return nil, "CALLBACKS" end
+    -- SG2-4b: a section may persist a set of carriers itself (ownsCarrier(carrierKey)).
+    if not optFn(spec.ownsCarrier) then return nil, "CALLBACKS" end
     if spec.farmRestorePolicy ~= nil and not G.FARM_RESTORE_POLICY[spec.farmRestorePolicy] then return nil, "FARM_RESTORE_POLICY" end
     -- An undeclared farm-restore policy stays undeclared: under an actual
     -- conversion that section is retained until its owner supplies the contract.

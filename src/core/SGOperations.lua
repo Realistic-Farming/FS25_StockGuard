@@ -1328,9 +1328,12 @@ end
 
 --- Canonical serialized collection (sorted rows keyed by the lossless
 --- carrier key token encoding).
-function O:serializePending()
+function O:serializePending(exclude)
     local ids = {}
-    for id in pairs(self.pending) do ids[#ids + 1] = id end
+    for id in pairs(self.pending) do
+        local carrier = self.carriers[id]
+        if exclude == nil or carrier == nil or not exclude(carrier.binding.carrierKey) then ids[#ids + 1] = id end
+    end
     table.sort(ids)
     local rows = {}
     for _, id in ipairs(ids) do
@@ -1675,10 +1678,14 @@ local function serializeStock(s)
     }
 end
 
-function O:serializeCore()
+--- The saved records of the carriers `pick(carrierKey)` selects (nil selects all): the
+--- carrier rows, their live stocks and the unresolved historical stocks, in id order.
+function O:collectRecords(pick)
     local carriers = {}
     local ids = {}
-    for id in pairs(self.carriers) do ids[#ids + 1] = id end
+    for id, c in pairs(self.carriers) do
+        if pick == nil or pick(c.binding.carrierKey) then ids[#ids + 1] = id end
+    end
     table.sort(ids)
     for _, id in ipairs(ids) do
         local c = self.carriers[id]
@@ -1687,17 +1694,29 @@ function O:serializeCore()
     end
     local stocks = {}
     local sids = {}
-    for id in pairs(self.stocks) do sids[#sids + 1] = id end
+    for id, s in pairs(self.stocks) do
+        if pick == nil or pick(s.carrierKey) then sids[#sids + 1] = id end
+    end
     table.sort(sids)
     for _, id in ipairs(sids) do stocks[#stocks + 1] = serializeStock(self.stocks[id]) end
     -- Unresolved historical stocks (carrier absent or mismatched at the last
     -- load) travel until a load resolves them; bounded by the retired limit.
     local historical = {}
     local hids = {}
-    for id, s in pairs(self.retiredStocks) do if s.historical then hids[#hids + 1] = id end end
+    for id, s in pairs(self.retiredStocks) do
+        if s.historical and (pick == nil or pick(s.carrierKey)) then hids[#hids + 1] = id end
+    end
     table.sort(hids)
     for _, id in ipairs(hids) do historical[#historical + 1] = serializeStock(self.retiredStocks[id]) end
-    return { schemaVersion = 2, revision = self.revision, nextStock = self.nextStock, carriers = carriers, stocks = stocks, historical = historical }
+    return { carriers = carriers, stocks = stocks, historical = historical }
+end
+
+--- SG_SAVE_2.coreValues. SG2-4b: `exclude(carrierKey)` names the carriers a member save
+--- section persists itself (the ground cells, in extensions.sg2Ground's payload, SG-2
+--- :563); their carriers, stocks and history stay out of the ordinary envelope.
+function O:serializeCore(exclude)
+    local r = self:collectRecords(exclude ~= nil and function(k) return not exclude(k) end or nil)
+    return { schemaVersion = 2, revision = self.revision, nextStock = self.nextStock, carriers = r.carriers, stocks = r.stocks, historical = r.historical }
 end
 
 local function validateSavedStock(s, i, label, carrierIds)

@@ -36,8 +36,25 @@
 -- later payload; so the section installs, carrying the ground binding's own readiness,
 -- and the next save writes a fresh descriptor and payload.
 --
--- NOT HERE: the ground producer. Nothing writes a cell yet; the brackets that observe
--- native ground mutations are SG2-4b, so in production this freezes the empty set.
+-- SG2-4b: THE RECORDS ARE SG-1's. Ground cells are carriers of the native adapter
+-- (SGNativeAdapters KIND_GROUND), written by the ground observer (SGGroundObserver). This
+-- section claims them (ownsCarrier), so the ordinary envelope's coreValues and carrier-
+-- pending collection leave them out (:563), and the payload carries them instead:
+--   * at the freeze, every tracked cell is first read again at the boundary (drift an
+--     unobserved writer left, 2-4b2's smoother among them, is reconciled here, so the
+--     records describe the height image prepared in the same call);
+--   * each occupied cell is one cell record: its native litres and type, its stock's
+--     identity (stockId, contentsGeneration, dataRevision), knowledge and reason, its
+--     carrier's lastGeneration, and a key into the shared property table, where each
+--     distinct set of property records and accepted causes is stored once;
+--   * the runs codec coalesces identical adjacent cells; every cell's stock has its own
+--     identity, so in practice each run holds one cell. Compression changes only layout,
+--     never the grain or a record (:160, :237);
+--   * the unresolved historical ground stocks travel beside them, bounded by the core's
+--     own retired-stock rule (SGOperations pruneRetired: at most 256 historical stocks).
+-- On reload the staged cells become a core-shaped set that the commit hands to SG-1's
+-- restoreCore: a cell reattaches when its pixel holds the same material and litres, else
+-- its facts stay historical and the live cell starts UNKNOWN (the core rule).
 -- =========================================================
 
 SGGround = SGGround or {}
@@ -77,6 +94,33 @@ end
 
 function GR.cellKey(x, z) return tostring(x) .. ":" .. tostring(z) end
 
+--- SG2-4b: the sampler of the current height layer, bound on first use. A failed bind is
+--- tried again on the next call, so a layer that becomes valid later is still found.
+function GR:sampler()
+    if self.groundSampler ~= nil then return self.groundSampler end
+    local sampler, why = SGGroundSampler.bind(g_currentMission)
+    if sampler == nil then return nil, why end
+    self.groundSampler = sampler
+    self:rebuildTracked()
+    return sampler
+end
+
+--- SG2-4b: the sampler's index of tracked cells (cell key -> carrier id), from SG-1's own
+--- ground carriers on this layer.
+function GR:rebuildTracked()
+    local sampler = self.groundSampler
+    local ops = self.host ~= nil and self.host.operations or nil
+    if sampler == nil then return end
+    sampler.tracked = {}
+    if ops == nil then return end
+    for id, c in pairs(ops.carriers) do
+        local d = c.binding.sourceDescriptor
+        if GR.ownsCarrier(c.binding.carrierKey) and type(d) == "table" and d.layer == sampler.identity.layerDescriptor and d.mapKey == sampler.identity.mapKey then
+            sampler.tracked[GR.cellKey(d.x, d.z)] = id
+        end
+    end
+end
+
 -- ---------------------------------------------------------
 -- The layer identity
 -- ---------------------------------------------------------
@@ -108,7 +152,8 @@ end
 -- ---------------------------------------------------------
 -- The record codec
 -- ---------------------------------------------------------
---- A valid cell record, or nil and a reason.
+--- A valid cell record, or nil and a reason. SG2-4b's stock identity fields are checked
+--- when present (a cell of a written payload always carries them).
 function GR.validCell(c, properties)
     if type(c) ~= "table" then return nil, "NOT_TABLE" end
     if not isInteger(c.x) or not isInteger(c.z) or c.x < 0 or c.z < 0 then return nil, "COORDINATES" end
@@ -116,11 +161,18 @@ function GR.validCell(c, properties)
     if not isFinite(c.liters) or c.liters < 0 then return nil, "LITERS" end
     if not isInteger(c.generation) or c.generation < 1 then return nil, "GENERATION" end
     if c.property ~= nil and (not nonempty(c.property, 128) or type(properties) ~= "table" or properties[c.property] == nil) then return nil, "PROPERTY" end
+    if c.stockId ~= nil and not nonempty(c.stockId, 128) then return nil, "STOCK_ID" end
+    if c.dataRevision ~= nil and not nonempty(c.dataRevision, 64) then return nil, "DATA_REVISION" end
+    if c.knowledge ~= nil and not SGRecords.KNOWLEDGE[c.knowledge] then return nil, "KNOWLEDGE" end
+    if c.reason ~= nil and not nonempty(c.reason, 256) then return nil, "REASON" end
+    if c.lastGeneration ~= nil and (not isInteger(c.lastGeneration) or c.lastGeneration < 0) then return nil, "LAST_GENERATION" end
     return c
 end
 
 local function sameContents(a, b)
     return a.fillType == b.fillType and a.liters == b.liters and a.generation == b.generation and a.property == b.property
+        and a.stockId == b.stockId and a.dataRevision == b.dataRevision and a.knowledge == b.knowledge and a.reason == b.reason
+        and a.lastGeneration == b.lastGeneration
 end
 
 --- The cells as runs: sorted by z then x; a run extends over the next cell of the same
@@ -139,7 +191,8 @@ function GR.encodeCells(cells, properties)
         if run ~= nil and run.z == c.z and run.x + run.n == c.x and sameContents(run, c) then
             run.n = run.n + 1
         else
-            run = { z = c.z, x = c.x, n = 1, fillType = c.fillType, liters = c.liters, generation = c.generation, property = c.property }
+            run = { z = c.z, x = c.x, n = 1, fillType = c.fillType, liters = c.liters, generation = c.generation, property = c.property,
+                    stockId = c.stockId, dataRevision = c.dataRevision, knowledge = c.knowledge, reason = c.reason, lastGeneration = c.lastGeneration }
             runs[#runs + 1] = run
         end
     end
@@ -154,7 +207,8 @@ function GR.decodeRuns(runs, properties)
     for i, r in ipairs(runs) do
         if type(r) ~= "table" or not isInteger(r.n) or r.n < 1 then return nil, "RUN:" .. i end
         for k = 0, r.n - 1 do
-            local c = { x = (tonumber(r.x) or -1) + k, z = r.z, fillType = r.fillType, liters = r.liters, generation = r.generation, property = r.property }
+            local c = { x = (tonumber(r.x) or -1) + k, z = r.z, fillType = r.fillType, liters = r.liters, generation = r.generation, property = r.property,
+                        stockId = r.stockId, dataRevision = r.dataRevision, knowledge = r.knowledge, reason = r.reason, lastGeneration = r.lastGeneration }
             local ok, why = GR.validCell(c, properties)
             if ok == nil then return nil, "RUN:" .. i .. ":" .. why end
             local key = GR.cellKey(c.x, c.z)
@@ -229,16 +283,76 @@ function GR:beginAttempt(context)
     self.attempt = { attemptId = context.attemptId, identity = identity, reason = why, written = false }
 end
 
+--- SG2-4b: does this section persist that carrier? The ground cells of the native adapter.
+function GR.ownsCarrier(carrierKey)
+    return SGNativeAdapters ~= nil and SGNativeAdapters.isGroundKey(carrierKey) or false
+end
+
+--- SG2-4b: read every tracked ground cell again at the boundary, through the native
+--- adapter, and withdraw the ones that are empty now. Returns how many were read.
+function GR:refreshAtBoundary()
+    local native = SGNativeHost ~= nil and SGNativeHost.current or nil
+    local ops = self.host ~= nil and self.host.operations or nil
+    if native == nil or native.nativeLease == nil or ops == nil or native.handle ~= self.host.handle then return 0 end
+    local ids = {}
+    for id, c in pairs(ops.carriers) do if GR.ownsCarrier(c.binding.carrierKey) then ids[#ids + 1] = id end end
+    table.sort(ids)
+    for _, id in ipairs(ids) do
+        local c = ops.carriers[id]
+        if c ~= nil then
+            native.handle.refreshCarrier(native.nativeLease, c.binding, "SAVE_BOUNDARY")
+            local now = ops.carriers[id]
+            if now ~= nil and now.stockId == nil and (now.native == nil or (now.native.amount or 0) <= 0) then
+                native.handle.withdrawCarrier(native.nativeLease, id, "GROUND_CELL_EMPTY")
+            end
+        end
+    end
+    self:rebuildTracked()
+    return #ids
+end
+
+--- SG2-4b: the ground cells as payload cells, the shared property table (each distinct set
+--- of property records and accepted causes once) and the historical ground stocks.
+function GR:groundRecords()
+    local ops = self.host ~= nil and self.host.operations or nil
+    if ops == nil then return {}, {}, {} end
+    local rec = ops:collectRecords(GR.ownsCarrier)
+    local stockBy = {}
+    for _, s in ipairs(rec.stocks) do stockBy[s.stockId] = s end
+    local cells, properties, keys, n = {}, {}, {}, 0
+    for _, c in ipairs(rec.carriers) do
+        local d = c.binding.sourceDescriptor
+        local s = c.stockId ~= nil and stockBy[c.stockId] or nil
+        if s ~= nil and type(d) == "table" and s.materialRef ~= nil and s.materialRef.kind == "FILL_TYPE" then
+            local shared = { properties = s.properties or {}, acceptedCauses = s.acceptedCauses or {} }
+            local ck = SGValues.canonicalKey(shared)
+            local pk = keys[ck]
+            if pk == nil then
+                n = n + 1
+                pk = "p" .. tostring(n)
+                keys[ck] = pk
+                properties[pk] = shared
+            end
+            cells[GR.cellKey(d.x, d.z)] = { x = d.x, z = d.z, fillType = s.materialRef.fillTypeName, liters = s.observedAmount, generation = s.contentsGeneration,
+                property = pk, stockId = s.stockId, dataRevision = s.dataRevision, knowledge = s.knowledge, reason = s.reason, lastGeneration = c.lastGeneration }
+        end
+    end
+    return cells, properties, rec.historical
+end
+
 function GR:freezeAfterCareerXML(context)
     local a = self.attempt
     if a == nil or a.attemptId ~= context.attemptId then return { state = GR.UNAVAILABLE, reason = "NO_ATTEMPT" } end
     if a.identity == nil then return { state = GR.UNAVAILABLE, reason = a.reason } end
-    local runs, whyRuns = GR.encodeCells(self.cells, self.properties)
+    a.refreshed = self:refreshAtBoundary()
+    local cells, properties, historical = self:groundRecords()
+    self.cells, self.properties = cells, properties
+    local runs, whyRuns = GR.encodeCells(cells, properties)
     if runs == nil then return { state = GR.UNAVAILABLE, reason = "CELLS:" .. tostring(whyRuns) } end
     local tree = {
         payloadSchema = GR.PAYLOAD_SCHEMA, attemptId = a.attemptId, mapKey = a.identity.mapKey,
         layerDescriptor = a.identity.layerDescriptor, nativeHeightFile = a.identity.nativeHeightFile,
-        boundary = GR.BOUNDARY, properties = copy(self.properties), runs = runs,
+        boundary = GR.BOUNDARY, properties = copy(properties), runs = runs, historical = historical,
     }
     local tokens, whyEnc = SGValues.encode(tree)
     if tokens == nil then return { state = GR.UNAVAILABLE, reason = "PAYLOAD_ENCODE:" .. tostring(whyEnc) } end
@@ -320,15 +434,48 @@ function GR:stage(d, context)
     end
     local cells, whyCells = GR.decodeRuns(t.runs or {}, properties)
     if cells == nil then return unavailable("CELLS:" .. tostring(whyCells)) end
-    local n = 0
-    for _ in pairs(cells) do n = n + 1 end
-    return { state = GR.READY, cells = cells, properties = properties, attemptId = d.attemptId, cellCount = n }
+    local core, whyCore = GR.coreOf(identity, cells, properties, t.historical)
+    if core == nil then return unavailable(whyCore) end
+    return { state = GR.READY, cells = cells, properties = properties, attemptId = d.attemptId, cellCount = #core.carriers, core = core }
+end
+
+--- SG2-4b: the staged cells as a core-shaped record set (SGOperations.validateCore), or
+--- nil and a reason. Every cell must carry its stock identity and a shared entry whose
+--- property records and accepted causes are lists.
+function GR.coreOf(identity, cells, properties, historical)
+    local A = SGNativeAdapters
+    local list = {}
+    for _, c in pairs(cells) do list[#list + 1] = c end
+    table.sort(list, function(p, q) if p.z ~= q.z then return p.z < q.z end return p.x < q.x end)
+    local core = { schemaVersion = 2, nextStock = 0, carriers = {}, stocks = {}, historical = type(historical) == "table" and historical or {} }
+    for _, c in ipairs(list) do
+        if c.stockId == nil or c.dataRevision == nil or c.knowledge == nil or c.property == nil then return nil, "CELL_IDENTITY" end
+        local shared = properties[c.property]
+        if type(shared) ~= "table" or type(shared.properties) ~= "table" or type(shared.acceptedCauses) ~= "table" then return nil, "CELL_PROPERTY" end
+        local binding = A.groundBindingOf(identity, c.x, c.z)
+        if binding == nil then return nil, "CELL_BINDING" end
+        local cid = SGRecords.carrierKeyString(binding.carrierKey)
+        local materialRef = { kind = "FILL_TYPE", fillTypeName = c.fillType }
+        core.carriers[#core.carriers + 1] = { carrierId = cid, adapterId = A.NATIVE_ADAPTER_ID, binding = binding, lastGeneration = c.lastGeneration or c.generation,
+            stockId = c.stockId, native = { materialRef = materialRef, amount = c.liters, unit = A.UNIT } }
+        core.stocks[#core.stocks + 1] = { stockId = c.stockId, contentsGeneration = c.generation, dataRevision = c.dataRevision, carrierId = cid,
+            carrierKey = copy(binding.carrierKey), quantityBasisKey = binding.quantityBasisKey, materialRef = copy(materialRef), observedAmount = c.liters,
+            amountUnit = A.UNIT, knowledge = c.knowledge, reason = c.reason, properties = copy(shared.properties), acceptedCauses = copy(shared.acceptedCauses) }
+    end
+    local ok, why = SGOperations.validateCore(core)
+    if ok == nil then return nil, "RECORDS:" .. tostring(why) end
+    return core
 end
 
 function GR:commit(candidate)
     self.cells = candidate.cells or {}
     self.properties = candidate.properties or {}
     self.readiness = { state = candidate.state, reason = candidate.reason }
+    if candidate.state == GR.READY and candidate.core ~= nil and self.host ~= nil and self.host.operations ~= nil then
+        -- SG2-4b: the ground records join SG-1 through the core's own restore rule.
+        self.lastRestore = self.host.operations:restoreCore(candidate.core, {})
+        self:rebuildTracked()
+    end
     if candidate.state == GR.READY then
         log(string.format("ground image of attempt %s restored: %d cell(s)", tostring(candidate.attemptId), candidate.cellCount or 0))
     else
@@ -369,6 +516,8 @@ function GR.attach(sgHost)
         stageLoad = function(payload, context) return ground:stage(payload, context) end,
         commitLoad = function(candidate) ground:commit(candidate) end,
         clearReadiness = function(reason) ground:clearReadiness(reason) end,
+        -- SG2-4b: the ground cells travel in this section's payload, not in coreValues.
+        ownsCarrier = GR.ownsCarrier,
     })
     if lease == nil then return nil, "SECTION:" .. tostring(whySection) end
     ground.sectionLease = lease
