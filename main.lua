@@ -66,6 +66,8 @@ source(modDirectory .. "src/native/SGGround.lua")
 -- SG2-4b: the ground cell sampler and the ground observer (the line bracket, the tip, the deferrals).
 source(modDirectory .. "src/native/SGGroundSampler.lua")
 source(modDirectory .. "src/native/SGGroundObserver.lua")
+-- SG2-4c: the Soil caller, ground condition for the line bracket's framed calls.
+source(modDirectory .. "src/native/SGSoilCondition.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
