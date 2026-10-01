@@ -138,6 +138,9 @@ end
 --- Read one pixel. Returns { x, z, raw, liters, fillTypeIndex?, fillTypeName? } (no
 --- fill type when empty), or nil and a reason.
 function GS:readCell(x, z)
+    -- A latched binding reads nothing more through its faulted grid (:261, "disable ... for
+    -- the exact failing adapter binding").
+    if self.fault ~= nil then return nil, "BINDING_FAULT" end
     if not self:inMap(x, z) then return self:refuse("OUT_OF_MAP") end
     self.reads = self.reads + 1
     local ax, az, bx, bz, cx, cz = self:polygon(x, z, 1, 1)
@@ -173,6 +176,7 @@ end
 
 --- Is every pixel of the block empty? True, false, or nil and a reason.
 function GS:blockEmpty(x0, z0, nx, nz)
+    if self.fault ~= nil then return nil, "BINDING_FAULT" end
     local ax, az, bx, bz, cx, cz = self:polygon(x0, z0, nx, nz)
     set(self.heightModifier, ax, az, bx, bz, cx, cz)
     local _, positive, total = self.heightModifier:executeGet(self.heightFilter)

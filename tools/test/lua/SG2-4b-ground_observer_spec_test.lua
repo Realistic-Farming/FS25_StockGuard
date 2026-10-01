@@ -312,11 +312,15 @@ group("S", function()
     G_.expand = 1
     T.eq("S5 a rounding that takes a neighbour is refused, never summed (totalNumPixels must be 1)", tostring(({ s:readCell(300, 260) })[2]), "CARDINALITY")
     G_.expand = 0
+    T.eq("S5b a cardinality failure latches that binding; each proof row below reads through a fresh one", tostring(s.fault and s.fault.reason), "CARDINALITY")
+    s = GS.bind(m)
     G_.typedLie = G_.key(300, 260)
     T.eq("S6 the type channel and the typed positive-height query must agree", tostring(({ s:readCell(300, 260) })[2]), "TYPE_UNVERIFIED")
     G_.typedLie = nil
+    s = GS.bind(m)
     G_.types[G_.key(300, 260)] = 9
     T.eq("S7 an index the height manager does not know is refused", tostring(({ s:readCell(300, 260) })[2]), "UNKNOWN_TYPE_INDEX")
+    T.eq("S7b an unknown type index does not latch", tostring(s.fault), "nil")
     G_.put(300, 260, HT.WHEAT.index, 5)
     G_.put(310, 270, HT.BARLEY.index, 3)
     local before = G_.queries
@@ -696,6 +700,9 @@ group("K", function()
     T.eq("K2 the latch holds with the proof passing again: the next tip is refused as BINDING_FAULT, native still ran and the unit was debited",
         tostring(gf.refused.BINDING_FAULT) .. "/" .. #gf.operations .. "/" .. num(unitBefore - level(w.tipper)), "1/0/20")
     T.eq("K3 the ground's readiness reports the fault", tostring(sg.ground:getReadiness().reason), "BINDING_FAULT:CARDINALITY")
+    local anyCell = sg.operations.carriers[tracked[1]]
+    T.eq("K8 once latched, the adapter reads nothing through the faulted grid: refreshCarrier is refused with BINDING_FAULT",
+        tostring(({ host.handle.refreshCarrier(host.nativeLease, anyCell.binding, "BENCH") })[2]), "UNREADABLE:BINDING_FAULT")
     nativeSave(m, "k_final")
     T.eq("K4 and claims no support at the save: the ground participant answers UNAVAILABLE, no READY image", tostring(sg.nativeSave.lastAttempt.results.sg2Ground.state) .. "/" .. tostring(sg.nativeSave.lastAttempt.results.sg2Ground.reason),
         "UNAVAILABLE/BINDING_FAULT:CARDINALITY")
