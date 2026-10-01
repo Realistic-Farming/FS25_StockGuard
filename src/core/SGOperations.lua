@@ -152,10 +152,16 @@ function O.validateNativeState(ns)
     if not nonempty(ns.unit, 32) then return nil, "UNIT" end
     if ns.capacity ~= nil and not SGRecords.isAmount(ns.capacity) then return nil, "CAPACITY" end
     if ns.x ~= nil and (not isFinite(ns.x) or not isFinite(ns.z)) then return nil, "POSITION" end
+    local fp = ns.footprint
+    if fp ~= nil and (type(fp) ~= "table" or not nonempty(fp.kind, 32) or not isFinite(fp.x) or not isFinite(fp.z)
+                      or (fp.size ~= nil and (not isFinite(fp.size) or fp.size <= 0))) then
+        return nil, "FOOTPRINT"
+    end
     return {
         materialRef = ns.materialRef and copy(ns.materialRef) or nil, amount = ns.amount, unit = ns.unit,
         capacity = ns.capacity, x = ns.x, z = ns.z, ownerFarmId = ns.ownerFarmId, storeKind = ns.storeKind,
         stationAccess = ns.stationAccess, label = ns.label, nativeUniqueId = ns.nativeUniqueId,
+        footprint = fp and { kind = fp.kind, x = fp.x, z = fp.z, size = fp.size } or nil,
     }
 end
 
@@ -608,12 +614,73 @@ function O:captureOperation(adapterLease, kind, participants)
             return nil, "PARTICIPANT"
         end
     end
+    self:captureResident(kind, before)
     self.nextOperation = self.nextOperation + 1
     local operationId = "op:" .. self.loadEpoch .. ":" .. tostring(self.nextOperation)
     local handle = { operationId = operationId, kind = kind, adapterId = adapterLease.ownerId, open = true }
     self.openHandles[operationId] = handle
     self.handleState[operationId] = { before = before, lease = adapterLease }
     return { handle = handle, before = copy(before), operationId = operationId }
+end
+
+--- The capture carries the facts (the SG-1 brief :232, SG-2 :343's carrying half): for each
+--- OWNER_RESOLVED property, every participant whose stock is resident is resolved now, while the
+--- owner's domain still holds it, inside ONE owner stamp pair for the whole capture (SG-2 :328,
+--- "validate the owner stamp before/after a multi-part capture"). An unstable pair leaves the
+--- property unavailable on every resident participant. The records go to residentProperties,
+--- which only the settle's portions read, so they travel with the material that leaves and are
+--- never installed back on the resident stock (Bob's 2-4c-0 ruling, change 2).
+function O:captureResident(kind, before)
+    for pid, reg in self.registry:each(SGRegistry.KIND_PROPERTY) do
+        -- Only an owner that declares where it is resident has anything to carry: without the
+        -- key every stock reads live, and the capture asks it nothing (the older behaviour).
+        local a = reg.spec.applicability
+        if reg.spec.residency == "OWNER_RESOLVED" and type(a) == "table" and type(a.residentStoreKinds) == "table" then
+            local resident = {}
+            local ids = {}
+            for carrierId in pairs(before.carriers) do ids[#ids + 1] = carrierId end
+            table.sort(ids)
+            for _, carrierId in ipairs(ids) do
+                local b = before.carriers[carrierId]
+                local stock = b.stock ~= nil and self.stocks[b.stock.stockRef.stockId] or nil
+                if stock ~= nil and self:isResident(reg, self.carriers[carrierId]) then
+                    resident[#resident + 1] = { b = b, stock = stock }
+                end
+            end
+            if #resident > 0 then
+                local stamp = { purpose = "CAPTURE", operationKind = kind, participants = #resident }
+                local okBefore, revBefore = pcall(reg.spec.getResidentRevision, copy(stamp))
+                local answers = {}
+                for i, r in ipairs(resident) do
+                    local ok, record, reason = pcall(reg.spec.resolveResident, self:residentContext(r.stock, "CAPTURE"))
+                    answers[i] = { ok = ok, record = ok and record or nil, reason = ok and reason or "RESIDENT_ERROR" }
+                end
+                local okAfter, revAfter = pcall(reg.spec.getResidentRevision, copy(stamp))
+                local stable = okBefore and okAfter and revBefore ~= nil and revBefore == revAfter
+                for i, r in ipairs(resident) do
+                    local ans = answers[i]
+                    local out
+                    if not stable then
+                        out = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "RESIDENT_UNSTABLE", r.stock.dataRevision)
+                    elseif ans.record ~= nil then
+                        local valid, why = self:validateResult(ans.record, reg.spec.producerId)
+                        if valid ~= nil then
+                            out = copy(valid)
+                            out.materialRevision = r.stock.dataRevision
+                        else
+                            out = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "RESIDENT_INVALID:" .. tostring(why), r.stock.dataRevision)
+                        end
+                    elseif ans.reason ~= O.NOT_RESIDENT then
+                        out = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, tostring(ans.reason or "RESIDENT_ABSENT"), r.stock.dataRevision)
+                    end
+                    if out ~= nil then
+                        r.b.residentProperties = r.b.residentProperties or {}
+                        r.b.residentProperties[pid] = out
+                    end
+                end
+            end
+        end
+    end
 end
 
 local function closeHandle(self, handle)
@@ -696,9 +763,13 @@ local function interpretDestination(self, context, kind, contributions, destinat
     local pids = {}
     for pid in pairs(propertyIds) do pids[#pids + 1] = pid end
     table.sort(pids)
+    local destCarrier = cand.carrierId ~= nil and self.carriers[cand.carrierId] or nil
     for _, pid in ipairs(pids) do
         local reg = self.registry:property(pid)
-        if reg == nil then
+        if reg ~= nil and reg.spec.residency == "OWNER_RESOLVED" and destCarrier ~= nil and self:isResident(reg, destCarrier) then
+            -- A resident destination is read live, never from a deposited copy (:326):
+            -- nothing is installed for it, so no per-cell record weighs on the ground save.
+        elseif reg == nil then
             -- No producer: a stored record is kept and qualified on read; a
             -- carried portion record is unavailable, never a placeholder over data.
             local stored = destinationBefore and destinationBefore.properties[pid] or nil
@@ -967,6 +1038,7 @@ function O:_settle(handle, st, report)
                 portion.sourceStockRef = copy(b.stock.stockRef)
                 portion.materialRef = copy(b.stock.materialRef)
                 portion.properties = copy(b.stock.properties)
+                for pid, rec in pairs(b.residentProperties or {}) do portion.properties[pid] = copy(rec) end
                 portion.acceptedCauses = copy(b.stock.acceptedCauses)
                 portion.knowledge = b.stock.knowledge
                 local share = b.amount > 0 and math.min(1, a.sourceAmount / b.amount) or 0
@@ -1505,13 +1577,42 @@ end
 -- ---------------------------------------------------------
 -- readMaterial / visitOwnedPropertyRecords / readPropertyMix
 -- ---------------------------------------------------------
+-- RESIDENCY (SG-2 v2.3 :326-330, the SG-1 brief :232; Bob's 2-4c-0 ruling). An OWNER_RESOLVED
+-- fact is live in its owner's domain only where the material is resident there: a registration
+-- names those native store kinds as applicability.residentStoreKinds (Soil: { "ground" }),
+-- matched against the carrier's native storeKind. Elsewhere SG-1 reads the record it stored when
+-- the material left (the carried property), and never asks the owner. A registration without
+-- the key keeps the older reading: every stock is resolved. An owner answering NOT_RESIDENT is
+-- read as not resident either way.
+O.NOT_RESIDENT = "NOT_RESIDENT"
+
+--- Is `reg`'s material resident on `carrier` (its owner holds the live fact there)?
+function O:isResident(reg, carrier)
+    local a = reg.spec.applicability
+    local kinds = type(a) == "table" and a.residentStoreKinds or nil
+    if type(kinds) ~= "table" then return true end
+    local kind = carrier ~= nil and carrier.native ~= nil and carrier.native.storeKind or nil
+    if kind == nil then return false end
+    for _, k in ipairs(kinds) do if k == kind then return true end end
+    return false
+end
+
+--- The owner's context for one stock: the exact material, its footprint (the carrier's native
+--- footprint, the SG-1 brief :232), the purpose and the quantity basis.
+function O:residentContext(stock, purpose)
+    local carrier = stock.carrierId ~= nil and self.carriers[stock.carrierId] or nil
+    local fp = carrier ~= nil and carrier.native ~= nil and carrier.native.footprint or nil
+    return { stockRef = self:stockRef(stock), carrierKey = copy(stock.carrierKey), purpose = purpose, quantityBasisKey = stock.quantityBasisKey,
+             amount = stock.observedAmount, unit = stock.amountUnit, footprint = fp and copy(fp) or nil }
+end
+
 --- Resolve an OWNER_RESOLVED property for a stock at one stable owner
 --- revision (before/after check), with cycle detection.
 function O:resolveResident(reg, stock, purpose, cycle)
     local key = reg.ownerId .. "|" .. stock.stockId
     if cycle[key] then return SGRecords.unavailableProperty(reg.ownerId, reg.spec.schemaVersion, reg.spec.producerId, "RESOLUTION_CYCLE", stock.dataRevision) end
     cycle[key] = true
-    local context = { stockRef = self:stockRef(stock), carrierKey = copy(stock.carrierKey), purpose = purpose, quantityBasisKey = stock.quantityBasisKey, amount = stock.observedAmount, unit = stock.amountUnit }
+    local context = self:residentContext(stock, purpose)
     local ok1, revBefore = pcall(reg.spec.getResidentRevision, copy(context))
     local ok2, record, reason = pcall(reg.spec.resolveResident, copy(context))
     local ok3, revAfter = pcall(reg.spec.getResidentRevision, copy(context))
@@ -1567,7 +1668,14 @@ function O:readMaterial(consumerLease, query)
                 elseif reg.spec.schemaVersion ~= spec.requiredSchemas[pid] then
                     snap.properties[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "SCHEMA_INCOMPATIBLE", stock.dataRevision)
                 elseif reg.spec.residency == "OWNER_RESOLVED" then
-                    snap.properties[pid] = self:resolveResident(reg, stock, ctx.purpose, cycle)
+                    -- Live where the material is resident; elsewhere the carried record (:330).
+                    local carrier = stock.carrierId ~= nil and self.carriers[stock.carrierId] or nil
+                    local live = self:isResident(reg, carrier) and self:resolveResident(reg, stock, ctx.purpose, cycle) or nil
+                    if live ~= nil and not (live.knowledge == "UNAVAILABLE" and live.reason == O.NOT_RESIDENT) then
+                        snap.properties[pid] = live
+                    elseif snap.properties[pid] == nil then
+                        snap.properties[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "NOT_RECORDED", stock.dataRevision)
+                    end
                 elseif snap.properties[pid] == nil then
                     snap.properties[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "NOT_RECORDED", stock.dataRevision)
                 end

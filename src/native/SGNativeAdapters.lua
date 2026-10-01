@@ -732,6 +732,9 @@ function A.groundState(sampler, cell)
         storeKind = "ground",
         x = wx,
         z = wz,
+        -- The cell's footprint for an owner's resident read (the SG-1 brief :232): its world
+        -- centre and its pixel size, so no owner parses the private component key.
+        footprint = { kind = "GROUND_CELL", x = wx, z = wz, size = sampler.pitch },
     }
 end
 

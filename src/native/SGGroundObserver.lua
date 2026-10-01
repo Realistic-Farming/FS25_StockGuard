@@ -240,7 +240,7 @@ end
 --- The native state of an empty pixel.
 function G.emptyState(sampler, x, z)
     local wx, wz = sampler:cellCentre(x, z)
-    return { amount = 0, unit = A.UNIT, storeKind = "ground", x = wx, z = wz }
+    return { amount = 0, unit = A.UNIT, storeKind = "ground", x = wx, z = wz, footprint = { kind = "GROUND_CELL", x = wx, z = wz, size = sampler.pitch } }
 end
 
 function G.cellState(sampler, x, z, cell)
