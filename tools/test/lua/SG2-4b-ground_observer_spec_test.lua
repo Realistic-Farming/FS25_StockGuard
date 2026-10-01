@@ -30,6 +30,8 @@
 --   D  the deferrals (R4)
 --   R  the records: the core leaves ground out, the payload carries it, the history bound
 --      (R5), drift read again at the boundary
+--   Y  typeless height (index 0): the weeder's removal leaves it, the sampler reads it as
+--      no material, a tip onto it settles, a tracked windrow it replaced retires at the save
 --
 --!env: modenv
 --!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
@@ -754,5 +756,62 @@ group("M", function()
     local held = #M.deferral.queue
     M.closeDeferral()
     T.eq("M4 and it holds inside the save boundary, then replays in a DROP frame", held .. "/" .. tostring(host.lastGroundFrame and host.lastGroundFrame.kind) .. "/" .. num(level(w.leveler)), "1/DROP/0")
+    FSBaseMission.delete(m)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Y. TYPELESS HEIGHT (index 0): the weeder's removal leaves it, and it reads empty
+-- ══════════════════════════════════════════════════════════════════════════
+group("Y", function()
+    resetWorld()
+    local m, sg, host, w = boot(function(m, w)
+        m.weedSystem = ENGINE_WEED
+        tipWorld(m, w)
+        w.wheat = vehicleIn(m, ENGINE_NEW_TIPPER("vehicle:wheatOnResidue", { level = 600, fillType = WHEAT, at = { x = -30, z = -30 } }))
+        w.windrow = vehicleIn(m, ENGINE_NEW_TIPPER("vehicle:windrow", { level = 300, fillType = ENGINE_FT.GRASS_WINDROW,
+            supported = { [ENGINE_FT.GRASS_WINDROW] = true }, at = { x = 30, z = 30 } }))
+    end, "y_save", { index = 43 })
+    local s = host:groundSampler()
+    -- A windrow the map already holds, untracked, under the wheat tipper.
+    local px, pz = G_.cellOf(-30, -30)
+    local residue = {}
+    for dx = 0, 2 do
+        G_.put(px + dx, pz, HT.GRASS_WINDROW.index, 6)
+        residue[#residue + 1] = { x = px + dx, z = pz }
+    end
+    local faultsBefore = GO.stats.faults.UNKNOWN_TYPE_INDEX
+    local removed = FSDensityMapUtil.updateWeederArea(-32, -32, -28, -32, -32, -28, false)
+    local left = {}
+    for _, c in ipairs(residue) do left[#left + 1] = G_.typeAt(c.x, c.z) .. "/" .. G_.raw(c.x, c.z) end
+    T.eq("Y1 [entry point] the weeder's real path (FSDensityMapUtil.updateWeederArea, :1637-1638) through removeFromGroundByArea (VERBATIM): the type is cleared before the height under the same filter, so the windrow's height stays under type 0",
+        table.concat(left, ",") .. "/" .. num(removed), "0/6,0/6,0/6/0")
+    local cell, whyCell = s:readCell(px, pz)
+    local rect, whyRect = s:sampleRect(px - 2, pz - 2, px + 4, pz + 2)
+    T.eq("Y2 the sampler reads typeless height as no material: the pixel's raw is kept, 0 litres, no fill type, no refusal; a sample of the area holds no cell and latches nothing",
+        (cell ~= nil and (cell.raw .. "/" .. num(cell.liters) .. "/" .. tostring(cell.fillTypeName)) or ("refused:" .. tostring(whyCell)))
+            .. "/" .. (rect ~= nil and tostring(next(rect)) or ("refused:" .. tostring(whyRect))) .. "/" .. tostring(s.fault),
+        "6/0/nil/nil/nil")
+    local ns = cell ~= nil and NA.groundState(s, cell) or nil
+    T.eq("Y3 its native state is empty: amount 0 and no material (keyed on the fill type, not on the raw height)",
+        ns ~= nil and (num(ns.amount) .. "/" .. tostring(ns.materialRef)) or "no state", "0/nil")
+    ENGINE_TIP(w.wheat, 100)
+    local gained = 0
+    for _, c in ipairs(residue) do if G_.typeAt(c.x, c.z) == HT.WHEAT.index then gained = gained + 6 * 2 end end
+    local ev = host.lastSettlement and host.lastSettlement.report and host.lastSettlement.report.outcomeEvidence or {}
+    T.eq("Y4 a tip onto the residue is observed and settles: the residue the wheat now covers shows as unexplained gain (" .. num(gained) .. " L), nothing refused and no fault counted",
+        head(host) .. "/" .. tostring(gained > 0) .. "/" .. num(ev.unexplainedGain) .. "/" .. tostring(next(host.lastGroundFrame.refused)) .. "/" .. tostring(GO.stats.faults.UNKNOWN_TYPE_INDEX == faultsBefore),
+        "GROUND_TIP/COMMITTED/true/" .. num(gained) .. "/nil/true")
+    -- A windrow StockGuard tracks, removed by the weeder, read again at the save.
+    ENGINE_TIP(w.windrow, 100)
+    local function windrows()
+        local n = 0
+        for _, st in ipairs(groundStocks(sg)) do if st.materialRef ~= nil and st.materialRef.fillTypeName == "GRASS_WINDROW" then n = n + 1 end end
+        return n
+    end
+    local tracked = windrows()
+    FSDensityMapUtil.updateWeederArea(27, 27, 33, 27, 27, 33, false)
+    nativeSave(m, "y_final")
+    T.eq("Y5 a tracked windrow (" .. tracked .. " cells) the weeder removed: the save's boundary read finds every cell empty and retires it, and the ground participant is READY",
+        tostring(tracked > 0) .. "/" .. windrows() .. "/" .. tostring(sg.nativeSave.lastAttempt.results.sg2Ground.state), "true/0/READY")
     FSBaseMission.delete(m)
 end)

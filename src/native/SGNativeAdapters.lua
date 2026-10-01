@@ -725,7 +725,8 @@ end
 function A.groundState(sampler, cell)
     local wx, wz = sampler:cellCentre(cell.x, cell.z)
     return {
-        materialRef = cell.raw > 0 and { kind = "FILL_TYPE", fillTypeName = cell.fillTypeName } or nil,
+        -- Keyed on the fill type: typeless height (index 0) holds no material (SGGroundSampler).
+        materialRef = cell.fillTypeName ~= nil and { kind = "FILL_TYPE", fillTypeName = cell.fillTypeName } or nil,
         amount = cell.liters,
         unit = A.UNIT,
         storeKind = "ground",

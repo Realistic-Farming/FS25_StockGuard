@@ -212,8 +212,10 @@ local function candidates(sx, sz, ex, ez, r)
     return list
 end
 --- addDensityMapHeightAtWorldLine (C, MODELED). A positive delta adds up to floor(delta)
---- raw units (ceil with roundUp), at most stepRaw per pixel, onto empty pixels or pixels of
---- the same type within max(innerRadius, radius) of the line, nearest first; a negative
+--- raw units (ceil with roundUp), at most stepRaw per pixel, onto empty pixels, pixels of
+--- the same type, or typeless height (index 0, which the added type then covers: what the
+--- C++ does there is an in-game observation owed) within max(innerRadius, radius) of the
+--- line, nearest first; a negative
 --- delta removes up to floor(-delta) raw units of that type, nearest first. Answers the
 --- signed raw amount moved and the next line offset. applyChanges false writes nothing.
 function addDensityMapHeightAtWorldLine(updater, sx, sy, sz, ex, ey, ez, delta, heightTypeIndex, innerRadius, radius, limitToLineHeight, lineOffset, applyChanges, tireTrackSystemId)
@@ -230,7 +232,7 @@ function addDensityMapHeightAtWorldLine(updater, sx, sy, sz, ex, ey, ez, delta, 
             if moved >= writeBudget then break end
             local k = gkey(c.x, c.z)
             local t, h = ENGINE_GROUND.types[k] or 0, ENGINE_GROUND.heights[k] or 0
-            if h == 0 or t == heightTypeIndex then
+            if h == 0 or t == 0 or t == heightTypeIndex then
                 local take = math.min(maxRaw - h, ENGINE_GROUND.stepRaw, writeBudget - moved)
                 if take > 0 then
                     if write then ENGINE_GROUND.heights[k], ENGINE_GROUND.types[k] = h + take, heightTypeIndex end
@@ -879,6 +881,113 @@ end
 
 -- The mission's tire track system (TireTrackSystem is C; its id is all the util reads).
 ENGINE_TIRE_TRACKS = { tireTrackSystemId = 5 }
+
+-- ── the modifiers' writes (C, MODELED) ───────────────────────────────────────────
+-- executeSet(value, f1, f2) writes the modifier's channel over the pixels of its area that
+-- pass both filters, each filter read live per pixel (so a write the same call already made
+-- is seen); executeSetWithStats answers the sum of the values it replaced (the C stat is
+-- not proven; nothing in StockGuard reads it). Typeless height keeps type 0; a zero height
+-- with type 0 is an empty pixel.
+local function setChannel(mapId, first, num, x, z, v)
+    local m = ENGINE_MAPS[ENGINE_HEIGHT_ID]
+    if mapId ~= ENGINE_HEIGHT_ID then error("MODEL: no density map " .. tostring(mapId)) end
+    local k = gkey(x, z)
+    if first == m.heightFirstChannel and num == m.heightNumChannels then
+        ENGINE_GROUND.heights[k] = v > 0 and v or nil
+    elseif first == g_densityMapHeightManager.heightTypeFirstChannel and num == g_densityMapHeightManager.heightTypeNumChannels then
+        ENGINE_GROUND.types[k] = v
+    else
+        error("MODEL: no channel range " .. tostring(first) .. "+" .. tostring(num))
+    end
+    if (ENGINE_GROUND.heights[k] or 0) == 0 and (ENGINE_GROUND.types[k] or 0) == 0 then
+        ENGINE_GROUND.heights[k], ENGINE_GROUND.types[k] = nil, nil
+    end
+end
+function DensityMapModifier:executeSetWithStats(value, f1, f2)
+    ENGINE_GROUND.writes = (ENGINE_GROUND.writes or 0) + 1
+    local x0, z0, x1, z1 = pixelsOf(self.poly, self.rounding)
+    local replaced = 0
+    for z = z0, z1 do
+        for x = x0, x1 do
+            if (f1 == nil or f1:passes(x, z)) and (f2 == nil or f2:passes(x, z)) then
+                replaced = replaced + channelValue(self.mapId, self.first, self.num, x, z)
+                setChannel(self.mapId, self.first, self.num, x, z, value)
+            end
+        end
+    end
+    return replaced
+end
+function DensityMapModifier:executeSet(value, f1, f2) self:executeSetWithStats(value, f1, f2) end
+
+-- ── DensityMapHeightUtil, continued ──────────────────────────────────────────────
+--- :9-16 VERBATIM, called as the mission's terrain init calls it.
+function DensityMapHeightUtil.initTerrain(_, _, detailHeightId)
+    DensityMapHeightUtil.terrainDetailHeightId = detailHeightId
+    DensityMapHeightUtil.typeFirstChannel = g_densityMapHeightManager.heightTypeFirstChannel
+    DensityMapHeightUtil.typeNumChannels = g_densityMapHeightManager.heightTypeNumChannels
+    DensityMapHeightUtil.heightFirstChannel = getDensityMapHeightFirstChannel(detailHeightId)
+    DensityMapHeightUtil.heightNumChannels = getDensityMapHeightNumChannels(detailHeightId)
+    DensityMapHeightUtil.modifiersCache = {}
+end
+DensityMapHeightUtil.initTerrain(nil, nil, ENGINE_HEIGHT_ID)
+--- :305-334 VERBATIM: the type is cleared (:332) before the height under the same type
+--- filter (:333), which then matches no pixel: the height stays, under type 0.
+function DensityMapHeightUtil.removeFromGroundByArea(x0, z0, x1, z1, x2, z2, fillTypeIndex)
+    if not g_densityMapHeightManager:getIsValid() then
+        return 0
+    end
+    local heightType = g_densityMapHeightManager:getDensityMapHeightTypeByFillTypeIndex(fillTypeIndex)
+    if heightType == nil then
+        return 0
+    end
+    local modifiers = DensityMapHeightUtil.modifiersCache.removeFromGroundByArea
+    if modifiers == nil then
+        modifiers = {
+            ["heightModifier"] = DensityMapModifier.new(DensityMapHeightUtil.terrainDetailHeightId, DensityMapHeightUtil.heightFirstChannel, DensityMapHeightUtil.heightNumChannels),
+            ["typeModifier"] = DensityMapModifier.new(DensityMapHeightUtil.terrainDetailHeightId, DensityMapHeightUtil.typeFirstChannel, DensityMapHeightUtil.typeNumChannels),
+            ["typeFilters"] = {}
+        }
+        DensityMapHeightUtil.modifiersCache.removeFromGroundByArea = modifiers
+    end
+    local typeFilter = modifiers.typeFilters[heightType]
+    if typeFilter == nil then
+        typeFilter = DensityMapFilter.new(modifiers.typeModifier)
+        typeFilter:setValueCompareParams(DensityValueCompareType.EQUAL, heightType.index)
+        modifiers.typeFilters[heightType] = typeFilter
+    end
+    local heightModifier = modifiers.heightModifier
+    local typeModifier = modifiers.typeModifier
+    heightModifier:setParallelogramWorldCoords(x0, z0, x1, z1, x2, z2, DensityCoordType.POINT_POINT_POINT)
+    typeModifier:setParallelogramWorldCoords(x0, z0, x1, z1, x2, z2, DensityCoordType.POINT_POINT_POINT)
+    typeModifier:executeSet(0, typeFilter)
+    return heightModifier:executeSetWithStats(0, typeFilter) * g_densityMapHeightManager:getMinValidLiterValue(fillTypeIndex)
+end
+
+-- ── the windrows ─────────────────────────────────────────────────────────────────
+ENGINE_FT.GRASS_WINDROW, ENGINE_FT.DRYGRASS_WINDROW = 7, 8
+FillType.GRASS_WINDROW, FillType.DRYGRASS_WINDROW = 7, 8
+do
+    local names = { [7] = "GRASS_WINDROW", [8] = "DRYGRASS_WINDROW" }
+    local byIndex, byName = g_fillTypeManager.getFillTypeNameByIndex, g_fillTypeManager.getFillTypeIndexByName
+    g_fillTypeManager.getFillTypeNameByIndex = function(m, i) return names[i] or byIndex(m, i) end
+    g_fillTypeManager.getFillTypeIndexByName = function(m, n) for i, v in pairs(names) do if v == n then return i end end return byName(m, n) end
+end
+ENGINE_HT.GRASS_WINDROW = addHeightType(ENGINE_FT.GRASS_WINDROW, "GRASS_WINDROW")
+ENGINE_HT.DRYGRASS_WINDROW = addHeightType(ENGINE_FT.DRYGRASS_WINDROW, "DRYGRASS_WINDROW")
+
+-- ── FSDensityMapUtil.updateWeederArea (utils/FSDensityMapUtil.lua:1548-1640) ─────────
+--- VERBATIM from :1636 on. The weed branch (:1552-1635) runs only on a map with weed, and
+--- the bench map has none (the mission's weedSystem, ENGINE_WEED, answers false).
+function FSDensityMapUtil.updateWeederArea(startWorldX, startWorldZ, widthWorldX, widthWorldZ, heightWorldX, heightWorldZ, isHoeWeeder)
+    local weedSystem = g_currentMission.weedSystem
+    local areaBefore = 0
+    local areaAfter = 0
+    if weedSystem:getMapHasWeed() then error("MODEL: the weed branch (:1552-1635) is not modeled") end
+    DensityMapHeightUtil.removeFromGroundByArea(startWorldX, startWorldZ, widthWorldX, widthWorldZ, heightWorldX, heightWorldZ, FillType.GRASS_WINDROW)
+    DensityMapHeightUtil.removeFromGroundByArea(startWorldX, startWorldZ, widthWorldX, widthWorldZ, heightWorldX, heightWorldZ, FillType.DRYGRASS_WINDROW)
+    return areaBefore - areaAfter
+end
+ENGINE_WEED = { getMapHasWeed = function() return false end }
 
 -- The classes as the game defines them before a mod is sourced.
 ENGINE_LOAD_LEVELER()

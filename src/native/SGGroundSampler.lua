@@ -164,6 +164,13 @@ function GS:readCell(x, z)
         return { x = x, z = z, raw = 0, liters = 0 }
     end
     if positive ~= 1 then return self:refuse("INCONSISTENT") end
+    -- Index 0 is the empty height type (types index from 1, DensityMapHeightManager.lua:193):
+    -- positive height under it holds no material of any fill type, as the engine's own
+    -- readers find it (they filter by type: DensityMapHeightUtil.getFillLevelAtArea :80-109,
+    -- getFillTypeAtArea :48). removeFromGroundByArea leaves such height: it clears the type
+    -- (:332) before the height under the same type filter (:333), and the weeder runs it on
+    -- both windrow types every pass (FSDensityMapUtil.lua:1637-1638).
+    if typeValue == 0 then return { x = x, z = z, raw = raw, liters = 0 } end
     if heightType == nil or heightType.fillTypeIndex == nil then return self:refuse("UNKNOWN_TYPE_INDEX") end
     local _, typed, typedTotal = self.heightModifier:executeGet(self.heightFilter, self:typeFilterOf(heightType))
     if typedTotal ~= 1 or typed ~= 1 then return self:refuse("TYPE_UNVERIFIED") end
@@ -195,7 +202,8 @@ function GS:sampleRect(x0, z0, x1, z1)
         if nx == 1 and nz == 1 then
             local cell, why = self:readCell(bx0, bz0)
             if cell == nil then return nil, why end
-            if cell.raw > 0 then out[SGGround.cellKey(bx0, bz0)] = cell end
+            -- Only a pixel holding material (a fill type) is occupied; typeless height reads empty.
+            if cell.fillTypeIndex ~= nil then out[SGGround.cellKey(bx0, bz0)] = cell end
             return true
         end
         local empty, why = self:blockEmpty(bx0, bz0, nx, nz)

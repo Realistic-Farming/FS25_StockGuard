@@ -274,6 +274,17 @@ MUTATIONS = [
  ("W4-no-bracket", NH,
   [("        local okLine, whyLine = SGGroundObserver.install()", "        local okLine, whyLine = false, \"MUTANT\"", 1)],
   "the line bracket is never installed (E1)"),
+ # ── typeless height (Bob's Q4 on the 2-4b2 readings; Desk placed the fix in 2-4b) ──────────
+ ("TZ1-type-zero-refused", GS,
+  [("    if typeValue == 0 then return { x = x, z = z, raw = raw, liters = 0 } end\n", "", 1)],
+  "typeless height is refused as an unknown index: the weeder's residue blinds every later primitive over it (Y2, Y4, Y5)"),
+ ("TZ2-typeless-sampled", GS,
+  [("            if cell.fillTypeIndex ~= nil then out[SGGround.cellKey(bx0, bz0)] = cell end\n", "            if cell.raw > 0 then out[SGGround.cellKey(bx0, bz0)] = cell end\n", 1)],
+  "a typeless pixel is sampled as occupied (Y2)"),
+ ("TZ3-material-on-raw", NA,
+  [("        materialRef = cell.fillTypeName ~= nil and { kind = \"FILL_TYPE\", fillTypeName = cell.fillTypeName } or nil,\n",
+    "        materialRef = cell.raw > 0 and { kind = \"FILL_TYPE\", fillTypeName = cell.fillTypeName } or nil,\n", 1)],
+  "a typeless pixel's native state names a material with no fill type (Y3, Y5)"),
 ]
 
 
