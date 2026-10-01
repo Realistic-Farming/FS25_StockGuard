@@ -34,7 +34,7 @@
 --      no material, a tip onto it settles, a tracked windrow it replaced retires at the save
 --
 --!env: modenv
---!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
+--!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
 local REAL = getmetatable(_G).__index
 local M, GR, GS, GO, NH, NA = SGNativeMaterialSave, SGGround, SGGroundSampler, SGGroundObserver, SGNativeHost, SGNativeAdapters
@@ -243,7 +243,9 @@ group("E", function()
         has(ENGINE_SOURCED, "src/native/SGGroundSampler.lua") and has(ENGINE_SOURCED, "src/native/SGGroundObserver.lua")
         and GO.bracket ~= nil and rawget(REAL, "addDensityMapHeightAtWorldLine") == GO.bracket.wrapper and rawget(_G, "addDensityMapHeightAtWorldLine") == nil)
     T.eq("E1b the tipper's dischargeToGround instance slot is the tip frame, installed when the barrier observed it", tostring(rawget(w.tipper, GO.TIP_MARKER) ~= nil and w.tipper.dischargeToGround == rawget(w.tipper, GO.TIP_MARKER).wrapper), "true")
-    T.eq("E1c the Leveler and Shovel class slots carry the work frames", tostring(rawget(Leveler, GO.CLASS_MARKER) ~= nil and rawget(Leveler, GO.CLASS_MARKER).onUpdate ~= nil) .. "/" .. tostring(rawget(Shovel, GO.CLASS_MARKER) ~= nil and rawget(Shovel, GO.CLASS_MARKER).onUpdateTick ~= nil), "true/true")
+    local recLU, recSU = SGClassHook.record(Leveler, "onUpdate", GO.HOOK_ID), SGClassHook.record(Shovel, "onUpdateTick", GO.HOOK_ID)
+    T.eq("E1c the Leveler and Shovel class slots carry the work frames, each one SGClassHook record whose wrapper is the live method",
+        tostring(recLU ~= nil and Leveler.onUpdate == recLU.wrapper) .. "/" .. tostring(recSU ~= nil and Shovel.onUpdateTick == recSU.wrapper), "true/true")
     local uid = unitId(w.tipper)
     T.eq("E2 the unit has a stock; the producer marks it (o = 7)", tostring(publish(m, sg, lease, uid, 7)), "APPLIED")
     ENGINE_TIP(w.tipper, 100)
@@ -597,11 +599,18 @@ group("D", function()
     M.closeDeferral()
     T.eq("D3 at the close the held callback runs once, inside a DROP frame, and the refused tip is NOT replayed (no ground the unit did not pay for)",
         tostring(host.lastGroundFrame and host.lastGroundFrame.kind) .. "/" .. level(w.leveler) .. "/" .. level(w.tipper) .. "/" .. num(G_.totalRaw()), "DROP/0/600/10")
-    T.eq("D4 the class hooks install once per class table", tostring(GO.installClassHooks({ Leveler = Leveler, Shovel = Shovel })), "false")
+    local wLU, oLU = Leveler.onUpdate, SGClassHook.record(Leveler, "onUpdate", GO.HOOK_ID).original
+    T.eq("D4 a second install wraps nothing new on the same class table", tostring(GO.installClassHooks({ Leveler = Leveler, Shovel = Shovel })), "false")
+    local recAfter = SGClassHook.record(Leveler, "onUpdate", GO.HOOK_ID)
+    T.eq("D4b it REBINDS the record (MAINTENANCE row 187): the live method is the same one wrapper, over the same engine method, no second layer",
+        tostring(Leveler.onUpdate == wLU and recAfter.wrapper == wLU and recAfter.original == oLU and oLU ~= wLU), "true")
     local foreign = ENGINE_NEW_LEVELER("vehicle:foreign", {})
     local mine = function() end
     foreign.spec_leveler.nodes[1].onLevelerRaycastCallback = mine
     T.eq("D5 a node whose callback another mod replaced is left alone", GO.installLeveler(foreign) .. "/" .. tostring(foreign.spec_leveler.nodes[1].onLevelerRaycastCallback == mine), "0/true")
+    local late = ENGINE_NEW_LEVELER("vehicle:late", {})
+    T.eq("D6 a leveler built after the class wrap holds the class wrapper in its node and takes no node wrap of its own: the native read is the record's original, not the live class slot",
+        GO.installLeveler(late) .. "/" .. tostring(late.spec_leveler.nodes[1].onLevelerRaycastCallback == Leveler.onLevelerRaycastCallback), "0/true")
     FSBaseMission.delete(m)
 end)
 

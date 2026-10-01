@@ -124,7 +124,7 @@ G.TIP_KEY = "dischargeToGround"
 G.TIP_MARKER = "_sgGroundTip"
 G.LEVELER_KEY = "onLevelerRaycastCallback"
 G.LEVELER_MARKER = "_sgLevelerDeferral"
-G.CLASS_MARKER = "_sgGroundObserver"
+G.HOOK_ID = "groundObserver"      -- the SGClassHook site of the Shovel and Leveler class slots
 G.EPSILON = 1e-6
 G.QUANT_ABS = 0.001      -- DensityMapHeightUtil.lua:296
 G.QUANT_REL = 1e-9
@@ -789,43 +789,52 @@ function G.installLeveler(vehicle)
     return n
 end
 
-local function wrapClass(class, name, make)
+-- The class half of the Leveler callback: one wrapper per original, so a callback held at
+-- the save boundary replays through the same DROP frame. Weak keys: a map load's original
+-- does not outlive its class table.
+local levelerWrappers = setmetatable({}, { __mode = "k" })
+local function levelerAround(original, ...)
+    local w = levelerWrappers[original]
+    if w == nil then
+        w = levelerCallback(original)
+        levelerWrappers[original] = w
+    end
+    return w(...)
+end
+
+--- One rebindable wrapper per class and name (SGClassHook, MAINTENANCE row 187): a later
+--- install, this module's or a re-sourced one's, rebinds it rather than stacking or
+--- skipping. Returns true when this call made the first wrap.
+local function wrapClass(class, name, around)
     if type(class) ~= "table" or type(class[name]) ~= "function" then return false end
-    local marks = rawget(class, G.CLASS_MARKER) or {}
-    rawset(class, G.CLASS_MARKER, marks)
-    if marks[name] ~= nil then return false end
-    local original = class[name]
-    local wrapper = make(original)
-    class[name] = wrapper
-    marks[name] = { original = original, wrapper = wrapper }
-    return true
+    return SGClassHook.wrap(class, name, G.HOOK_ID, around, G) == "INSTALLED"
 end
 
 --- The class slots: Shovel.onUpdateTick and Leveler.onUpdate (the WORK frames) and the
---- class half of the Leveler callback. Once per class table: both specializations are
---- re-sourced with every map load, so each new table takes them once.
+--- class half of the Leveler callback. Both specializations are re-sourced with every
+--- map load, so each new table takes the first wrap; within one table every install
+--- rebinds the same record.
 function G.installClassHooks(classes)
     if g_server == nil then return false end
     classes = classes or {}
     -- This map load's native methods, read before any wrap of ours (a class table we
-    -- already wrapped in this mission gives back the original it holds).
+    -- already wrapped gives back the original its record holds).
     local D = classes.Dischargeable
     G.nativeDischargeToGround = type(D) == "table" and type(D[G.TIP_KEY]) == "function" and D[G.TIP_KEY] or nil
     local L = classes.Leveler
     G.nativeLevelerCallback = nil
     if type(L) == "table" then
-        local marks = rawget(L, G.CLASS_MARKER)
-        local held = marks ~= nil and marks[G.LEVELER_KEY] or nil
+        local held = SGClassHook.record(L, G.LEVELER_KEY, G.HOOK_ID)
         G.nativeLevelerCallback = held ~= nil and held.original or L[G.LEVELER_KEY]
     end
     local installed = false
-    installed = wrapClass(classes.Shovel, "onUpdateTick", function(original)
-        return function(self, ...) return aroundWork(original, shovelWork, self, ...) end
+    installed = wrapClass(classes.Shovel, "onUpdateTick", function(original, self, ...)
+        return aroundWork(original, shovelWork, self, ...)
     end) or installed
-    installed = wrapClass(classes.Leveler, "onUpdate", function(original)
-        return function(self, ...) return aroundWork(original, levelerWork, self, ...) end
+    installed = wrapClass(classes.Leveler, "onUpdate", function(original, self, ...)
+        return aroundWork(original, levelerWork, self, ...)
     end) or installed
-    installed = wrapClass(classes.Leveler, G.LEVELER_KEY, levelerCallback) or installed
+    installed = wrapClass(classes.Leveler, G.LEVELER_KEY, levelerAround) or installed
     return installed
 end
 
