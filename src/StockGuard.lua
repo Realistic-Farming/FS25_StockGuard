@@ -71,6 +71,9 @@ function SG.new(mission)
     self.commands = SGCommands.new(self.registry, serverTimeSec)
     self.transport = SGTransport.new(self.views, self.commands)
     self.transport.stockGuard = self
+    -- SG2-4a: the native save boundary's participants for this mission.
+    self.nativeSave = SGNativeMaterialSave ~= nil and SGNativeMaterialSave.new(self) or nil
+    self.ground = nil
     self.capacity = nil
     self.finishedLoadingObserved = false
     self.enumerated = false
@@ -136,8 +139,23 @@ function SG:buildHandle()
     h.readCarrierPending = serverOnly(function(lease, carrierKey, trustedActor) return host.operations:readCarrierPending(lease, carrierKey, trustedActor) end)
     h.setCarrierPending = serverOnly(function(lease, carrierKey, expectedEmptyEpoch, expectedSelectionRevision, newTarget, trustedActor) return host.operations:setCarrierPending(lease, carrierKey, expectedEmptyEpoch, expectedSelectionRevision, newTarget, trustedActor) end)
     h.onPendingComplete = serverOnly(function(pendingId, outcome, detail) local ok = host.commands:onPendingComplete(pendingId, outcome, detail) if ok then host.transport:markDirty() end return ok end)
+    -- SG2-4a: SG_NATIVE_MATERIAL_SAVE_V1 participants (trusted owner modules, server only).
+    h.registerNativeSaveParticipant = function(participantId, spec)
+        if not host:isServer() then return false, "NOT_SERVER" end
+        if host.nativeSave == nil then return false, "UNAVAILABLE" end
+        return host.nativeSave:register(participantId, spec)
+    end
+    h.unregisterNativeSaveParticipant = function(participantId, spec)
+        if not host:isServer() then return false, "NOT_SERVER" end
+        if host.nativeSave == nil then return false, "UNAVAILABLE" end
+        return host.nativeSave:unregister(participantId, spec)
+    end
     -- Views and capabilities
-    h.getCapabilities = function() return host.views:getCapabilities() end
+    h.getCapabilities = function()
+        local caps = host.views:getCapabilities()
+        caps.nativeMaterialSave = host.nativeSave ~= nil and host.nativeSave:capability() or nil
+        return caps
+    end
     h.getManagementView = serverOnly(function(trustedActorContext, selection, readOptions) return host.views:getManagementView(trustedActorContext, selection, readOptions, true) end)
     h.getRecipeLibraryView = function() return { state = "UNAVAILABLE", reason = "RECIPE_LIBRARY_OWNER_ABSENT" } end
     h.resolveActor = serverOnly(function(connection) return SG.resolveActorFor(host, connection) end)
@@ -633,6 +651,10 @@ function SG:delete()
     self.sites:unbind()
     self.transport:teardown()
     self.commands:withdrawAll("MISSION_END")
+    -- SG2-4a: an open save attempt finishes as failed, registrations are cleared and the
+    -- prepare guard is removed while it is still ours.
+    if self.nativeSave ~= nil then self.nativeSave:close("MISSION_END") end
+    self.ground = nil
     self.registry:clear()
     self.operations:clear()
     self.save:clear()

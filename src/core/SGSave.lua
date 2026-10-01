@@ -60,6 +60,7 @@ function S.new(registry, operations, coordinator)
     self.ledger = nil
     self.ledgerRegistered = false
     self.saveAttemptId = 0
+    self.openAttemptId = nil      -- SG2-4a: the native save attempt in progress, if any
     self.nativeSnapshotKey = nil
     self.loadEpoch = "1"
     self.sectionState = {}        -- sectionId -> { ready, reason, retained, payload, schemaVersion }
@@ -175,7 +176,14 @@ function S:buildEnvelope(context)
         self.lastEnvelope = copy(self.retainedRaw)
         return self.lastEnvelope, { "RETAINED_RAW" }
     end
-    self.saveAttemptId = self.saveAttemptId + 1
+    if self.openAttemptId ~= nil then
+        -- SG2-4a: inside a native save attempt the envelope carries that attempt's id,
+        -- allocated from this same counter (openAttempt), so the ground descriptor and
+        -- the envelope name one attempt.
+        self.saveAttemptId = self.openAttemptId
+    else
+        self.saveAttemptId = self.saveAttemptId + 1
+    end
     self.nativeSnapshotKey = tostring(self.backendId or S.BACKEND_XML) .. ":" .. tostring(self.loadEpoch) .. ":" .. tostring(self.saveAttemptId)
     local e = {
         schemaVersion = S.SCHEMA_VERSION,
@@ -234,6 +242,21 @@ function S:buildEnvelope(context)
     end
     self.lastEnvelope = e
     return e, failed
+end
+
+--- SG2-4a: a native save attempt allocates its id from the envelope's own counter, so
+--- ids stay monotonic whether or not an attempt is open, and buildEnvelope adopts it
+--- until closeAttempt.
+function S:openAttempt()
+    self.saveAttemptId = self.saveAttemptId + 1
+    self.openAttemptId = self.saveAttemptId
+    return self.openAttemptId
+end
+
+function S:closeAttempt(attemptId)
+    if self.openAttemptId == nil or self.openAttemptId ~= attemptId then return false end
+    self.openAttemptId = nil
+    return true
 end
 
 -- ---------------------------------------------------------
@@ -445,6 +468,8 @@ function S:stageLoad(payload, context)
     end
     self.loadedEnvelope = e
     self.saveAttemptId = math.max(self.saveAttemptId, e.saveAttemptId)
+    -- SG2-4a: a section coupled to a native image checks it names this attempt.
+    if type(context) == "table" then context.saveAttemptId = e.saveAttemptId end
     if e.farmRestore ~= nil then
         self.farmRestore = { receipts = copy(e.farmRestore.receipts), pendingUnits = copy(e.farmRestore.pendingUnits) }
     end

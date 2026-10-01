@@ -1019,6 +1019,10 @@ function H.installClassHooks(classes)
     -- SG2-3c: the combine's in-flight buffers survive a save (class-table saver and
     -- post-load event, Vehicle.lua:1212 and :903-906; its savegame paths through Combine.initSpecialization).
     if SGCombineBufferSave ~= nil then SGCombineBufferSave.installClassHooks({ Combine = classes.Combine }) end
+    -- SG2-4a: the native save boundary (SavegameController's start and result, called by
+    -- name through the class) and the Combine drain deferral, installed after the drain
+    -- bracket above so the deferral is its outermost wrapper.
+    if SGNativeMaterialSave ~= nil then SGNativeMaterialSave.installClassHooks({ SavegameController = classes.SavegameController, Combine = classes.Combine }) end
     wrapClassMethod(classes.StorageSystem, "addStorage", nil, function(r, storage)
         if r[1] == true then dispatch("onStorageAdded", storage) end
     end)
