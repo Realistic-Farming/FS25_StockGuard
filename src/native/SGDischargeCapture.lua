@@ -15,8 +15,11 @@
 -- it through self. So the capture wraps each live vehicle's instance slot, like
 -- SGFillUnitObserver, installed by the native host when it observes a vehicle.
 --
--- RECOGNITION IS EXACT FUNCTION IDENTITY against the method as Dischargeable
--- defined it when this file loaded. A vehicle whose slot holds anything else (an
+-- RECOGNITION IS EXACT FUNCTION IDENTITY against the method as the LIVE Dischargeable
+-- defines it, read at each mission's install (setNative, MAINTENANCE row 187): the engine
+-- builds a new Dischargeable at every savegame start (Dischargeable.lua:2;
+-- SpecializationManager.lua:86 from MPLoadingScreen.lua:352 and :480), while this file is
+-- sourced once per process. A vehicle whose slot holds anything else (an
 -- overwritten function from another mod) is left untouched: its sales have no
 -- admitted parent capture and the facade reports them unavailable, while the
 -- native work runs exactly as it would.
@@ -30,8 +33,12 @@ local D = SGDischargeCapture
 D.MARKER = "_sgDischargeCapture"
 D.KEY = "dischargeToObject"
 
-if D.nativeDischargeToObject == nil and Dischargeable ~= nil then
-    D.nativeDischargeToObject = Dischargeable.dischargeToObject
+D.nativeDischargeToObject = nil
+
+--- This mission's native dischargeToObject, from the class the engine built for it.
+function D.setNative(class)
+    D.nativeDischargeToObject = type(class) == "table" and type(class[D.KEY]) == "function" and class[D.KEY] or nil
+    return D.nativeDischargeToObject ~= nil
 end
 
 local function packn(...)

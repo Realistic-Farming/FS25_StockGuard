@@ -36,6 +36,7 @@ SGCutState = SGCutState or {}
 local CS = SGCutState
 
 CS.PROFILE = "CUT_STATE_VOLUME_V1"
+CS.HOOK_ID = "cutState"        -- its SGClassHook site on FSDensityMapUtil.cutFruitArea
 CS.MARGIN_PIXELS = 1
 CS.MAX_PIXELS = 4096          -- a cutter call's envelope is a thin strip; more is a refusal
 CS.TOLERANCE = 1e-6
@@ -189,10 +190,10 @@ end
 --- it runs inside. Outside a cutter call it is the native function, untouched.
 function CS.installOn(util)
     if type(util) ~= "table" or type(util.cutFruitArea) ~= "function" then return false end
-    if rawget(util, "_sgCutState") ~= nil then return false end
-    local original = util.cutFruitArea
     local packn = function(...) return select("#", ...), { ... } end
-    local wrapper = function(fruitIndex, sx, sz, wx, wz, hx, hz, destroySpray, useMinForageState, ...)
+    -- One wrapper for the process, rebound by every install (SGClassHook, MAINTENANCE row
+    -- 187): after a mods reload it reads the NEW SGHarvestCapture's active entry.
+    return SGClassHook.wrap(util, "cutFruitArea", CS.HOOK_ID, function(original, fruitIndex, sx, sz, wx, wz, hx, hz, destroySpray, useMinForageState, ...)
         local entry = SGHarvestCapture ~= nil and SGHarvestCapture.activeEntry or nil
         local cap = nil
         if entry ~= nil and g_server ~= nil then
@@ -211,8 +212,5 @@ function CS.installOn(util)
         end
         if not r[1] then error(r[2], 0) end
         return unpack(r, 2, n)
-    end
-    util.cutFruitArea = wrapper
-    rawset(util, "_sgCutState", { original = original, wrapper = wrapper })
-    return true
+    end, CS) == "INSTALLED"
 end

@@ -603,17 +603,51 @@ local function resolveSoilApi()
     return env.SoilCapacityIntegration
 end
 
+SGCapacity.HOOK_ID = "capacity"
+SGCapacity.OUTER_ID = "capacityOuter"
+
+--- The outer READY guard's around: refuses a registration once READY, else passes it on.
+function SGCapacity.outerGuardAround(current, self, desc)
+    if controller ~= nil and controller:isReady() then
+        log("late fill type registration refused after freeze: " .. tostring(desc and desc.name))
+        return false
+    end
+    return current(self, desc)
+end
+--- How many outer guards this process holds (records OUTER_ID .. 1, 2, ...).
+function SGCapacity.outerGuardCount()
+    local n = 0
+    while SGClassHook.record(FillTypeManager, "addFillType", SGCapacity.OUTER_ID .. (n + 1)) ~= nil do n = n + 1 end
+    return n
+end
+--- Rebind every outer guard to this module and its controller.
+function SGCapacity.rebindOuterGuards()
+    for i = 1, SGCapacity.outerGuardCount() do
+        SGClassHook.wrap(FillTypeManager, "addFillType", SGCapacity.OUTER_ID .. i, SGCapacity.outerGuardAround, SGCapacity)
+    end
+end
+--- Is `fn` the sizing guard or one of the outer guards?
+function SGCapacity.isOwnAddFillType(fn)
+    local sizing = SGClassHook.record(FillTypeManager, "addFillType", SGCapacity.HOOK_ID)
+    if sizing ~= nil and fn == sizing.wrapper then return true end
+    for i = 1, SGCapacity.outerGuardCount() do
+        if fn == SGClassHook.record(FillTypeManager, "addFillType", SGCapacity.OUTER_ID .. i).wrapper then return true end
+    end
+    return false
+end
+
 function SGCapacity.installHooks(ctl)
     controller = ctl
-    -- The install-once flag lives on the global table so a re-sourced main.lua
-    -- (a mods-set change at the main menu) cannot stack a second set of hooks.
-    if SGCapacity._hooksInstalled then return true end
-    SGCapacity._hooksInstalled = true
+    -- One SGClassHook record per engine method for the process (MAINTENANCE row 187). Every
+    -- call rebinds them to this module and this controller: a mods reload re-sources this
+    -- file (on PC into a fresh environment, mods.lua:482-493), and a flag on the module
+    -- table did not survive that, so the old hooks kept gating with the old controller
+    -- beside the new ones.
+    local ID = SGCapacity.HOOK_ID
 
     -- Registration sizing and the READY guard, one wrapper for the process.
     if FillTypeManager ~= nil and type(FillTypeManager.addFillType) == "function" then
-        local native = FillTypeManager.addFillType
-        SGCapacity._addFillTypeGuard = function(self, fillTypeDesc)
+        SGClassHook.wrap(FillTypeManager, "addFillType", ID, function(native, self, fillTypeDesc)
             if controller:isReady() then
                 log("late fill type registration refused after freeze: " .. tostring(fillTypeDesc and fillTypeDesc.name))
                 return false
@@ -632,23 +666,21 @@ function SGCapacity.installHooks(ctl)
                 controller.widthBits = bits
             end
             return native(self, fillTypeDesc)
-        end
-        FillTypeManager.addFillType = SGCapacity._addFillTypeGuard
-        local nativeLoad = FillTypeManager.loadMapData
-        FillTypeManager.loadMapData = function(self, ...)
+        end, SGCapacity)
+        SGCapacity._addFillTypeGuard = SGClassHook.record(FillTypeManager, "addFillType", ID).wrapper
+        SGClassHook.wrap(FillTypeManager, "loadMapData", ID, function(nativeLoad, self, ...)
             controller:onMapDataEntry(FillTypeManager.SEND_NUM_BITS, function(w) FillTypeManager.SEND_NUM_BITS = w end)
             return nativeLoad(self, ...)
-        end
-        local nativeUnload = FillTypeManager.unloadMapData
-        FillTypeManager.unloadMapData = function(self, ...)
+        end, SGCapacity)
+        SGClassHook.wrap(FillTypeManager, "unloadMapData", ID, function(nativeUnload, self, ...)
             controller:onEpochReset(FillTypeManager.SEND_NUM_BITS, function(w) FillTypeManager.SEND_NUM_BITS = w end)
             return nativeUnload(self, ...)
-        end
+        end, SGCapacity)
     end
 
     -- Preflight before any map work.
     if Mission00 ~= nil and type(Mission00.setMissionInfo) == "function" then
-        Mission00.setMissionInfo = Utils.overwrittenFunction(Mission00.setMissionInfo, function(mission, superFunc, missionInfo, missionDynamicInfo)
+        SGClassHook.overwrite(Mission00, "setMissionInfo", ID, function(mission, superFunc, missionInfo, missionDynamicInfo)
             local ok, reason, offending = controller:preflight(mission, missionDynamicInfo, resolveSoilApi)
             if not ok then
                 controller:fail(reason, offending)
@@ -656,13 +688,13 @@ function SGCapacity.installHooks(ctl)
                 return
             end
             return superFunc(mission, missionInfo, missionDynamicInfo)
-        end)
+        end, SGCapacity)
     end
 
     -- The saved mapping load: record the native result and scan the raw rows
     -- for duplicate names before the native loader collapses them.
     if DensityMapHeightManager ~= nil and type(DensityMapHeightManager.loadFromXMLFile) == "function" then
-        DensityMapHeightManager.loadFromXMLFile = Utils.overwrittenFunction(DensityMapHeightManager.loadFromXMLFile, function(hm, superFunc, xmlFilename)
+        SGClassHook.overwrite(DensityMapHeightManager, "loadFromXMLFile", ID, function(hm, superFunc, xmlFilename)
             local ok = superFunc(hm, xmlFilename)
             local duplicate = nil
             if ok == true and xmlFilename ~= nil and XMLFile ~= nil and type(XMLFile.load) == "function" then
@@ -684,12 +716,12 @@ function SGCapacity.installHooks(ctl)
             end
             controller:onSavedMappingLoaded(ok == true, duplicate)
             return ok
-        end)
+        end, SGCapacity)
     end
 
     -- Ground preparation before native initialization.
     if DensityMapHeightManager ~= nil and type(DensityMapHeightManager.initialize) == "function" then
-        DensityMapHeightManager.initialize = Utils.overwrittenFunction(DensityMapHeightManager.initialize, function(hm, superFunc, isServer, ...)
+        SGClassHook.overwrite(DensityMapHeightManager, "initialize", ID, function(hm, superFunc, isServer, ...)
             local mi = g_currentMission and g_currentMission.missionInfo
             local savedAccepted = false
             if mi ~= nil and mi.isValid and type(mi.getIsDensityMapValid) == "function" then
@@ -717,12 +749,12 @@ function SGCapacity.installHooks(ctl)
             -- the failure and cancels the load; nothing is saved.
             hm.tipTypeMappings = nil
             return superFunc(hm, isServer, ...)
-        end)
+        end, SGCapacity)
     end
 
     -- Final freeze and the failure-completion site.
     if FSBaseMission ~= nil and type(FSBaseMission.onFinishedLoading) == "function" then
-        FSBaseMission.onFinishedLoading = Utils.overwrittenFunction(FSBaseMission.onFinishedLoading, function(mission, superFunc, ...)
+        SGClassHook.overwrite(FSBaseMission, "onFinishedLoading", ID, function(mission, superFunc, ...)
             local mapId = mission.missionInfo and mission.missionInfo.mapId or nil
             -- Another mod's hook on one of the SG-6 stream pairs after our
             -- install would be skipped silently while READY; that is an
@@ -740,29 +772,25 @@ function SGCapacity.installHooks(ctl)
             end
             -- Outer READY guard around the CURRENT callable when it is neither
             -- the sizing guard nor an outer guard already installed (no
-            -- identical wrapper on later missions).
-            if FillTypeManager.addFillType ~= SGCapacity._addFillTypeGuard and FillTypeManager.addFillType ~= SGCapacity._outerGuard then
-                local current = FillTypeManager.addFillType
-                SGCapacity._outerGuard = function(self, desc)
-                    if controller:isReady() then
-                        log("late fill type registration refused after freeze: " .. tostring(desc and desc.name))
-                        return false
-                    end
-                    return current(self, desc)
-                end
-                SGCapacity._outerGuardInstalls = (SGCapacity._outerGuardInstalls or 0) + 1
-                FillTypeManager.addFillType = SGCapacity._outerGuard
+            -- identical wrapper on later missions). Each outer guard is its own
+            -- record (OUTER_ID .. n), rebound here with this controller, so its
+            -- count and identity survive a mods reload.
+            SGCapacity.rebindOuterGuards()
+            if not SGCapacity.isOwnAddFillType(FillTypeManager.addFillType) then
+                local n = SGCapacity.outerGuardCount() + 1
+                SGClassHook.wrap(FillTypeManager, "addFillType", SGCapacity.OUTER_ID .. n, SGCapacity.outerGuardAround, SGCapacity)
+                SGCapacity._outerGuard = SGClassHook.record(FillTypeManager, "addFillType", SGCapacity.OUTER_ID .. n).wrapper
             end
+            SGCapacity._outerGuardInstalls = SGCapacity.outerGuardCount()
             SGWireFormats.install(controller)
             if mission.stockGuard ~= nil then mission.stockGuard.capacity = controller end
             return superFunc(mission, ...)
-        end)
+        end, SGCapacity)
     end
 
     -- Admission header on the finished-loading event, both directions.
     if BaseMissionFinishedLoadingEvent ~= nil then
-        local nativeWrite = BaseMissionFinishedLoadingEvent.writeStream
-        BaseMissionFinishedLoadingEvent.writeStream = function(self, streamId, connection)
+        SGClassHook.wrap(BaseMissionFinishedLoadingEvent, "writeStream", ID, function(nativeWrite, self, streamId, connection)
             nativeWrite(self, streamId, connection)
             local h = controller:getHeader()
             if h ~= nil then
@@ -771,8 +799,9 @@ function SGCapacity.installHooks(ctl)
                 -- A peer that is not READY sends a zero header the server will refuse.
                 SGCanonicalProfile.writeHeader(streamId, { version = 0, widthBits = 0, registeredCount = 0, formatFlags = 0, digest = (function() local z = {} for i = 1, 32 do z[i] = 0 end return z end)() })
             end
-        end
-        BaseMissionFinishedLoadingEvent.readStream = function(self, streamId, connection)
+        end, SGCapacity)
+        -- The native readStream is replaced, not called: the header follows its fields.
+        SGClassHook.wrap(BaseMissionFinishedLoadingEvent, "readStream", ID, function(_native, self, streamId, connection)
             self.posX = streamReadFloat32(streamId)
             self.posY = streamReadFloat32(streamId)
             self.posZ = streamReadFloat32(streamId)
@@ -792,7 +821,7 @@ function SGCapacity.installHooks(ctl)
                 return
             end
             self:run(connection)
-        end
+        end, SGCapacity)
     end
 
     -- The static answer 8: the client shows the component-level message and
@@ -801,7 +830,7 @@ function SGCapacity.installHooks(ctl)
         ConnectionRequestAnswerEvent.ANSWER_SG6_PROFILE_MISMATCH = SGCapacity.ANSWER_PROFILE_MISMATCH
     end
     if FSBaseMission ~= nil and type(FSBaseMission.onConnectionRequestAnswer) == "function" then
-        FSBaseMission.onConnectionRequestAnswer = Utils.overwrittenFunction(FSBaseMission.onConnectionRequestAnswer, function(mission, superFunc, connection, answer, ...)
+        SGClassHook.overwrite(FSBaseMission, "onConnectionRequestAnswer", ID, function(mission, superFunc, connection, answer, ...)
             if answer == SGCapacity.ANSWER_PROFILE_MISMATCH then
                 mission.connectionWasClosed = true
                 local key = "sg6_profile_mismatch"
@@ -812,7 +841,7 @@ function SGCapacity.installHooks(ctl)
                 return
             end
             return superFunc(mission, connection, answer, ...)
-        end)
+        end, SGCapacity)
     end
     return true
 end

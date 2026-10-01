@@ -47,7 +47,7 @@
 SGStorageBracket = SGStorageBracket or {}
 local B = SGStorageBracket
 
-B.MARKER = "_sgStorageBracketed"
+B.HOOK_ID = "storageBracket"
 
 B.CAUSE_SET   = "SET_FILL_LEVEL"
 B.CAUSE_EMPTY = "EMPTY"
@@ -76,10 +76,10 @@ function B.install(storageClass, onChange)
     if type(storageClass.setFillLevel) ~= "function" or type(storageClass.empty) ~= "function" then
         return false, "MISSING_METHODS"
     end
-    if storageClass[B.MARKER] ~= nil then return false, "ALREADY_INSTALLED" end
 
-    local originalSet   = storageClass.setFillLevel
-    local originalEmpty = storageClass.empty
+    -- One wrapper per method for the process (SGClassHook, MAINTENANCE row 187): a second
+    -- install, after a mods reload or not, rebinds it to this onChange and never stacks.
+    local rebound = SGClassHook.record(storageClass, "setFillLevel", B.HOOK_ID) ~= nil
 
     --- Report one observed change. Protected: an error in our observer must never
     --- become an error in a native storage mutation that has already happened.
@@ -96,17 +96,17 @@ function B.install(storageClass, onChange)
     -- changes it; the level AFTER is read from the same table rather than from the
     -- requested value, because the clamp to capacity lives inside the native
     -- function and the request is not what landed.
-    storageClass.setFillLevel = function(self, fillLevel, fillType, fillInfo)
+    SGClassHook.wrap(storageClass, "setFillLevel", B.HOOK_ID, function(originalSet, self, fillLevel, fillType, fillInfo)
         local before = levelOf(self, fillType)
         local n, r = packn(originalSet(self, fillLevel, fillType, fillInfo))
         report(self, fillType, before, levelOf(self, fillType), B.CAUSE_SET)
         return unpack(r, 1, n)
-    end
+    end, B)
 
     -- empty. A separate path that a fill-level listener never sees at all. Every
     -- type present before the call is reported, because the native call zeroes all
     -- of them and afterwards there is nothing left to enumerate from.
-    storageClass.empty = function(self, ...)
+    SGClassHook.wrap(storageClass, "empty", B.HOOK_ID, function(originalEmpty, self, ...)
         local before = {}
         if type(self) == "table" and type(self.fillLevels) == "table" then
             for fillType, level in pairs(self.fillLevels) do
@@ -120,10 +120,8 @@ function B.install(storageClass, onChange)
             report(self, fillType, level, levelOf(self, fillType), B.CAUSE_EMPTY)
         end
         return unpack(r, 1, n)
-    end
-
-    storageClass[B.MARKER] = { set = storageClass.setFillLevel, empty = storageClass.empty,
-                               originalSet = originalSet, originalEmpty = originalEmpty }
+    end, B)
+    if rebound then return true, "REBOUND" end
     return true
 end
 
@@ -135,15 +133,15 @@ end
 ---@return boolean restored, string|nil why
 function B.uninstall(storageClass)
     if type(storageClass) ~= "table" then return false, "NO_CLASS" end
-    local rec = storageClass[B.MARKER]
-    if rec == nil then return false, "NOT_INSTALLED" end
+    local set = SGClassHook.record(storageClass, "setFillLevel", B.HOOK_ID)
+    local empty = SGClassHook.record(storageClass, "empty", B.HOOK_ID)
+    if set == nil or empty == nil then return false, "NOT_INSTALLED" end
 
-    if storageClass.setFillLevel ~= rec.set or storageClass.empty ~= rec.empty then
+    if storageClass.setFillLevel ~= set.wrapper or storageClass.empty ~= empty.wrapper then
         return false, "WRAPPED_BY_ANOTHER"
     end
 
-    storageClass.setFillLevel = rec.originalSet
-    storageClass.empty        = rec.originalEmpty
-    storageClass[B.MARKER]    = nil
+    SGClassHook.unwrap(storageClass, "setFillLevel", B.HOOK_ID)
+    SGClassHook.unwrap(storageClass, "empty", B.HOOK_ID)
     return true
 end

@@ -27,7 +27,7 @@
 --   O  a cutFruitArea call outside any cutter call is native, untouched
 --   G  the in-game evidence: the first admission and each refusal logged once
 --
---!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
+--!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
 local NH, NA, HC, CS = SGNativeHost, SGNativeAdapters, SGHarvestCapture, SGCutState
 local WHEAT_FRUIT, BARLEY_FRUIT = ENGINE_FRUIT.WHEAT, ENGINE_FRUIT.BARLEY
@@ -119,7 +119,7 @@ group("S", function()
         ENGINE_PLANE.sow(WHEAT_FRUIT, 0, 0, 2, 1, 4)
         ENGINE_PLANE.sow(WHEAT_FRUIT, 2, 0, 4, 1, 3)
     end)
-    T.ok("S1 [reached] main.lua's load path installed the producer on the engine's cutFruitArea", host ~= nil and host.ready and rawget(FSDensityMapUtil, "_sgCutState") ~= nil)
+    T.ok("S1 [reached] main.lua's load path installed the producer on the engine's cutFruitArea", host ~= nil and host.ready and SGClassHook.record(FSDensityMapUtil, "cutFruitArea", CS.HOOK_ID) ~= nil and FSDensityMapUtil.cutFruitArea == SGClassHook.record(FSDensityMapUtil, "cutFruitArea", CS.HOOK_ID).wrapper)
     local admitted = CS.stats.admitted
     ENGINE_HARVEST_TICK(header, combine, 16)
     T.eq("S2 [world] the frame harvested 2 + 1 = 3 L into the hopper", num(combine:getFillUnitFillLevel(1)), "3")

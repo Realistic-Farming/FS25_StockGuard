@@ -34,7 +34,7 @@
 --   C  the codec: runs, refusals, and a populated round trip (bench-made cells)
 --
 --!env: modenv
---!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
+--!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
 local REAL = getmetatable(_G).__index
 local M, GR, NH, NA, HC, B = SGNativeMaterialSave, SGGround, SGNativeHost, SGNativeAdapters, SGHarvestCapture, SGCombineBufferSave
@@ -198,7 +198,7 @@ group("E", function()
     local caps = m.stockGuard.getCapabilities()
     T.ok("E1 [reached] main.lua sourced the boundary and the ground, wrapped the controller's start and result on its class, attached the ground and published nativeMaterialSave = 1",
         has(ENGINE_SOURCED, "src/native/SGNativeMaterialSave.lua") and has(ENGINE_SOURCED, "src/native/SGGround.lua")
-        and rawget(SavegameController, M.CLASS_MARKER) ~= nil and rawget(SavegameController, M.CLASS_MARKER).onSaveStartComplete ~= nil
+        and SGClassHook.boundTo(SavegameController, "onSaveStartComplete", M.HOOK_ID, M) and SGClassHook.boundTo(SavegameController, "onSaveComplete", M.HOOK_ID, M)
         and sg.ground ~= nil and caps.nativeMaterialSave == 1 and has(lines, "native material save live: SG_NATIVE_MATERIAL_SAVE_V1"))
     T.eq("E1b no guard is on the engine global outside an attempt", tostring(rawget(REAL, "prepareSaveDensityMapToFile") == C_PREPARE) .. "/" .. tostring(M.guard), "true/nil")
     local before = sg.save.saveAttemptId
@@ -517,10 +517,10 @@ group("D", function()
         w.header = headerIn(m, "vehicle:delayHeader", w.combine, HEADER)
         ENGINE_PLANE.sow(FRUIT, 0, 0, 6, 1, 4)
     end, "d_save", { index = 19 })
-    local marks = rawget(Combine, M.CLASS_MARKER)
-    local hc = rawget(Combine, HC.CLASS_MARKER)
+    local marks = SGClassHook.record(Combine, "onUpdateTick", M.HOOK_ID)
+    local hc = SGClassHook.record(Combine, "onUpdateTick", HC.HOOK_ID)
     T.ok("D1 [reached] the deferral wraps the Combine class event OUTSIDE SGHarvestCapture's drain bracket",
-        marks ~= nil and hc ~= nil and marks.onUpdateTick ~= nil and marks.onUpdateTick.original == hc.onUpdateTick.wrapper and Combine.onUpdateTick == marks.onUpdateTick.wrapper)
+        marks ~= nil and hc ~= nil and marks.original == hc.wrapper and Combine.onUpdateTick == marks.wrapper)
     ENGINE_HARVEST_TICK(w.header, w.combine, 16)
     m.time = m.time + 200                       -- the slot is past its delay
     local slot = w.combine.spec_combine.loadingDelaySlots[1]
