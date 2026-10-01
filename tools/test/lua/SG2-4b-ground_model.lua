@@ -610,6 +610,23 @@ function ENGINE_NEW_TIPPER(uid, opts)
             info = { node = { x = at.x, y = 0, z = at.z }, width = opts.width or 1, length = opts.length or 0.5, zOffset = 0, yOffset = 0, limitToGround = false } } } }
     return v
 end
+--- A new map load re-sources the specialization: a NEW class table whose functions are new
+--- values (Dischargeable.lua:2; SpecializationManager.lua:86 through MPLoadingScreen.lua:352
+--- and :480), while a mod is sourced once per process. A vehicle built after it copies them.
+function ENGINE_RESOURCE_DISCHARGEABLE()
+    local old = Dischargeable
+    local fresh = {}
+    for k, v in pairs(old) do
+        if type(v) == "function" then
+            local f = v
+            fresh[k] = function(...) return f(...) end
+        elseif rawget(old, k) ~= nil then
+            fresh[k] = v
+        end
+    end
+    Dischargeable = fresh
+end
+
 --- One server frame of a ground tip: Dischargeable:discharge in the GROUND state (SG2-3's
 --- :751-765 body), which calls dischargeToGround through self.
 function ENGINE_TIP(vehicle, liters)
@@ -652,6 +669,9 @@ I3DUtil.setWorldDirection = I3DUtil.setWorldDirection or function() end
 -- ── Leveler (vehicles/specializations/Leveler.lua) ─────────────────────────────────
 -- Re-sourced with every map load: a new class table each boot (ENGINE_LOAD_LEVELER).
 function ENGINE_LOAD_LEVELER()
+    -- A re-sourced file compiles new functions. Lua 5.3 hands back a cached closure for a
+    -- prototype whose upvalues are unchanged, so each load gets its own token upvalue.
+    local loadToken = {}
     Leveler = {}
     --- :119-259 VERBATIM through the quantities, names restored (the decompile reuses
     --- dirX, dirZ, sz, ey and ey2 for different locals): per node, the pickup line and its
@@ -659,6 +679,7 @@ function ENGINE_LOAD_LEVELER()
     --- the smoothing. The client effects (:120-139), the force (:277-284) and the moved-pct
     --- filter (:208-218, :268-276) are left out; the farmland check (:143-148) passes.
     function Leveler:onUpdate(dt)
+        local _ = loadToken
         local spec = self.spec_leveler
         if self.isServer then
             for _, levelerNode in pairs(spec.nodes) do
@@ -727,6 +748,7 @@ function ENGINE_LOAD_LEVELER()
     --- :361-400 VERBATIM, names restored: the terminal no-hit cast drops the current unit's
     --- litres at the node's current offset and radius; the tiny-drop rule as :231-234.
     function Leveler.onLevelerRaycastCallback(levelerNode, hitObjectId, _, _, _, _, _, _, _, _, _, isLast)
+        local _ = loadToken
         local self = levelerNode.vehicle
         if not (self.isDeleted or self.isDeleting) then
             if hitObjectId ~= 0 and hitObjectId ~= g_terrainNode then
@@ -782,12 +804,14 @@ end
 
 -- ── Shovel (vehicles/specializations/Shovel.lua) ──────────────────────────────────
 function ENGINE_LOAD_SHOVEL()
+    local loadToken = {}
     Shovel = {}
     --- :141-245 VERBATIM through the quantities, names restored (the decompile reuses
     --- pickupFillType for the pickup litres and the pickup type): an active node's pickup
     --- line (:170), the capacity raise when native took more than was free (:171-174), the
     --- credit (:176-178); the bunker notify (:179) and the smoothing (:196-217) left out.
     function Shovel:onUpdateTick(dt)
+        local _ = loadToken
         local spec = self.spec_shovel
         if self.isServer then
             for _, shovelNode in pairs(spec.shovelNodes) do

@@ -326,7 +326,7 @@ group("S", function()
     table.sort(keys)
     T.eq("S8 a 40 x 40 block reads only its occupied pixels; empty blocks are proved empty with one query each", table.concat(keys, ",") .. "/" .. tostring(G_.queries - before < 200), "300:260,310:270/true")
     local x0, z0, x1, z1 = s:lineEnvelope(10, 10, 12, 10, 0.5, 4)
-    T.eq("S9 the envelope: the segment widened by the outer radius, one pixel of margin", table.concat({ x0, z0, x1, z1 }, ","), "267,267,289,285")
+    T.eq("S9 the envelope: the segment widened by the inner AND outer radius together (the conservative superset), one pixel of margin", table.concat({ x0, z0, x1, z1 }, ","), "266,266,290,286")
     T.eq("S10 an envelope above 16384 cells is not a finite supported envelope", tostring(select(2, s:lineEnvelope(-60, 0, 60, 0, 0, 40))), "ENVELOPE_TOO_LARGE")
     local other = NA.groundBindingOf({ mapKey = "MapUS", layerDescriptor = s.identity.layerDescriptor .. ";other" }, 300, 260)
     T.eq("S11 a ground binding of another layer resolves nothing: a changed layer cannot inherit this one's cells", tostring(({ host.nativeLease.spec.resolveCarrier(other) })[2]), "LAYER_CHANGED")
@@ -648,11 +648,98 @@ group("R", function()
     local some = nil
     for k in pairs(G_.heights) do some = k break end
     G_.heights[some] = G_.heights[some] + 1
-    local m3, sg3 = boot(build, "r_final2", { index = 38 })
+    -- The trailer's unit changed too, so the core keeps one unresolved history of its own.
+    local build3 = function(m3, w3)
+        tipWorld(m3, w3, { at = { x = 0, z = 0 }, level = level(w.tipper) + 2 })
+        w3.shovel = vehicleIn(m3, ENGINE_NEW_SHOVEL("vehicle:shovel", { at = { x = 0, z = 0 }, rate = 10, capacity = 5000, level = level(w.shovel), fillType = WHEAT }))
+    end
+    SGOperations.RETIRED_LIMIT = 1
+    local okBoot, m3, sg3 = pcall(boot, build3, "r_final2", { index = 38 })
+    SGOperations.RETIRED_LIMIT = 256
+    if not okBoot then error(m3, 0) end
+    local groundHist, coreHist = 0, 0
+    for _, s in pairs(sg3.operations.retiredStocks) do
+        if s.historical then if NA.isGroundKey(s.carrierKey) then groundHist = groundHist + 1 else coreHist = coreHist + 1 end end
+    end
+    T.eq("R7 ground history keeps a budget of its own: with every budget at 1, the ground's mismatched cell and the trailer's mismatched unit both keep their history (SG-2 :259)",
+        groundHist .. "/" .. coreHist, "1/1")
     local lr3 = sg3.ground.lastRestore or {}
     T.eq("R5 a pixel that changed after the save: that cell starts UNKNOWN and its saved facts stay historical; the others reattach",
         tostring(lr3.unknown) .. "/" .. tostring(lr3.historical == 0 and lr3.unknown == 1) .. "/" .. tostring(lr3.restored), "1/true/" .. tostring((groundOf(sg3)) - 1))
+    T.eq("R7b the ground's history still travels on with ground's own budget in place", tostring(groundHist), "1")
     nativeSave(m3, "r_final3")
     T.eq("R6 the mismatched cell's saved facts travel on in the next payload as history (bounded by the core's retired-stock rule)", tostring(#payloadTree("r_final3").historical), "1")
     FSBaseMission.delete(m3)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- K. THE FAULT LATCH (:164, :257, :261)
+-- ══════════════════════════════════════════════════════════════════════════
+group("K", function()
+    resetWorld()
+    local m, sg, host, w = boot(tipWorld, "k_save", { index = 40 })
+    ENGINE_TIP(w.tipper, 100)
+    local tracked = {}
+    for _, st in ipairs(groundStocks(sg)) do tracked[#tracked + 1] = st.carrierId end
+    G_.expand = 1
+    ENGINE_TIP(w.tipper, 20)
+    G_.expand = 0
+    local gf = host.lastGroundFrame
+    local sampler = host:groundSampler()
+    local qualified = 0
+    for _, id in ipairs(tracked) do local st = stockAt(sg, id) if st ~= nil and st.knowledge == "UNAVAILABLE" then qualified = qualified + 1 end end
+    T.eq("K1 a failed cardinality proof latches the binding: that primitive is refused, and every tracked cell in its envelope is marked uncertain",
+        tostring(sampler.fault and sampler.fault.reason) .. "/" .. tostring(gf.refused["BEFORE:CARDINALITY"]) .. "/" .. #gf.operations .. "/" .. tostring(qualified == #tracked and qualified > 0), "CARDINALITY/1/0/true")
+    local unitBefore = level(w.tipper)
+    ENGINE_TIP(w.tipper, 20)
+    gf = host.lastGroundFrame
+    T.eq("K2 the latch holds with the proof passing again: the next tip is refused as BINDING_FAULT, native still ran and the unit was debited",
+        tostring(gf.refused.BINDING_FAULT) .. "/" .. #gf.operations .. "/" .. num(unitBefore - level(w.tipper)), "1/0/20")
+    T.eq("K3 the ground's readiness reports the fault", tostring(sg.ground:getReadiness().reason), "BINDING_FAULT:CARDINALITY")
+    nativeSave(m, "k_final")
+    T.eq("K4 and claims no support at the save: the ground participant answers UNAVAILABLE, no READY image", tostring(sg.nativeSave.lastAttempt.results.sg2Ground.state) .. "/" .. tostring(sg.nativeSave.lastAttempt.results.sg2Ground.reason),
+        "UNAVAILABLE/BINDING_FAULT:CARDINALITY")
+    FSBaseMission.delete(m)
+    -- An unknown type index refuses that primitive and does not latch.
+    resetWorld()
+    m, sg, host, w = boot(tipWorld, "k_save2", { index = 41 })
+    local x, z = ENGINE_GROUND.cellOf(10, 10)
+    G_.heights[G_.key(x, z + 2)], G_.types[G_.key(x, z + 2)] = 3, 9
+    ENGINE_TIP(w.tipper, 20)
+    gf = host.lastGroundFrame
+    local s2 = host:groundSampler()
+    T.eq("K5 an unknown type index refuses that primitive and does not latch the binding", tostring(gf.refused["BEFORE:UNKNOWN_TYPE_INDEX"]) .. "/" .. tostring(s2.fault), "1/nil")
+    G_.heights[G_.key(x, z + 2)], G_.types[G_.key(x, z + 2)] = nil, nil
+    ENGINE_TIP(w.tipper, 20)
+    T.eq("K6 and the next tip is admitted again", head(host), "GROUND_TIP/COMMITTED")
+    FSBaseMission.delete(m)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- M. A SECOND MAP LOAD IN ONE SESSION (Bob's R-15 item 1)
+-- ══════════════════════════════════════════════════════════════════════════
+group("M", function()
+    resetWorld()
+    -- The engine re-sources the specializations at every savegame start; StockGuard is not
+    -- sourced again (mods.lua:976-977).
+    ENGINE_RESOURCE_DISCHARGEABLE()
+    ENGINE_LOAD_LEVELER()
+    ENGINE_LOAD_SHOVEL()
+    local m, sg, host, w = boot(function(m, w)
+        tipWorld(m, w)
+        w.leveler = vehicleIn(m, ENGINE_NEW_LEVELER("vehicle:leveler", { at = { x = -40, z = 0 }, level = 20, fillType = WHEAT, cast = true }))
+    end, "m_save", { index = 42 })
+    T.eq("M1 on the second map load the tip frame installs on the new class's dischargeToGround (read from the live class at install)",
+        tostring(rawget(w.tipper, GO.TIP_MARKER) ~= nil and w.tipper.dischargeToGround == rawget(w.tipper, GO.TIP_MARKER).wrapper) .. "/" .. tostring(GO.nativeDischargeToGround == Dischargeable.dischargeToGround), "true/true")
+    ENGINE_TIP(w.tipper, 100)
+    T.eq("M2 and the tip is one TRANSFER again", head(host), "GROUND_TIP/COMMITTED")
+    local node = w.leveler.spec_leveler.nodes[1]
+    T.eq("M3 the Leveler node's field, copied from the new class, is wrapped", tostring(rawget(node, GO.LEVELER_MARKER) ~= nil), "true")
+    M.openDeferral()
+    ENGINE_RAISE(w.leveler, "onUpdate", 16)
+    ENGINE_DELIVER_RAYCASTS(0)
+    local held = #M.deferral.queue
+    M.closeDeferral()
+    T.eq("M4 and it holds inside the save boundary, then replays in a DROP frame", held .. "/" .. tostring(host.lastGroundFrame and host.lastGroundFrame.kind) .. "/" .. num(level(w.leveler)), "1/DROP/0")
+    FSBaseMission.delete(m)
 end)

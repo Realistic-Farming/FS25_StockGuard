@@ -205,13 +205,17 @@ function GS:sampleRect(x0, z0, x1, z1)
 end
 
 --- The envelope of an elementary line primitive: the bounding box of the resolved
---- segment widened by its resolved outer radius, plus one complete pixel of edge margin,
---- clipped to the map (:164, :235, :257). Returns x0, z0, x1, z1 (inclusive), or nil and
---- a reason. An envelope larger than MAX_CELLS is not a finite supported envelope.
+--- segment widened by its resolved inner AND outer radius together, plus one complete pixel
+--- of edge margin, clipped to the map (:164, :235, :257). Whether the native write reaches
+--- the outer radius or inner plus outer from the line is engine C code no reference
+--- documents; the sum is a superset under either reading, so it is the conservative
+--- envelope :257 asks for. Returns x0, z0, x1, z1 (inclusive), or nil and a reason. An
+--- envelope larger than MAX_CELLS is not a finite supported envelope.
 function GS:lineEnvelope(sx, sz, ex, ez, innerRadius, radius)
     if not (isFinite(sx) and isFinite(sz) and isFinite(ex) and isFinite(ez)) then return nil, "LINE" end
-    local r = math.max(isFinite(innerRadius) and innerRadius or 0, isFinite(radius) and radius or -1)
-    if r < 0 then return nil, "RADIUS" end
+    if not isFinite(radius) or radius < 0 then return nil, "RADIUS" end
+    local inner = isFinite(innerRadius) and math.max(0, innerRadius) or 0
+    local r = inner + radius
     local x0, z0 = self:cellOfWorld(math.min(sx, ex) - r, math.min(sz, ez) - r)
     local x1, z1 = self:cellOfWorld(math.max(sx, ex) + r, math.max(sz, ez) + r)
     x0, z0 = math.max(0, x0 - 1), math.max(0, z0 - 1)

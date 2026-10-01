@@ -344,6 +344,9 @@ function GR:freezeAfterCareerXML(context)
     local a = self.attempt
     if a == nil or a.attemptId ~= context.attemptId then return { state = GR.UNAVAILABLE, reason = "NO_ATTEMPT" } end
     if a.identity == nil then return { state = GR.UNAVAILABLE, reason = a.reason } end
+    -- SG2-4b: a latched binding fault claims no support (:164, :257): no READY ground image.
+    local fault = self.groundSampler ~= nil and self.groundSampler.fault or nil
+    if fault ~= nil then return { state = GR.UNAVAILABLE, reason = "BINDING_FAULT:" .. tostring(fault.reason) } end
     a.refreshed = self:refreshAtBoundary()
     local cells, properties, historical = self:groundRecords()
     self.cells, self.properties = cells, properties
@@ -492,6 +495,9 @@ end
 --- The ground binding's readiness: its committed state, else what SG-1's load said
 --- about the section (no saved section is READY with nothing recorded).
 function GR:getReadiness()
+    -- SG2-4b: a latched binding fault is the ground's state for the rest of the session.
+    local fault = self.groundSampler ~= nil and self.groundSampler.fault or nil
+    if fault ~= nil then return { state = GR.UNAVAILABLE, reason = "BINDING_FAULT:" .. tostring(fault.reason) } end
     if self.readiness ~= nil then return copy(self.readiness) end
     local save = self.host ~= nil and self.host.save or nil
     if save == nil or save.loadResult == nil then return { state = GR.PENDING, reason = "NOT_LOADED" } end
@@ -521,6 +527,10 @@ function GR.attach(sgHost)
     })
     if lease == nil then return nil, "SECTION:" .. tostring(whySection) end
     ground.sectionLease = lease
+    -- SG2-4b: ground history keeps a budget of its own (SG-2 :259).
+    if sgHost.operations ~= nil and type(sgHost.operations.setRetiredClass) == "function" then
+        sgHost.operations:setRetiredClass("ground", GR.ownsCarrier)
+    end
     ground.participant = {
         beginAttempt = function(context) ground:beginAttempt(context) end,
         freezeAfterCareerXML = function(context) return ground:freezeAfterCareerXML(context) end,

@@ -1042,7 +1042,7 @@ function H.installClassHooks(classes)
     -- bracket above so the deferral is its outermost wrapper.
     if SGNativeMaterialSave ~= nil then SGNativeMaterialSave.installClassHooks({ SavegameController = classes.SavegameController, Combine = classes.Combine }) end
     -- SG2-4b: the Shovel and Leveler work listeners and the class half of the Leveler callback.
-    if SGGroundObserver ~= nil then SGGroundObserver.installClassHooks({ Leveler = classes.Leveler, Shovel = classes.Shovel }) end
+    if SGGroundObserver ~= nil then SGGroundObserver.installClassHooks({ Leveler = classes.Leveler, Shovel = classes.Shovel, Dischargeable = classes.Dischargeable }) end
     wrapClassMethod(classes.StorageSystem, "addStorage", nil, function(r, storage)
         if r[1] == true then dispatch("onStorageAdded", storage) end
     end)

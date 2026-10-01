@@ -75,10 +75,20 @@
 --     difference is never absorbed.
 --
 -- ANY OTHER LINE CALL (a forage pickup before SG2-5 frames it, a foreign writer, a
--- primitive a frame did not admit) is observed and reconciled cell by cell through SG-1's
--- generic path: a decrease scales the cell's stock, an emptied cell retires, a gain on an
--- untracked cell is an UNKNOWN birth, and a gain on a tracked cell enters with unknown
--- coverage (the stock's basis grows, its known amount does not). It is not attributed.
+-- primitive a frame did not admit) is observed and the TRACKED cells it changed are
+-- reconciled through SG-1's generic path: a decrease scales the cell's stock, an emptied
+-- cell retires, and a gain enters with unknown coverage (the stock's basis grows, its known
+-- amount does not). It is not attributed. An untracked cell stays untracked: StockGuard
+-- holds no facts for it, so it is already unknown (:90), and a framed operation that later
+-- moves it binds it at its before-state as UNKNOWN material.
+--
+-- THE FAULT LATCH (:164 last sentence, :257, :261). A grid or scale proof that fails
+-- (CARDINALITY, INCONSISTENT, SAMPLE, SCALE, TYPE_UNVERIFIED) means this binding cannot
+-- claim support. The first one latches the sampler for the session with its reason: no
+-- later primitive is admitted to a frame, the tracked cells inside each later envelope are
+-- marked uncertain once (the bounded affected region), and the ground's readiness and its
+-- save report the fault. Native play continues. A primitive refused for its own reasons
+-- (an envelope too large, an unknown type index) does not latch.
 --
 -- AN EMPTIED CELL's carrier is withdrawn after its settlement, so the store holds occupied
 -- cells only (:160). A later addition binds a fresh carrier and a new stock identity.
@@ -123,10 +133,15 @@ G.bracket = G.bracket          -- { table, original, wrapper } while ours is in 
 G.stats = G.stats or { observed = 0, dryRuns = 0, deferred = 0, operations = 0, unobserved = {}, faults = {}, refused = {} }
 G.logged = G.logged or {}
 
--- The native methods as their specializations defined them when this file loaded: the
--- recognition is exact function identity, so a slot another mod replaced is left alone.
-if G.nativeDischargeToGround == nil and Dischargeable ~= nil then G.nativeDischargeToGround = Dischargeable.dischargeToGround end
-if G.nativeLevelerCallback == nil and Leveler ~= nil then G.nativeLevelerCallback = Leveler.onLevelerRaycastCallback end
+-- The native methods are read from the LIVE classes at each mission's install
+-- (G.installClassHooks), never kept from this file's load: the engine re-sources both
+-- specializations at every savegame start (Dischargeable.lua:2; SpecializationManager.lua:86
+-- through MPLoadingScreen.lua:352 and :480), while a mod is sourced once per process
+-- (mods.lua:976-977). The recognition stays exact function identity, so a slot another mod
+-- replaced is left alone.
+G.nativeDischargeToGround = nil
+G.nativeLevelerCallback = nil
+G.LATCHING = { CARDINALITY = true, INCONSISTENT = true, SAMPLE = true, SCALE = true, TYPE_UNVERIFIED = true }
 
 local function packn(...) return select("#", ...), { ... } end
 local function log(msg) print("[StockGuard] ground: " .. tostring(msg)) end
@@ -288,6 +303,35 @@ function G.reconcileChanges(host, sampler, changes)
     G.withdrawEmpty(host, sampler, changes)
 end
 
+--- A grid or scale proof failed: latch the binding as faulted for the session (:164, :257,
+--- :261). Returns true when this call latched it.
+function G.latchFault(sampler, reason)
+    if sampler.fault ~= nil or not G.LATCHING[reason] then return false end
+    sampler.fault = { reason = reason }
+    sampler.faultQualified = {}
+    logOnce("fault", "the ground binding failed its " .. tostring(reason) .. " proof: ground attribution is off for this session, native play continues, and tracked cells later primitives reach are marked uncertain")
+    return true
+end
+
+--- Under a latched fault, each tracked cell inside an envelope is qualified UNAVAILABLE once
+--- (the bounded affected region, :261).
+function G.qualifyTrackedIn(host, sampler, x0, z0, x1, z1)
+    local tracked = sampler.tracked
+    if tracked == nil or next(tracked) == nil then return end
+    local reason = "BINDING_FAULT:" .. tostring(sampler.fault.reason)
+    for z = z0, z1 do
+        for x = x0, x1 do
+            local key = SGGround.cellKey(x, z)
+            local cid = tracked[key]
+            if cid ~= nil and not sampler.faultQualified[key] then
+                sampler.faultQualified[key] = true
+                local cap = host.handle.captureOperation(host.nativeLease, "REMOVE", { { carrierId = cid } })
+                if cap ~= nil then host.handle.abandonOperation(cap.handle, reason, nil) end
+            end
+        end
+    end
+end
+
 --- A primitive whose after-state could not be read: each tracked cell that held material
 --- before it is qualified UNAVAILABLE through an abandoned operation with no after-state.
 --- One capture per cell, so a cell that was never bound cannot refuse the others.
@@ -388,11 +432,17 @@ function G.beforeLine(host, call)
         if gf ~= nil then count(gf.refused, "ENVELOPE:" .. tostring(z0)) end
         return nil
     end
+    if sampler.fault ~= nil then
+        if gf ~= nil then count(gf.refused, "BINDING_FAULT") end
+        G.qualifyTrackedIn(host, sampler, x0, z0, x1, z1)
+        return nil
+    end
     local before, whyB = sampler:sampleRect(x0, z0, x1, z1)
     if before == nil then
         count(G.stats.faults, whyB)
         logOnce("before:" .. tostring(whyB), "a ground read failed its proof (" .. tostring(whyB) .. "); that primitive is not observed")
         if gf ~= nil then count(gf.refused, "BEFORE:" .. tostring(whyB)) end
+        if G.latchFault(sampler, whyB) then G.qualifyTrackedIn(host, sampler, x0, z0, x1, z1) end
         return nil
     end
     local pre = { sampler = sampler, call = call, envelope = { x0 = x0, z0 = z0, x1 = x1, z1 = z1 }, before = before }
@@ -423,6 +473,7 @@ function G.afterLine(host, pre, ok, returned)
         count(G.stats.faults, whyA)
         if pre.frame ~= nil then count(pre.frame.refused, "AFTER:" .. tostring(whyA)) end
         G.qualifyEnvelope(host, sampler, pre.before, "GROUND_AFTER_UNREADABLE:" .. tostring(whyA))
+        if G.latchFault(sampler, whyA) then G.qualifyTrackedIn(host, sampler, e.x0, e.z0, e.x1, e.z1) end
         return
     end
     G.stats.observed = G.stats.observed + 1
@@ -755,6 +806,17 @@ end
 function G.installClassHooks(classes)
     if g_server == nil then return false end
     classes = classes or {}
+    -- This map load's native methods, read before any wrap of ours (a class table we
+    -- already wrapped in this mission gives back the original it holds).
+    local D = classes.Dischargeable
+    G.nativeDischargeToGround = type(D) == "table" and type(D[G.TIP_KEY]) == "function" and D[G.TIP_KEY] or nil
+    local L = classes.Leveler
+    G.nativeLevelerCallback = nil
+    if type(L) == "table" then
+        local marks = rawget(L, G.CLASS_MARKER)
+        local held = marks ~= nil and marks[G.LEVELER_KEY] or nil
+        G.nativeLevelerCallback = held ~= nil and held.original or L[G.LEVELER_KEY]
+    end
     local installed = false
     installed = wrapClass(classes.Shovel, "onUpdateTick", function(original)
         return function(self, ...) return aroundWork(original, shovelWork, self, ...) end
