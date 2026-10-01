@@ -247,6 +247,7 @@ function GS:lineEnvelope(sx, sz, ex, ez, innerRadius, radius)
     x0, z0 = math.max(0, x0 - 1), math.max(0, z0 - 1)
     x1, z1 = math.min(self.size - 1, x1 + 1), math.min(self.size - 1, z1 + 1)
     if x1 < x0 or z1 < z0 then return nil, "OFF_MAP" end
-    if (x1 - x0 + 1) * (z1 - z0 + 1) > GS.MAX_CELLS then return nil, "ENVELOPE_TOO_LARGE" end
+    local cells = (x1 - x0 + 1) * (z1 - z0 + 1)
+    if cells > GS.MAX_CELLS then return nil, "ENVELOPE_TOO_LARGE", cells end
     return x0, z0, x1, z1
 end

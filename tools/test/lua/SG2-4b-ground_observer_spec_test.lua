@@ -277,11 +277,6 @@ group("E", function()
     lines = printed(function() m2, sg2 = reload(m, "e_final", build, { index = 31 }) end)
     local n3, total3 = groundOf(sg2)
     local st2 = groundStocks(sg2)
-    local reattached = true
-    for i, s in ipairs(st2) do
-        local before = nil
-        for _, old in ipairs(groundStocks(sg)) do if old.carrierId == s.carrierId then before = old end end
-    end
     local sameIds, props = 0, true
     local oldIds = {}
     for _, s in ipairs(st) do oldIds[s.stockId] = true end
@@ -434,12 +429,14 @@ group("T", function()
         tostring(gf.refused.CONVERTED_AT_GROUND) .. "/" .. #gf.operations .. "/" .. num(G_.totalRaw(HT.BARLEY.index) - barleyBefore), "1/0/25")
     g_densityMapHeightManager.convertingFillTypesAreas = {}
     local unitBefore = level(w.wide)
-    ENGINE_TIP(w.wide, 50)
+    local capLines = printed(function() ENGINE_TIP(w.wide, 50) end)
     gf = host.lastGroundFrame
     host:flush()
     local wideStock = stockAt(sg, unitId(w.wide))
     T.eq("T4 an envelope above the cap is not admitted: native ran, the frame records ENVELOPE_TOO_LARGE, and the unit's report replays to the per-side path (its stock follows the native 550 L)",
         num(unitBefore - level(w.wide)) .. "/" .. tostring(gf.refused["ENVELOPE:ENVELOPE_TOO_LARGE"]) .. "/" .. #gf.operations .. "/" .. num(wideStock and wideStock.observedAmount), "50/1/0/550")
+    T.ok("T4b and log.txt says so, once, with the cell count (Bob's MAJOR on #26: the TESTING row reads this line)",
+        has(capLines, "[StockGuard] ground: a line envelope was not admitted (ENVELOPE_TOO_LARGE, ") and has(capLines, " cells, cap 16384); that line call ran unobserved"))
     -- A cell that loses material during a tip abandons the operation (the fault domain).
     resetWorld()
     FSBaseMission.delete(m)

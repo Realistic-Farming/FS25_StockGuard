@@ -430,6 +430,11 @@ function G.beforeLine(host, call)
     local x0, z0, x1, z1 = sampler:lineEnvelope(call.sx, call.sz, call.ex, call.ez, call.innerRadius, call.radius)
     if x0 == nil then
         count(G.stats.faults, z0)
+        -- Visible once per reason (Bob's MAJOR on #26): a refused envelope leaves that line
+        -- call unobserved, and only this line tells a tester it happened.
+        logOnce("envelope:" .. tostring(z0), "a line envelope was not admitted (" .. tostring(z0)
+            .. (x1 ~= nil and (", " .. tostring(x1) .. " cells, cap " .. tostring(SGGroundSampler.MAX_CELLS)) or "")
+            .. "); that line call ran unobserved")
         if gf ~= nil then count(gf.refused, "ENVELOPE:" .. tostring(z0)) end
         return nil
     end
