@@ -183,9 +183,15 @@ function G.install()
             return 0, lineOffset
         end
         local host = SGNativeHost ~= nil and SGNativeHost.current or nil
-        local pre = nil
+        local pre, soil = nil, nil
         if host ~= nil then
             local call = { sx = sx, sz = sz, ex = ex, ez = ez, maxDelta = maxDelta, heightTypeIndex = heightTypeIndex, innerRadius = innerRadius, radius = radius }
+            -- SG2-4c: Soil admits the primitive first, inside one of our ground frames only
+            -- (SGSoilCondition); it reads its own cells, so our refusals below never stop it.
+            if SGSoilCondition ~= nil then
+                local okSoil, lease = pcall(SGSoilCondition.admitLine, host, call)
+                if okSoil then soil = lease else logOnce("soilAdmit", "the Soil admission failed (" .. tostring(lease) .. "); that line call ran without a ground-condition delivery") end
+            end
             local okPre, result = pcall(G.beforeLine, host, call)
             if okPre then pre = result else logOnce("beforeLine", "line observation failed before the native call (" .. tostring(result) .. "); that call ran unobserved") end
         end
@@ -193,6 +199,10 @@ function G.install()
         if pre ~= nil then
             local okPost, err = pcall(G.afterLine, host, pre, r[1], r[2])
             if not okPost then logOnce("afterLine", "line observation failed after the native call (" .. tostring(err) .. ")") end
+        end
+        if soil ~= nil then
+            pcall(SGSoilCondition.deliverLine, soil, r[1], r[2], r[3])
+            pcall(SGSoilCondition.closeLine, soil)
         end
         if not r[1] then error(r[2], 0) end
         return unpack(r, 2, n)
