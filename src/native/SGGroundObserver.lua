@@ -141,7 +141,6 @@ G.logged = G.logged or {}
 -- replaced is left alone.
 G.nativeDischargeToGround = nil
 G.nativeLevelerCallback = nil
-G.LATCHING = { CARDINALITY = true, INCONSISTENT = true, SAMPLE = true, SCALE = true, TYPE_UNVERIFIED = true }
 
 local function packn(...) return select("#", ...), { ... } end
 local function log(msg) print("[StockGuard] ground: " .. tostring(msg)) end
@@ -303,13 +302,15 @@ function G.reconcileChanges(host, sampler, changes)
     G.withdrawEmpty(host, sampler, changes)
 end
 
---- A grid or scale proof failed: latch the binding as faulted for the session (:164, :257,
---- :261). Returns true when this call latched it.
-function G.latchFault(sampler, reason)
-    if sampler.fault ~= nil or not G.LATCHING[reason] then return false end
-    sampler.fault = { reason = reason }
-    sampler.faultQualified = {}
-    logOnce("fault", "the ground binding failed its " .. tostring(reason) .. " proof: ground attribution is off for this session, native play continues, and tracked cells later primitives reach are marked uncertain")
+--- Is the binding latched as faulted (SGGroundSampler:refuse, :164, :257, :261)? Said once
+--- in the log the first time the observer meets the latch, whichever read path set it.
+function G.latchFault(sampler)
+    local fault = sampler.fault
+    if fault == nil then return false end
+    if not sampler.faultLogged then
+        sampler.faultLogged = true
+        logOnce("fault", "the ground binding failed its " .. tostring(fault.reason) .. " proof: ground attribution is off for this session, native play continues, and tracked cells later primitives reach are marked uncertain")
+    end
     return true
 end
 
@@ -432,7 +433,7 @@ function G.beforeLine(host, call)
         if gf ~= nil then count(gf.refused, "ENVELOPE:" .. tostring(z0)) end
         return nil
     end
-    if sampler.fault ~= nil then
+    if G.latchFault(sampler) then
         if gf ~= nil then count(gf.refused, "BINDING_FAULT") end
         G.qualifyTrackedIn(host, sampler, x0, z0, x1, z1)
         return nil
@@ -442,7 +443,7 @@ function G.beforeLine(host, call)
         count(G.stats.faults, whyB)
         logOnce("before:" .. tostring(whyB), "a ground read failed its proof (" .. tostring(whyB) .. "); that primitive is not observed")
         if gf ~= nil then count(gf.refused, "BEFORE:" .. tostring(whyB)) end
-        if G.latchFault(sampler, whyB) then G.qualifyTrackedIn(host, sampler, x0, z0, x1, z1) end
+        if G.latchFault(sampler) then G.qualifyTrackedIn(host, sampler, x0, z0, x1, z1) end
         return nil
     end
     local pre = { sampler = sampler, call = call, envelope = { x0 = x0, z0 = z0, x1 = x1, z1 = z1 }, before = before }
@@ -473,7 +474,7 @@ function G.afterLine(host, pre, ok, returned)
         count(G.stats.faults, whyA)
         if pre.frame ~= nil then count(pre.frame.refused, "AFTER:" .. tostring(whyA)) end
         G.qualifyEnvelope(host, sampler, pre.before, "GROUND_AFTER_UNREADABLE:" .. tostring(whyA))
-        if G.latchFault(sampler, whyA) then G.qualifyTrackedIn(host, sampler, e.x0, e.z0, e.x1, e.z1) end
+        if G.latchFault(sampler) then G.qualifyTrackedIn(host, sampler, e.x0, e.z0, e.x1, e.z1) end
         return
     end
     G.stats.observed = G.stats.observed + 1

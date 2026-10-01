@@ -344,10 +344,11 @@ function GR:freezeAfterCareerXML(context)
     local a = self.attempt
     if a == nil or a.attemptId ~= context.attemptId then return { state = GR.UNAVAILABLE, reason = "NO_ATTEMPT" } end
     if a.identity == nil then return { state = GR.UNAVAILABLE, reason = a.reason } end
+    a.refreshed = self:refreshAtBoundary()
     -- SG2-4b: a latched binding fault claims no support (:164, :257): no READY ground image.
+    -- Read after the boundary's own re-read, which can meet a failed proof too.
     local fault = self.groundSampler ~= nil and self.groundSampler.fault or nil
     if fault ~= nil then return { state = GR.UNAVAILABLE, reason = "BINDING_FAULT:" .. tostring(fault.reason) } end
-    a.refreshed = self:refreshAtBoundary()
     local cells, properties, historical = self:groundRecords()
     self.cells, self.properties = cells, properties
     local runs, whyRuns = GR.encodeCells(cells, properties)

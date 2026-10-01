@@ -225,11 +225,15 @@ end
 -- ordinary and historical apart as above, so a mass restore mismatch on the ground can
 -- never evict a silo's or a trailer's unresolved history (SG-2 :259).
 local function retiredClassOf(self, s)
+    -- Classified once per retired record; setRetiredClass clears the marks.
+    if s.retiredClass ~= nil then return s.retiredClass end
+    local class = "core"
     for _, c in ipairs(self.retiredClasses) do
         local ok, owned = pcall(c.owns, s.carrierKey)
-        if ok and owned == true then return c.name end
+        if ok and owned == true then class = c.name break end
     end
-    return "core"
+    s.retiredClass = class
+    return class
 end
 
 local function pruneRetired(self)
@@ -261,6 +265,7 @@ end
 --- SG2-4b: give the retired stocks of carriers `owns(carrierKey)` selects a budget of their own.
 function O:setRetiredClass(name, owns)
     if type(name) ~= "string" or name == "" or name == "core" or type(owns) ~= "function" then return false end
+    for _, s in pairs(self.retiredStocks) do s.retiredClass = nil end
     for _, c in ipairs(self.retiredClasses) do if c.name == name then c.owns = owns return true end end
     self.retiredClasses[#self.retiredClasses + 1] = { name = name, owns = owns }
     return true

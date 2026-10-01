@@ -712,6 +712,12 @@ group("K", function()
     G_.heights[G_.key(x, z + 2)], G_.types[G_.key(x, z + 2)] = nil, nil
     ENGINE_TIP(w.tipper, 20)
     T.eq("K6 and the next tip is admitted again", head(host), "GROUND_TIP/COMMITTED")
+    -- A failed proof met on the save boundary's own re-read (through the adapter) latches too.
+    G_.expand = 1
+    nativeSave(m, "k_final2")
+    G_.expand = 0
+    T.eq("K7 a proof failure met through the adapter's read at the save boundary latches the binding, and the freeze claims no support",
+        tostring(s2.fault and s2.fault.reason) .. "/" .. tostring(sg.nativeSave.lastAttempt.results.sg2Ground.reason), "CARDINALITY/BINDING_FAULT:CARDINALITY")
     FSBaseMission.delete(m)
 end)
 

@@ -39,6 +39,10 @@ local GS_mt = { __index = GS }
 
 GS.INSET = 0.1            -- of a pixel, on every side
 GS.MAX_CELLS = 16384      -- the largest envelope an operation may declare
+-- The grid and scale proofs whose failure means this binding cannot claim support (:164,
+-- :257): the first one met on ANY read path (the observer's envelopes, the adapter's
+-- refreshCarrier, the save boundary's re-read) latches the sampler for the session.
+GS.LATCHING = { CARDINALITY = true, INCONSISTENT = true, SAMPLE = true, SCALE = true, TYPE_UNVERIFIED = true }
 
 local function isFinite(n) return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge end
 local function isInteger(n) return isFinite(n) and math.floor(n) == n end
@@ -80,6 +84,16 @@ function GS.bind(mission)
     self.reads = 0            -- single-pixel reads, for the in-game cost observation
     self.blockProofs = 0      -- empty blocks proved with one query
     return self
+end
+
+--- A refused read. A grid or scale proof failure latches the binding (GS.LATCHING); a read
+--- refused for its own reasons (out of the map, an unknown type index) does not.
+function GS:refuse(reason)
+    if self.fault == nil and GS.LATCHING[reason] then
+        self.fault = { reason = reason }
+        self.faultQualified = {}
+    end
+    return nil, reason
 end
 
 --- The filter on one height type's index, as getFillLevelAtArea builds it (:102-104).
@@ -124,36 +138,36 @@ end
 --- Read one pixel. Returns { x, z, raw, liters, fillTypeIndex?, fillTypeName? } (no
 --- fill type when empty), or nil and a reason.
 function GS:readCell(x, z)
-    if not self:inMap(x, z) then return nil, "OUT_OF_MAP" end
+    if not self:inMap(x, z) then return self:refuse("OUT_OF_MAP") end
     self.reads = self.reads + 1
     local ax, az, bx, bz, cx, cz = self:polygon(x, z, 1, 1)
     set(self.typeModifier, ax, az, bx, bz, cx, cz)
     local typeValue, _, typeTotal = self.typeModifier:executeGet()
-    if typeTotal ~= 1 then return nil, "CARDINALITY" end
+    if typeTotal ~= 1 then return self:refuse("CARDINALITY") end
     set(self.heightModifier, ax, az, bx, bz, cx, cz)
     local raw, _, heightTotal = self.heightModifier:executeGet()
-    if heightTotal ~= 1 then return nil, "CARDINALITY" end
-    if not isInteger(raw) or raw < 0 or not isInteger(typeValue) or typeValue < 0 then return nil, "SAMPLE" end
+    if heightTotal ~= 1 then return self:refuse("CARDINALITY") end
+    if not isInteger(raw) or raw < 0 or not isInteger(typeValue) or typeValue < 0 then return self:refuse("SAMPLE") end
     local _, positive, positiveTotal = self.heightModifier:executeGet(self.heightFilter)
-    if positiveTotal ~= 1 then return nil, "CARDINALITY" end
+    if positiveTotal ~= 1 then return self:refuse("CARDINALITY") end
     local hm = g_densityMapHeightManager
     local heightType = hm:getDensityMapHeightTypeByIndex(typeValue)
     if raw == 0 then
-        if positive ~= 0 then return nil, "INCONSISTENT" end
+        if positive ~= 0 then return self:refuse("INCONSISTENT") end
         if heightType ~= nil then
             local _, typed, typedTotal = self.heightModifier:executeGet(self.heightFilter, self:typeFilterOf(heightType))
-            if typedTotal ~= 1 or typed ~= 0 then return nil, "TYPE_UNVERIFIED" end
+            if typedTotal ~= 1 or typed ~= 0 then return self:refuse("TYPE_UNVERIFIED") end
         end
         return { x = x, z = z, raw = 0, liters = 0 }
     end
-    if positive ~= 1 then return nil, "INCONSISTENT" end
-    if heightType == nil or heightType.fillTypeIndex == nil then return nil, "UNKNOWN_TYPE_INDEX" end
+    if positive ~= 1 then return self:refuse("INCONSISTENT") end
+    if heightType == nil or heightType.fillTypeIndex == nil then return self:refuse("UNKNOWN_TYPE_INDEX") end
     local _, typed, typedTotal = self.heightModifier:executeGet(self.heightFilter, self:typeFilterOf(heightType))
-    if typedTotal ~= 1 or typed ~= 1 then return nil, "TYPE_UNVERIFIED" end
+    if typedTotal ~= 1 or typed ~= 1 then return self:refuse("TYPE_UNVERIFIED") end
     local name = g_fillTypeManager ~= nil and g_fillTypeManager:getFillTypeNameByIndex(heightType.fillTypeIndex) or nil
-    if type(name) ~= "string" or name == "" then return nil, "FILL_TYPE_UNNAMED" end
+    if type(name) ~= "string" or name == "" then return self:refuse("FILL_TYPE_UNNAMED") end
     local perRaw = hm:getMinValidLiterValue(heightType.fillTypeIndex)
-    if not isFinite(perRaw) or perRaw <= 0 then return nil, "SCALE" end
+    if not isFinite(perRaw) or perRaw <= 0 then return self:refuse("SCALE") end
     return { x = x, z = z, raw = raw, liters = raw * perRaw, fillTypeIndex = heightType.fillTypeIndex, fillTypeName = name }
 end
 
@@ -162,7 +176,7 @@ function GS:blockEmpty(x0, z0, nx, nz)
     local ax, az, bx, bz, cx, cz = self:polygon(x0, z0, nx, nz)
     set(self.heightModifier, ax, az, bx, bz, cx, cz)
     local _, positive, total = self.heightModifier:executeGet(self.heightFilter)
-    if total ~= nx * nz then return nil, "CARDINALITY" end
+    if total ~= nx * nz then return self:refuse("CARDINALITY") end
     self.blockProofs = self.blockProofs + 1
     return positive == 0
 end
