@@ -73,7 +73,7 @@ local G = SGGroundObserver
 B.GLOBAL = "smoothDensityMapHeightAtWorldPos"
 B.WHEEL_FRAME = "GROUND_WHEEL"
 B.WHEEL_KEY = "smoothHeightAtPosition"
-B.CLASS_MARKER = "_sgGroundBrush"
+B.HOOK_ID = "groundBrush"            -- the SGClassHook site of the WheelDestruction class slot
 B.WORKED_PATCH = "NATIVE_WORKED_PATCH_V1"
 B.WHEEL_REDISTRIBUTION = "NATIVE_WHEEL_REDISTRIBUTION_V1"
 
@@ -493,33 +493,32 @@ function B.closeWheelFrame(host, frame)
     for _, obs in ipairs(frame.observations) do host:replayObservation(obs) end
 end
 
+--- Around the native smoothHeightAtPosition: a WHEEL frame for the wheel's vehicle.
+function B.wheelAround(original, self, ...)
+    local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+    local frame = nil
+    if host ~= nil and g_server ~= nil and type(self) == "table" then
+        local okOpen, result = pcall(B.openWheelFrame, host, self.vehicle)
+        if okOpen then frame = result else logOnce("wheelOpen", "wheel frame failed to open (" .. tostring(result) .. ")") end
+    end
+    local n, r = packn(pcall(original, self, ...))
+    if frame ~= nil then
+        local okClose, err = pcall(B.closeWheelFrame, host, frame)
+        if not okClose then logOnce("wheelClose", "wheel frame failed to close (" .. tostring(err) .. ")") end
+    end
+    if not r[1] then error(r[2], 0) end
+    return unpack(r, 2, n)
+end
+
 --- The WheelDestruction class slot smoothHeightAtPosition, called through `self:` from
---- WheelDestruction:update (:80), wrapped once per class table: the class is re-sourced
---- with every map load (WheelDestruction.lua through Wheel.lua:7 and Wheels.lua:10).
+--- WheelDestruction:update (:80). One rebindable wrapper per class table (SGClassHook,
+--- MAINTENANCE row 187): the class is re-sourced with every map load (WheelDestruction.lua
+--- through Wheel.lua:7 and Wheels.lua:10), so each new table takes the first wrap, and a
+--- later install on the same table, this module's or a re-sourced one's, rebinds that
+--- record rather than stacking or skipping. Returns true when this call made the first wrap.
 function B.installClassHooks(classes)
     if g_server == nil then return false end
     local W = (classes or {}).WheelDestruction
     if type(W) ~= "table" or type(W[B.WHEEL_KEY]) ~= "function" then return false end
-    local marks = rawget(W, B.CLASS_MARKER) or {}
-    rawset(W, B.CLASS_MARKER, marks)
-    if marks[B.WHEEL_KEY] ~= nil then return false end
-    local original = W[B.WHEEL_KEY]
-    local wrapper = function(self, ...)
-        local host = SGNativeHost ~= nil and SGNativeHost.current or nil
-        local frame = nil
-        if host ~= nil and g_server ~= nil and type(self) == "table" then
-            local okOpen, result = pcall(B.openWheelFrame, host, self.vehicle)
-            if okOpen then frame = result else logOnce("wheelOpen", "wheel frame failed to open (" .. tostring(result) .. ")") end
-        end
-        local n, r = packn(pcall(original, self, ...))
-        if frame ~= nil then
-            local okClose, err = pcall(B.closeWheelFrame, host, frame)
-            if not okClose then logOnce("wheelClose", "wheel frame failed to close (" .. tostring(err) .. ")") end
-        end
-        if not r[1] then error(r[2], 0) end
-        return unpack(r, 2, n)
-    end
-    W[B.WHEEL_KEY] = wrapper
-    marks[B.WHEEL_KEY] = { original = original, wrapper = wrapper }
-    return true
+    return SGClassHook.wrap(W, B.WHEEL_KEY, B.HOOK_ID, B.wheelAround, B) == "INSTALLED"
 end

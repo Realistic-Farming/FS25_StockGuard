@@ -30,7 +30,7 @@
 --   L  installation and teardown
 --
 --!env: modenv
---!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, tools/test/lua/SG2-4b2-smoother_area_model.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGGroundBrush.lua, src/native/SGGroundArea.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
+--!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, tools/test/lua/SG2-4b2-smoother_area_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGGroundBrush.lua, src/native/SGGroundArea.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
 local REAL = getmetatable(_G).__index
 local M, GR, GO, NH, NA = SGNativeMaterialSave, SGGround, SGGroundObserver, SGNativeHost, SGNativeAdapters
@@ -214,7 +214,8 @@ group("E", function()
         has(ENGINE_SOURCED, "src/native/SGGroundBrush.lua") and has(ENGINE_SOURCED, "src/native/SGGroundArea.lua")
         and B.bracket ~= nil and rawget(REAL, "smoothDensityMapHeightAtWorldPos") == B.bracket.wrapper and rawget(_G, "smoothDensityMapHeightAtWorldPos") == nil
         and AR.wraps ~= nil and DensityMapHeightUtil.clearArea == AR.wraps.entries.clearArea.wrapper and DensityMapHeightUtil.changeFillTypeAtArea == AR.wraps.entries.changeFillTypeAtArea.wrapper)
-    T.eq("E1b the WheelDestruction class slot carries the WHEEL frame", tostring(rawget(WheelDestruction, B.CLASS_MARKER) ~= nil and WheelDestruction.smoothHeightAtPosition == rawget(WheelDestruction, B.CLASS_MARKER).smoothHeightAtPosition.wrapper), "true")
+    local recW = SGClassHook.record(WheelDestruction, B.WHEEL_KEY, B.HOOK_ID)
+    T.eq("E1b the WheelDestruction class slot carries the WHEEL frame: one SGClassHook record whose wrapper is the live method", tostring(recW ~= nil and WheelDestruction.smoothHeightAtPosition == recW.wrapper and recW.owner == B), "true")
     marked(m, sg, lease, w)
     tipOn(w.dot7, CX + 1, CZ + 1, 8)
     tipOn(w.dot7, CX, CZ + 1, 8)
@@ -384,10 +385,14 @@ group("H", function()
     ENGINE_LOAD_WHEELDESTRUCTION()
     local fresh = WheelDestruction
     m, sg, host, w = patched(62)
-    local marks = rawget(fresh, B.CLASS_MARKER)
-    local entry = marks ~= nil and marks.smoothHeightAtPosition or nil
+    local entry = SGClassHook.record(fresh, B.WHEEL_KEY, B.HOOK_ID)
     T.eq("H4 a second map load in one session: the new WheelDestruction class (read live at install) carries the WHEEL frame",
         tostring(fresh == WheelDestruction and entry ~= nil and fresh.smoothHeightAtPosition == entry.wrapper), "true")
+    local wW, oW = fresh.smoothHeightAtPosition, entry.original
+    T.eq("H4b a second install on the same class table wraps nothing new", tostring(B.installClassHooks({ WheelDestruction = fresh })), "false")
+    local recAgain = SGClassHook.record(fresh, B.WHEEL_KEY, B.HOOK_ID)
+    T.eq("H4c it REBINDS the record (MAINTENANCE row 187): the live method is the same one wrapper, over the same engine method, no second layer",
+        tostring(fresh.smoothHeightAtPosition == wW and recAgain.wrapper == wW and recAgain.original == oW and oW ~= wW), "true")
     ENGINE_WHEEL_SMOOTH(ENGINE_NEW_WHEEL(w.leveler), 10, 10)
     T.eq("H5 and its brush settles in that frame", last(host), "GROUND_NATIVE_WHEEL_REDISTRIBUTION_V1/COMMITTED")
     FSBaseMission.delete(m)
