@@ -146,6 +146,16 @@ function H:install()
         local okLine, whyLine = SGGroundObserver.install()
         if not okLine then log("ground line bracket not installed: " .. tostring(whyLine)) end
     end
+    -- SG2-4b2: the smoothing brush on its engine global, and the polygon methods on this
+    -- mission's DensityMapHeightUtil table (sourced once per process, game.lua:264).
+    if SGGroundBrush ~= nil then
+        local okBrush, whyBrush = SGGroundBrush.install()
+        if not okBrush then log("ground brush bracket not installed: " .. tostring(whyBrush)) end
+    end
+    if SGGroundArea ~= nil then
+        local n, whyArea = SGGroundArea.install(DensityMapHeightUtil)
+        if n == 0 then log("ground area bracket not installed: " .. tostring(whyArea)) end
+    end
     return true
 end
 
@@ -158,6 +168,8 @@ end
 
 function H:teardown()
     if SGGroundObserver ~= nil then SGGroundObserver.remove() end
+    if SGGroundBrush ~= nil then SGGroundBrush.remove() end
+    if SGGroundArea ~= nil then SGGroundArea.remove() end
     self:unbindAllStations()
     if H.current == self then H.current = nil end
     self.ready = false
@@ -1043,6 +1055,9 @@ function H.installClassHooks(classes)
     if SGNativeMaterialSave ~= nil then SGNativeMaterialSave.installClassHooks({ SavegameController = classes.SavegameController, Combine = classes.Combine }) end
     -- SG2-4b: the Shovel and Leveler work listeners and the class half of the Leveler callback.
     if SGGroundObserver ~= nil then SGGroundObserver.installClassHooks({ Leveler = classes.Leveler, Shovel = classes.Shovel, Dischargeable = classes.Dischargeable }) end
+    -- SG2-4b2: the WHEEL frame on WheelDestruction's class slot, read from the live class at
+    -- each mission's install (the class is re-sourced with every map load).
+    if SGGroundBrush ~= nil then SGGroundBrush.installClassHooks({ WheelDestruction = classes.WheelDestruction }) end
     wrapClassMethod(classes.StorageSystem, "addStorage", nil, function(r, storage)
         if r[1] == true then dispatch("onStorageAdded", storage) end
     end)
