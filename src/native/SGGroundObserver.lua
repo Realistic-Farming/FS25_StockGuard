@@ -124,6 +124,8 @@ G.TIP, G.WORK, G.DROP = "TIP", "WORK", "DROP"
 G.WINDROWER = "WINDROWER"
 -- SG2-5b: a Tedder work area's one processing call (Tedder.lua:279-350); its buffer persists.
 G.TEDDER = "TEDDER"
+-- SG2-5d-b: a square Baler's pickups and its add within one work-area tick (Baler.lua:1863-2009);
+-- "The Baler" below.
 -- SG-2 :652's NATIVE_HAY_CONVERT_V1 admits one converting pair. An input already of its target's
 -- type is a plain transfer; any other converter pair is unadmitted (Bob's 5b ruling, Q2).
 G.HAY_CONVERT_BASIS = "NATIVE_HAY_CONVERT_V1"
@@ -434,6 +436,10 @@ function G.admitPrimitive(gf, call)
     if name == nil then return "FILL_TYPE_UNNAMED" end
     if gf.expectType ~= nil and heightType.fillTypeIndex ~= gf.expectType then return "CONVERTED_AT_GROUND" end
     if gf.dropsOnly and call.maxDelta < 0 then return "NOT_A_DROP" end
+    -- SG2-5d-b: the add's frame admits no line; a BALER frame admits pickups (one type per tick is
+    -- decided after the line, when it is known what it removed: G.balerBalance).
+    if gf.balerAdd then return "BALER_ADD_FRAME" end
+    if gf.baler ~= nil and call.maxDelta > 0 then return "NOT_A_PICKUP" end
     -- SG2-5b: a Tedder pickup feeds its converter's target (Tedder.lua:47-65, :286-292); a type
     -- with no converter is not one of the Tedder's own pickups.
     if gf.tedder ~= nil and call.maxDelta < 0 then
@@ -525,7 +531,12 @@ function G.afterLine(host, pre, ok, returned)
     if pre.frame ~= nil and ok then
         if pre.frame.area ~= nil then G.areaBalance(host, pre) end
         if pre.frame.tedder ~= nil then G.tedderBalance(host, pre) end
-        G.captureOperation(host, pre, returned)
+        if pre.frame.baler ~= nil then G.balerBalance(host, pre) end
+        if pre.balerRefused ~= nil then
+            G.reconcileChanges(host, sampler, pre.changes)
+        else
+            G.captureOperation(host, pre, returned)
+        end
     else
         if pre.frame ~= nil then count(pre.frame.refused, "NATIVE_ERROR") end
         G.reconcileChanges(host, sampler, pre.changes)
@@ -616,7 +627,16 @@ function G.settlePending(host, gf, ok, unitIndex)
         local S0, D0 = 0, 0
         for _, v in pairs(net) do if v < 0 then S0 = S0 - v else D0 = D0 + v end end
         local tol = G.tolerance(call.fillType, S0, D0)
-        local legs, S, D, matched, clean = G.legs(net, tol)
+        local legs, S, D, matched, clean
+        local gain = op.balerGain ~= nil and gf.baler ~= nil and (net[gf.baler.carrierId] or 0) > G.EPSILON
+        if gain then
+            -- SG2-5d-b (Q1): a Baler pickup receives what native produced, the additive's boost and
+            -- all, declared in the evidence and never left unexplained.
+            legs, S, D = G.balerGainLegs(net, gf.baler.carrierId)
+            matched, clean = S, true
+        else
+            legs, S, D, matched, clean = G.legs(net, tol)
+        end
         -- SG2-5b: the buffer's legs of a converting pickup carry the profile's basis. No other leg
         -- does: an unchanged input joins with none (SGOperations.lua:752 sends them all to the owner).
         if op.conversionBasisId ~= nil then
@@ -630,6 +650,10 @@ function G.settlePending(host, gf, ok, unitIndex)
         evidence.unexplainedGain = clean and 0 or math.max(0, D - matched)
         evidence.quantizationDifference = clean and (D - S) or nil
         evidence.tolerance = tol
+        if gain then
+            evidence.quantizationDifference = nil
+            evidence.nativeGain = { boost = D - S, fillScale = op.balerGain.fillScale }
+        end
         local report = { participantsAfter = after, allocations = legs, outcomeEvidence = evidence }
         local outcome, reason = host.handle.settleOperation(op.capture.handle, report)
         result = { callRef = op.callRef, outcome = outcome, reason = reason, evidence = evidence, report = report }
@@ -682,13 +706,14 @@ function G.openFrame(host, vehicle, opts)
     end
     -- A WINDROWER frame opens with no unit: its area carrier binds at the first pickup. A TEDDER
     -- frame's buffer binds at its first pickup too, or is already bound from an earlier call.
-    if #units == 0 and opts.area == nil and opts.tedder == nil then return nil end
+    if #units == 0 and opts.area == nil and opts.tedder == nil and opts.baler == nil then return nil end
     local frame = SGOperationContext.open(host.context, vehicle, G.FRAME)
     if frame == nil then return nil end
     host.nextDischarge = host.nextDischarge + 1
     frame.ground = {
         kind = opts.kind, vehicle = vehicle, units = units, expectType = opts.expectType, dropsOnly = opts.dropsOnly == true,
         requested = opts.requested, sequence = 0, pending = nil, operations = {}, refused = {}, area = opts.area, tedder = opts.tedder,
+        baler = opts.baler, balerAdd = opts.balerAdd == true,
         callRef = "ground:" .. string.lower(opts.kind) .. ":" .. tostring(host.epoch) .. ":" .. tostring(host.nextDischarge),
     }
     return frame
@@ -700,6 +725,11 @@ end
 --- :397): the operation settles now, with that unit, and the report is its own.
 function G.onUnitObserved(host, obs)
     local gf = G.currentFrame(host)
+    -- SG2-5d-b (C2): inside the add's frame a settled add's own report is consumed; the rest replay.
+    if gf ~= nil and gf.balerAdd then
+        if obs.vehicle == gf.vehicle and G.balerConsume(gf.baler, obs) then obs.groundConsumed = true end
+        return
+    end
     if gf == nil or gf.pending == nil or obs.vehicle ~= gf.vehicle then return end
     for _, u in ipairs(gf.units) do
         if u.fillUnitIndex == obs.fillUnitIndex then
@@ -1084,6 +1114,561 @@ end
 -- Installation: the tip slot, the work listeners, the Leveler callback
 -- ---------------------------------------------------------
 --- Install the tip frame on one vehicle's dischargeToGround instance slot.
+-- ---------------------------------------------------------
+-- The Baler (SG2-5d-b; Bob's 5d shape ruling with its addendum)
+-- ---------------------------------------------------------
+-- A square Baler's work-area tick (Baler.lua:1954-2009): onStart zeroes lastPickedUpLiters; each
+-- pickup work area's captured processBalerArea lowers cells and adds what it produced, the
+-- silage additive's boost included, to lastPickedUpLiters (:1863-1915); onEnd lands it all with
+-- ONE addFillUnitFillLevel of lastPickedUpLiters x fillScale (:1960-2009). FillUnit raises the
+-- fill-change event with the request D and the applied delta A before it returns
+-- (FillUnit.lua:1203); the Baler's listener (:1155-1194) finishes a bale inside that event when
+-- the chamber is full and keeps D - A as its overflow, re-adding it at a later add.
+--
+-- THE TICK, per Baler (G.balerTicks): opened by the inner onStartWorkAreaProcessing after the
+-- original zeroes, closed by the inner onEndWorkAreaProcessing after the original returns. It
+-- holds the balerPickup carrier's live balance (SGNativeAdapters) and the tick's pickup batches.
+-- Frames stay call-sized, because SGOperationContext is a stack: each processBalerArea call runs
+-- in its own BALER frame (the bracket on the captured pointer), and the add in one more, opened
+-- by the inner onEnd around its original. A tick a throw left open is closed at the Baler's next
+-- onStart: what it still held is native loss.
+--
+-- WHICH BALERS (Bob's C4): a square Baler that clears before it creates (hasUnloadingAnimation
+-- false, :1431) and has no non-stop buffer (nonStopBaling false, :1979), on the server. A round or
+-- non-stop Baler opens no tick, so none of its lines is admitted: Soil's standalone carries it
+-- until 5e.
+--
+-- THE PICKUP (Q1). Each pickup line is the ordinary capture, cells to balerPickup (bound at the
+-- first pickup that removed material, as the windrower area is). It settles when its
+-- processBalerArea call returns, with its produced litres P_b known (the call's step in
+-- lastPickedUpLiters, :1910): one leg per cell, its loss r_i to r_i x P_b / r_b on balerPickup, the
+-- final remainder on the last, no conversion basis (a basis sends the owner to transform,
+-- SGOperations.lua:752), the gain declared in the evidence (nativeGain). Soil's delivery names the
+-- pickup's collection (result.collection); it is the tick's batch b, produced P_b.
+--
+-- THE ADD (C1, C2, the seal, Q2). In the inner fill-change listener, BEFORE the original, for the
+-- main unit's onEnd add with A > 0: the seal of the add's share over the tick's batches
+-- (SGCollectionSeal.sealTarget, F211 :76), Soil's published readCollectedCondition for each sealed
+-- share (an UNAVAILABLE read, or a share that cannot be sealed, is unknown carrier litres), and ONE
+-- TRANSFER balerPickup to the main unit, source P x A / W, destination A, with the account named
+-- for that leg in outcomeEvidence["soil.groundCondition"].collectedAccounts: Soil's combine adopts
+-- it (#1077), and Soil's finishBale, inside the original, reads that record for the bale. Every
+-- pending line has settled by then (C1): each settles when its own pickup call returns.
+-- After the original, the full branch's overflow O (spec.fillUnitOverflowFillLevel, read after it,
+-- never W - A) is a second seal at target O and a TRANSFER balerPickup to the balerOverflow
+-- carrier (Q3); an old overflow the branch overwrote is retired first as the native loss it is
+-- (F211 :88, :96). A full main raises the event with A = 0: the second seal at O, and no TRANSFER
+-- to the unit (Bob's addendum). The nested re-add (:1180-1182) is a TRANSFER balerOverflow to the
+-- main unit at that event's A, no basis and no evidence: the overflow stock's record carries its
+-- account. Each settled add's own fill-unit report (SGFillUnitObserver, after the listener) is
+-- consumed when its accepted delta is the event's A (F211 :94); every other report of the tick
+-- (the additive debit, the square clear in finishBale, the retag) replays at its frame's close (C3).
+--
+-- COALESCE_UNPROVED (Bob's guard; SG-2 :181). A tick that picks two types, or whose add lands in
+-- a chamber holding another type, proves no mixture: its add is abandoned with the actual
+-- after-states, its participants qualified, and the material lands unknown. A re-add into a type
+-- other than the one the overflow was produced as is the same.
+--
+-- THE CLOSE: balerPickup's remainder (W - D and what native refused, F211 :88) is one REMOVE with a
+-- LOSS leg; then the carrier is withdrawn. An overflow native emptied is withdrawn.
+
+G.BALER = "BALER"
+G.SOIL_PROPERTY = "soil.groundCondition"
+G.BALER_COALESCE = "COALESCE_UNPROVED"
+G.balerTicks = G.balerTicks or {}
+
+local function finite(n) return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge end
+
+--- Does this Baler take the BALER frame? (Bob's C4)
+function G.balerFramed(vehicle)
+    local spec = type(vehicle) == "table" and vehicle.spec_baler or nil
+    return type(spec) == "table" and vehicle.isServer == true and spec.hasUnloadingAnimation ~= true and spec.nonStopBaling ~= true
+        and type(spec.fillUnitIndex) == "number" and type(spec.workAreaParameters) == "table"
+end
+
+--- The main unit's binding and carrier id.
+local function chamberOf(vehicle)
+    local binding = A.fillUnitBindingFor(vehicle, vehicle.spec_baler.fillUnitIndex)
+    if binding == nil then return nil end
+    return binding, SGRecords.carrierKeyString(binding.carrierKey)
+end
+
+--- The inner onStartWorkAreaProcessing, after the original zeroed lastPickedUpLiters.
+function G.balerTickOpen(host, vehicle)
+    local stale = G.balerTicks[vehicle]
+    if stale ~= nil then G.balerTickClose(host, stale, "BALER_TICK_ABANDONED") end
+    if not host.ready or host.nativeLease == nil or not G.balerFramed(vehicle) then return nil end
+    local binding = A.balerPickupBinding(vehicle)
+    local unitBinding = chamberOf(vehicle)
+    if binding == nil or unitBinding == nil then return nil end
+    -- The chamber's record is brought to native now, before the tick: at the add native already
+    -- holds the new level, so its record must be current from before it.
+    local c, why = host.handle.refreshCarrier(host.nativeLease, unitBinding, SGNativeHost ~= nil and SGNativeHost.REASON or nil)
+    if c == nil and why ~= nil then return nil end
+    host.nextDischarge = host.nextDischarge + 1
+    local tick = { vehicle = vehicle, binding = binding, carrierId = SGRecords.carrierKeyString(binding.carrierKey), bound = false,
+                   live = nil, batches = {}, produced = 0, fillTypeName = nil, unproved = false, addArmed = false, expected = {},
+                   operations = {}, refused = {},
+                   callRef = "ground:baler:" .. tostring(host.epoch) .. ":" .. tostring(host.nextDischarge) }
+    G.balerTicks[vehicle] = tick
+    return tick
+end
+
+--- Bind the tick's balerPickup carrier, empty, and make it the frame's one unit.
+function G.bindBalerPickup(host, gf, fillTypeName)
+    local tick = gf.baler
+    local live = { vehicle = tick.vehicle, amount = 0, fillTypeName = fillTypeName }
+    A.balerPickups[tick.carrierId] = live
+    local spec = host.nativeLease.spec
+    local native = spec.resolveCarrier(tick.binding)
+    local ns = native ~= nil and spec.readNativeState(tick.binding, native) or nil
+    local c, why = nil, "PICKUP_STATE"
+    if ns ~= nil then c, why = host.handle.bindCarrier(host.nativeLease, tick.binding, ns) end
+    if c == nil then
+        A.balerPickups[tick.carrierId] = nil
+        return false, why
+    end
+    tick.live, tick.bound = live, true
+    gf.units[#gf.units + 1] = { binding = tick.binding, carrierId = tick.carrierId }
+    return true
+end
+
+--- A pickup line removed material: the tick's carrier is bound if it is not, and the litres the
+--- cells lost are kept for the settle.
+function G.balerBalance(host, pre)
+    local gf, sampler, call = pre.frame, pre.sampler, pre.call
+    if call.maxDelta >= 0 then return end
+    local moved = 0
+    for _, ch in ipairs(pre.changes) do
+        local b = G.cellState(sampler, ch.x, ch.z, ch.before)
+        local a = G.cellState(sampler, ch.x, ch.z, ch.after)
+        moved = moved + ((a.amount or 0) - (b.amount or 0))
+    end
+    if -moved <= G.EPSILON then return end
+    -- A second type in one tick proves no mixture (SG-2 :181): the line is reconciled unattributed
+    -- and the tick's add lands unknown. Only a line that removed material counts: the search's
+    -- empty tries of the other types (:1880-1882) are not pickups.
+    if gf.baler.fillTypeName ~= nil and call.fillTypeName ~= gf.baler.fillTypeName then
+        gf.baler.unproved = true
+        pre.balerRefused = G.BALER_COALESCE
+        count(gf.refused, G.BALER_COALESCE)
+        return
+    end
+    if not gf.baler.bound then
+        local okB, why = G.bindBalerPickup(host, gf, call.fillTypeName)
+        if not okB then count(gf.refused, "PICKUP_BIND:" .. tostring(why)) return end
+    end
+    pre.balerPicked = -moved
+end
+
+--- Q1's legs: each cell's loss r_i to r_i x P_b / r_b on the pickup, the remainder on the last cell.
+function G.balerGainLegs(net, pickupId)
+    local P = net[pickupId] or 0
+    local ids = {}
+    for cid, v in pairs(net) do if cid ~= pickupId and v < -G.EPSILON then ids[#ids + 1] = cid end end
+    table.sort(ids)
+    local S = 0
+    for _, cid in ipairs(ids) do S = S - net[cid] end
+    local legs, given = {}, 0
+    for i, cid in ipairs(ids) do
+        local r = -net[cid]
+        local d = (i < #ids) and (r * P / S) or (P - given)
+        given = given + d
+        legs[#legs + 1] = { source = { carrierId = cid }, sourceAmount = r, sourceUnit = A.UNIT,
+                            destination = { carrierId = pickupId }, destinationAmount = d, destinationUnit = A.UNIT, result = "TRANSFERRED" }
+    end
+    return legs, S, P
+end
+
+--- Open the BALER frame over one processBalerArea call of a ticking Baler.
+function G.openBalerPickup(host, vehicle)
+    local tick = G.balerTicks[vehicle]
+    if tick == nil then return nil end
+    local frame = G.openFrame(host, vehicle, { kind = G.BALER, units = {}, baler = tick })
+    if frame ~= nil and tick.bound then frame.ground.units[1] = { binding = tick.binding, carrierId = tick.carrierId } end
+    return frame
+end
+
+--- Close it: the pickup's produced litres are now known, so its line settles with Q1's legs.
+function G.closeBalerPickup(host, frame, ok, before)
+    local gf = frame.ground
+    local tick = gf.baler
+    local op = gf.pending
+    if ok and op ~= nil and op.pre ~= nil and op.pre.balerPicked ~= nil and tick.live ~= nil and type(before) == "number" then
+        local spec = tick.vehicle.spec_baler
+        local produced = (spec.workAreaParameters.lastPickedUpLiters or 0) - before
+        if finite(produced) and produced > G.EPSILON then
+            local name = op.pre.call.fillTypeName
+            op.balerGain = { produced = produced, fillScale = spec.fillScale }
+            op.unitMaterial = name
+            tick.live.amount = tick.live.amount + produced
+            tick.live.fillTypeName = name
+            tick.fillTypeName = name
+            tick.produced = tick.produced + produced
+            tick.batches[#tick.batches + 1] = { collection = op.pre.call.soilCollection, produced = produced }
+        end
+    end
+    G.closeFrame(host, frame, ok)
+    -- The tick's own record keeps every operation it made, the pickups' first.
+    for _, result in ipairs(gf.operations) do tick.operations[#tick.operations + 1] = result end
+end
+
+--- The bracket on a Baler pickup work area's captured processing pointer (SGWorkAreaInstaller).
+function G.balerBracket(realFn, _workArea)
+    return function(vehicle, workArea, ...)
+        local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+        local frame, before = nil, nil
+        if host ~= nil and g_server ~= nil and G.balerTicks[vehicle] ~= nil then
+            local okOpen, result = pcall(G.openBalerPickup, host, vehicle)
+            if okOpen then frame = result else logOnce("balerOpen", "baler frame failed to open (" .. tostring(result) .. ")") end
+            before = vehicle.spec_baler.workAreaParameters.lastPickedUpLiters
+        end
+        local n, r = packn(pcall(realFn, vehicle, workArea, ...))
+        if frame ~= nil then
+            local okClose, err = pcall(G.closeBalerPickup, host, frame, r[1], before)
+            if not okClose then logOnce("balerClose", "baler frame failed to close (" .. tostring(err) .. ")") end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
+end
+
+--- The account of a target over the tick's batches: Soil's published read of each sealed share,
+--- an UNAVAILABLE read or a share that cannot be sealed counted unknown at its share.
+function G.balerAccount(host, tick, target)
+    local F = tick.vehicle.spec_baler.fillScale
+    local store = host.sources.collectionSeals ~= nil and host.sources.collectionSeals() or nil
+    local shares = (store ~= nil and SGCollectionSeal ~= nil) and SGCollectionSeal.sealTarget(store, tick.batches, F, target) or {}
+    local acc = { carrierLitres = 0, knownCarrierLitres = 0, unknownCarrierLitres = 0, refusedCarrierLitres = 0, knownWeightedPctSum = 0 }
+    local sealed, read = 0, 0
+    for _, sh in ipairs(shares) do
+        local cov = nil
+        if sh.receipt ~= nil then
+            sealed = sealed + 1
+            cov = SGSoilCondition ~= nil and SGSoilCondition.readCollected(sh.receipt.snapshotId, sh.receipt) or nil
+        end
+        if type(cov) == "table" and (cov.status == "ok" or cov.status == "refusal") and finite(cov.carrierLitres)
+           and math.abs(cov.carrierLitres - sh.A_b) <= 1e-9 * math.max(1, sh.A_b) then
+            read = read + 1
+            acc.carrierLitres = acc.carrierLitres + cov.carrierLitres
+            acc.knownCarrierLitres = acc.knownCarrierLitres + cov.knownCarrierLitres
+            acc.unknownCarrierLitres = acc.unknownCarrierLitres + cov.unknownCarrierLitres
+            acc.refusedCarrierLitres = acc.refusedCarrierLitres + cov.refusedCarrierLitres
+            acc.knownWeightedPctSum = acc.knownWeightedPctSum + cov.knownWeightedPctSum
+        else
+            acc.carrierLitres = acc.carrierLitres + sh.A_b
+            acc.unknownCarrierLitres = acc.unknownCarrierLitres + sh.A_b
+        end
+    end
+    if #shares == 0 then
+        acc.carrierLitres, acc.unknownCarrierLitres = target, target
+    end
+    return acc, { shares = #shares, sealed = sealed, read = read }
+end
+
+--- The native state of a fill unit, read now.
+local function unitState(host, binding)
+    local spec = host.nativeLease.spec
+    local native = spec.resolveCarrier(binding)
+    return native ~= nil and spec.readNativeState(binding, native) or nil
+end
+
+--- A capture's before-state of one carrier.
+local function beforeOf(cap, cid) return cap.before.carriers[cid] end
+
+--- One settled (or abandoned) Baler operation into the tick's record.
+local function record(host, tick, result)
+    tick.operations[#tick.operations + 1] = result
+    host.lastSettlement = { callRef = result.callRef, outcome = result.outcome, reason = result.reason, report = result.report or { outcomeEvidence = result.evidence } }
+end
+
+--- The add, before the original listener (C1, C2, the seal, Q2). Returns nothing: the report
+--- this add raises after the listener is expected when the add settled or was abandoned.
+function G.balerSettleAdd(host, tick, fillTypeIndex, D, Aapplied)
+    local vehicle = tick.vehicle
+    local spec = vehicle.spec_baler
+    if not tick.bound or tick.live == nil or tick.live.amount <= G.EPSILON then return end
+    if not finite(Aapplied) or Aapplied <= G.EPSILON then return end      -- A = 0: no TRANSFER to the unit
+    local unitBinding, unitId = chamberOf(vehicle)
+    if unitBinding == nil then return end
+    local F = spec.fillScale
+    local Pn = spec.workAreaParameters.lastPickedUpLiters or 0
+    local P = tick.live.amount
+    if not finite(F) or F <= 0 or not finite(Pn) or Pn <= G.EPSILON then return end
+    local phi = math.min(1, P / Pn)
+    local share = Aapplied * phi                 -- the litres of A this tick's observed pickups explain
+    local src = P * Aapplied / (Pn * F)          -- P x A / W
+    local name = fillTypeNameOf(fillTypeIndex)
+    local cap, whyC = host.handle.captureOperation(host.nativeLease, "TRANSFER", { { carrierId = tick.carrierId }, { carrierId = unitId } })
+    if cap == nil then count(tick.refused, "ADD_CAPTURE:" .. tostring(whyC)) return end
+    local ub = beforeOf(cap, unitId)
+    local held = ub ~= nil and ub.amount > G.EPSILON and ub.materialRef ~= nil and ub.materialRef.fillTypeName ~= name
+    if held then
+        -- Another type in the chamber: FillUnit empties it first (FillUnit.lua:1142-1146), so the
+        -- applied delta is the new level less the old one, not what entered. What entered is the
+        -- unit's whole new level.
+        local level = vehicle:getFillUnitFillLevel(spec.fillUnitIndex)
+        src = math.min(P, P * level / (Pn * F))
+    end
+    tick.live.amount = math.max(0, P - src)
+    local after = { [tick.carrierId] = unitState(host, tick.binding), [unitId] = unitState(host, unitBinding) }
+    local evidence = { nativePath = "GROUND_BALER_ADD", callRef = tick.callRef .. ":add", fillTypeName = name, requestedAmount = D,
+                       appliedAmount = Aapplied, explainedAmount = share, produced = Pn, observedProduced = P, fillScale = F }
+    tick.expected[#tick.expected + 1] = { fillUnitIndex = spec.fillUnitIndex, accepted = Aapplied }
+    if tick.unproved or held or name == nil or name ~= tick.fillTypeName then
+        tick.unproved = true
+        host.handle.abandonOperation(cap.handle, G.BALER_COALESCE, after)
+        record(host, tick, { callRef = evidence.callRef, outcome = "ABANDONED", reason = G.BALER_COALESCE, evidence = evidence })
+        return
+    end
+    local acc, seal = G.balerAccount(host, tick, share)
+    evidence.seal = seal
+    evidence[G.SOIL_PROPERTY] = { collectedAccounts = { { allocation = 1, account = acc } } }
+    local legs = { { source = { carrierId = tick.carrierId }, sourceAmount = src, sourceUnit = A.UNIT,
+                     destination = { carrierId = unitId }, destinationAmount = share, destinationUnit = A.UNIT, result = "TRANSFERRED" } }
+    local report = { participantsAfter = after, allocations = legs, outcomeEvidence = evidence }
+    local outcome, reason = host.handle.settleOperation(cap.handle, report)
+    record(host, tick, { callRef = evidence.callRef, outcome = outcome, reason = reason, evidence = evidence, report = report })
+end
+
+--- Retire what SG-1 holds of an overflow (an overwrite: native loss; a vehicle gone: destruction),
+--- through a REMOVE whose after-state is the carrier emptied. The caller withdraws it.
+function G.balerRetireOverflow(host, vehicle, oid, reason, result, evidenceExtra)
+    local cap, why = host.handle.captureOperation(host.nativeLease, "REMOVE", { { carrierId = oid } })
+    if cap == nil then return nil, why end
+    local b = beforeOf(cap, oid)
+    local amount = b ~= nil and b.amount or 0
+    local evidence = { nativePath = "GROUND_BALER_OVERFLOW", remainder = amount, loss = amount }
+    for k, v in pairs(evidenceExtra or {}) do evidence[k] = v end
+    local allocations = {}
+    if amount > 0 then
+        allocations[1] = { source = { carrierId = oid }, sourceAmount = amount, sourceUnit = A.UNIT,
+                           destination = { retire = true }, result = result, reason = reason }
+    end
+    local report = { participantsAfter = { [oid] = A.balerOverflowState(vehicle, 0) }, allocations = allocations, outcomeEvidence = evidence }
+    local outcome, reasonOut = host.handle.settleOperation(cap.handle, report)
+    return outcome, reasonOut, report
+end
+
+--- After the original listener, when the full branch ran (:1170-1177): the overflow O it
+--- assigned is a second seal at target O and a TRANSFER balerPickup to the overflow carrier.
+function G.balerSettleOverflow(host, tick)
+    local vehicle = tick.vehicle
+    local spec = vehicle.spec_baler
+    local O = spec.fillUnitOverflowFillLevel
+    local obinding = A.balerOverflowBinding(vehicle)
+    if obinding == nil then return end
+    local oid = SGRecords.carrierKeyString(obinding.carrierKey)
+    -- An overflow the branch overwrote went with it: retire what SG-1 held of it as native loss.
+    if A.balerOverflows[oid] ~= nil then
+        local outcome, reason, report = G.balerRetireOverflow(host, vehicle, oid, "BALER_OVERFLOW_OVERWRITTEN", "LOSS", { callRef = tick.callRef .. ":overwritten" })
+        record(host, tick, { callRef = tick.callRef .. ":overwritten", outcome = outcome, reason = reason, evidence = report and report.outcomeEvidence, report = report })
+        pcall(host.handle.withdrawCarrier, host.nativeLease, oid, "BALER_OVERFLOW_OVERWRITTEN")
+        A.balerOverflows[oid] = nil
+    end
+    if not finite(O) or O <= G.EPSILON then return end
+    if tick.unproved or not tick.bound or tick.live == nil or tick.live.amount <= G.EPSILON then return end
+    local F = spec.fillScale
+    local Pn = spec.workAreaParameters.lastPickedUpLiters or 0
+    if not finite(F) or F <= 0 or not finite(Pn) or Pn <= G.EPSILON then return end
+    local P = tick.live.amount
+    local all = tick.produced
+    local phi = math.min(1, all / Pn)
+    local share = O * phi
+    local src = math.min(P, all * O / (Pn * F))
+    A.balerOverflows[oid] = { vehicle = vehicle, producedAs = tick.fillTypeName }
+    local c, whyB = host.handle.bindCarrier(host.nativeLease, obinding, A.balerOverflowState(vehicle, 0))
+    if c == nil then A.balerOverflows[oid] = nil count(tick.refused, "OVERFLOW_BIND:" .. tostring(whyB)) return end
+    local cap, whyC = host.handle.captureOperation(host.nativeLease, "TRANSFER", { { carrierId = tick.carrierId }, { carrierId = oid } })
+    if cap == nil then count(tick.refused, "OVERFLOW_CAPTURE:" .. tostring(whyC)) return end
+    tick.live.amount = math.max(0, P - src)
+    local acc, seal = G.balerAccount(host, tick, share)
+    local evidence = { nativePath = "GROUND_BALER_OVERFLOW", callRef = tick.callRef .. ":overflow", fillTypeName = tick.fillTypeName,
+                       overflowAmount = O, explainedAmount = share, fillScale = F, seal = seal,
+                       [G.SOIL_PROPERTY] = { collectedAccounts = { { allocation = 1, account = acc } } } }
+    local legs = { { source = { carrierId = tick.carrierId }, sourceAmount = src, sourceUnit = A.UNIT,
+                     destination = { carrierId = oid }, destinationAmount = share, destinationUnit = A.UNIT, result = "TRANSFERRED" } }
+    local report = { participantsAfter = { [tick.carrierId] = unitState(host, tick.binding), [oid] = A.balerOverflowState(vehicle, O) },
+                     allocations = legs, outcomeEvidence = evidence }
+    local outcome, reason = host.handle.settleOperation(cap.handle, report)
+    record(host, tick, { callRef = evidence.callRef, outcome = outcome, reason = reason, evidence = evidence, report = report })
+end
+
+--- The nested re-add (:1180-1182): a TRANSFER from the overflow to the main unit at this
+--- event's A, before the nested original. Native has zeroed its overflow field for the call, so
+--- the overflow's after-state is computed: what it held less A.
+function G.balerSettleReAdd(host, tick, fillTypeIndex, Aapplied)
+    local vehicle = tick.vehicle
+    local obinding = A.balerOverflowBinding(vehicle)
+    local unitBinding, unitId = chamberOf(vehicle)
+    if obinding == nil or unitBinding == nil or not finite(Aapplied) or Aapplied <= G.EPSILON then return end
+    local oid = SGRecords.carrierKeyString(obinding.carrierKey)
+    local entry = A.balerOverflows[oid]
+    if entry == nil then return end
+    local cap, whyC = host.handle.captureOperation(host.nativeLease, "TRANSFER", { { carrierId = oid }, { carrierId = unitId } })
+    if cap == nil then count(tick.refused, "READD_CAPTURE:" .. tostring(whyC)) return end
+    local ob = beforeOf(cap, oid)
+    local held = ob ~= nil and ob.amount or 0
+    local name = fillTypeNameOf(fillTypeIndex)
+    local after = { [oid] = A.balerOverflowState(vehicle, math.max(0, held - Aapplied)), [unitId] = unitState(host, unitBinding) }
+    local evidence = { nativePath = "GROUND_BALER_READD", callRef = tick.callRef .. ":readd", fillTypeName = name, appliedAmount = Aapplied, overflowBefore = held }
+    tick.expected[#tick.expected + 1] = { fillUnitIndex = vehicle.spec_baler.fillUnitIndex, accepted = Aapplied }
+    if name == nil or name ~= entry.producedAs or Aapplied > held + G.EPSILON then
+        host.handle.abandonOperation(cap.handle, G.BALER_COALESCE, after)
+        record(host, tick, { callRef = evidence.callRef, outcome = "ABANDONED", reason = G.BALER_COALESCE, evidence = evidence })
+        return
+    end
+    local legs = { { source = { carrierId = oid }, sourceAmount = Aapplied, sourceUnit = A.UNIT,
+                     destination = { carrierId = unitId }, destinationAmount = Aapplied, destinationUnit = A.UNIT, result = "TRANSFERRED" } }
+    local report = { participantsAfter = after, allocations = legs, outcomeEvidence = evidence }
+    local outcome, reason = host.handle.settleOperation(cap.handle, report)
+    record(host, tick, { callRef = evidence.callRef, outcome = outcome, reason = reason, evidence = evidence, report = report })
+end
+
+--- A fill-unit report inside the add frame: the report of a settled add is consumed when its
+--- accepted delta is the event's A (C2); any other replays at the close (C3).
+function G.balerConsume(tick, obs)
+    if type(obs.accepted) ~= "number" then return false end
+    for i, e in ipairs(tick.expected) do
+        if e.fillUnitIndex == obs.fillUnitIndex then
+            if math.abs(obs.accepted - e.accepted) <= 1e-9 * math.max(1, math.abs(e.accepted)) then
+                table.remove(tick.expected, i)
+                return true
+            end
+        end
+    end
+    if #tick.expected > 0 then count(tick.refused, "REPORT_UNMATCHED") end
+    return false
+end
+
+--- Open the frame the add runs in (the inner onEnd, around its original).
+function G.openBalerAdd(host, vehicle, tick)
+    local frame = G.openFrame(host, vehicle, { kind = G.BALER, units = {}, baler = tick, balerAdd = true })
+    if frame ~= nil then tick.addArmed = true end
+    return frame
+end
+
+--- The tick's close: what balerPickup still holds is native loss; then it is withdrawn, and an
+--- overflow native emptied is withdrawn too.
+function G.balerTickClose(host, tick, reason)
+    tick.addArmed = false
+    if G.balerTicks[tick.vehicle] == tick then G.balerTicks[tick.vehicle] = nil end
+    if tick.bound then
+        local cid = tick.carrierId
+        local remainder = tick.live ~= nil and tick.live.amount or 0
+        if remainder > G.EPSILON then
+            local cap, why = host.handle.captureOperation(host.nativeLease, "REMOVE", { { carrierId = cid } })
+            if cap ~= nil then
+                tick.live.amount = 0
+                local evidence = { nativePath = "GROUND_BALER_REMAINDER", callRef = tick.callRef .. ":remainder", fillTypeName = tick.fillTypeName,
+                                   produced = tick.produced, remainder = remainder, loss = remainder }
+                local report = { participantsAfter = { [cid] = unitState(host, tick.binding) }, outcomeEvidence = evidence,
+                                 allocations = { { source = { carrierId = cid }, sourceAmount = remainder, sourceUnit = A.UNIT,
+                                                   destination = { retire = true }, result = "LOSS", reason = reason or "BALER_PICKUP_REMAINDER" } } }
+                local outcome, reasonOut = host.handle.settleOperation(cap.handle, report)
+                record(host, tick, { callRef = evidence.callRef, outcome = outcome, reason = reasonOut, evidence = evidence, report = report })
+            else
+                count(tick.refused, "REMAINDER_CAPTURE:" .. tostring(why))
+            end
+        end
+        pcall(host.handle.withdrawCarrier, host.nativeLease, cid, "BALER_TICK_CLOSED")
+        A.balerPickups[cid] = nil
+        tick.live = nil
+    end
+    local obinding = A.balerOverflowBinding(tick.vehicle)
+    local oid = obinding ~= nil and SGRecords.carrierKeyString(obinding.carrierKey) or nil
+    if oid ~= nil and A.balerOverflows[oid] ~= nil then
+        local spec = tick.vehicle.spec_baler
+        if type(spec) == "table" and (spec.fillUnitOverflowFillLevel or 0) <= 0 then
+            host.handle.refreshCarrier(host.nativeLease, obinding, SGNativeHost ~= nil and SGNativeHost.REASON or nil)
+            pcall(host.handle.withdrawCarrier, host.nativeLease, oid, "BALER_OVERFLOW_EMPTY")
+            A.balerOverflows[oid] = nil
+        end
+    end
+    host.lastBalerTick = tick
+end
+
+--- The inner onEnd's close: the add frame first (its unconsumed reports replay), then the tick.
+function G.closeBalerAdd(host, frame, tick, ok)
+    tick.addArmed = false
+    if frame ~= nil then
+        tick.reports = frame.observations      -- diagnostic: the add frame's reports, consumed or replayed
+        G.closeFrame(host, frame, ok)
+    end
+    G.balerTickClose(host, tick, "BALER_PICKUP_REMAINDER")
+end
+
+--- A vehicle with a live overflow is going: the overflow is destruction (SG-2 :136), retired through
+--- a REMOVE before the carrier is withdrawn. An open tick goes with it.
+function G.retireBalerCarriers(host, vehicle)
+    local tick = G.balerTicks[vehicle]
+    if tick ~= nil then G.balerTickClose(host, tick, "BALER_VEHICLE_REMOVED") end
+    for oid, entry in pairs(A.balerOverflows) do
+        if entry.vehicle == vehicle then
+            local outcome, reason, report = G.balerRetireOverflow(host, vehicle, oid, "VEHICLE_REMOVED", "DESTRUCTION", { callRef = "baler:destruction:" .. oid })
+            host.lastSettlement = { callRef = "baler:destruction:" .. oid, outcome = outcome, reason = reason, report = report }
+            pcall(host.handle.withdrawCarrier, host.nativeLease, oid, "VEHICLE_REMOVED")
+            A.balerOverflows[oid] = nil
+        end
+    end
+end
+
+-- The Baler's class listeners (Bob's condition 2: SGClassHook per mission, the live class).
+local function balerStart(original, self, ...)
+    local n, r = packn(original(self, ...))
+    local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+    if host ~= nil and g_server ~= nil then
+        local ok, err = pcall(G.balerTickOpen, host, self)
+        if not ok then logOnce("balerStart", "baler tick failed to open (" .. tostring(err) .. ")") end
+    end
+    return unpack(r, 1, n)
+end
+
+local function balerEnd(original, self, ...)
+    local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+    local tick = host ~= nil and G.balerTicks[self] or nil
+    local frame = nil
+    if tick ~= nil then
+        local okOpen, result = pcall(G.openBalerAdd, host, self, tick)
+        if okOpen then frame = result else logOnce("balerAddOpen", "baler add frame failed to open (" .. tostring(result) .. ")") end
+    end
+    local n, r = packn(pcall(original, self, ...))
+    if tick ~= nil then
+        local okClose, err = pcall(G.closeBalerAdd, host, frame, tick, r[1])
+        if not okClose then logOnce("balerAddClose", "baler tick failed to close (" .. tostring(err) .. ")") end
+    end
+    if not r[1] then error(r[2], 0) end
+    return unpack(r, 2, n)
+end
+
+local function balerFill(original, self, fillUnitIndex, fillLevelDelta, fillTypeIndex, toolType, fillPositionData, appliedDelta, ...)
+    local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+    local tick = host ~= nil and G.balerTicks[self] or nil
+    local spec = type(self) == "table" and self.spec_baler or nil
+    local add, wasFull = false, false
+    if tick ~= nil and type(spec) == "table" and fillUnitIndex == spec.fillUnitIndex and type(fillLevelDelta) == "number" and fillLevelDelta > 0 then
+        if tick.addArmed then
+            tick.addArmed = false
+            add = true
+            -- The original's first test (:1170), on the level the add has already set.
+            local okF, free = pcall(self.getFillUnitFreeCapacity, self, fillUnitIndex)
+            wasFull = okF and type(free) == "number" and free <= 0
+            local ok, err = pcall(G.balerSettleAdd, host, tick, fillTypeIndex, fillLevelDelta, appliedDelta)
+            if not ok then logOnce("balerAdd", "baler add failed to settle (" .. tostring(err) .. ")") end
+        elseif (spec.fillUnitOverflowFillLevel or 0) == 0 then
+            local ok, err = pcall(G.balerSettleReAdd, host, tick, fillTypeIndex, appliedDelta)
+            if not ok then logOnce("balerReAdd", "baler re-add failed to settle (" .. tostring(err) .. ")") end
+        end
+    end
+    local n, r = packn(original(self, fillUnitIndex, fillLevelDelta, fillTypeIndex, toolType, fillPositionData, appliedDelta, ...))
+    if add and wasFull then
+        local ok, err = pcall(G.balerSettleOverflow, host, tick)
+        if not ok then logOnce("balerOverflow", "baler overflow failed to settle (" .. tostring(err) .. ")") end
+    end
+    return unpack(r, 1, n)
+end
+G.balerStart, G.balerEnd, G.balerFill = balerStart, balerEnd, balerFill
+
 function G.installTip(vehicle)
     if g_server == nil then return false, "CLIENT" end
     if type(vehicle) ~= "table" or vehicle.spec_dischargeable == nil then return false, "NO_SPEC" end
@@ -1232,6 +1817,10 @@ function G.installClassHooks(classes)
         return aroundWork(original, levelerWork, self, ...)
     end) or installed
     installed = wrapClass(classes.Leveler, G.LEVELER_KEY, levelerAround) or installed
+    -- SG2-5d-b: the Baler's three listeners (Bob's condition 2a), on the live class of this map load.
+    installed = wrapClass(classes.Baler, "onStartWorkAreaProcessing", balerStart) or installed
+    installed = wrapClass(classes.Baler, "onEndWorkAreaProcessing", balerEnd) or installed
+    installed = wrapClass(classes.Baler, "onFillUnitFillLevelChanged", balerFill) or installed
     return installed
 end
 
@@ -1245,5 +1834,8 @@ function G.observeVehicle(vehicle)
     end
     if vehicle.spec_tedder ~= nil and SGWorkAreaInstaller ~= nil then
         SGWorkAreaInstaller.install(vehicle, "spec_tedder", "processTedderArea", G.tedderBracket)
+    end
+    if vehicle.spec_baler ~= nil and SGWorkAreaInstaller ~= nil then
+        SGWorkAreaInstaller.install(vehicle, "spec_baler", "processBalerArea", G.balerBracket)
     end
 end

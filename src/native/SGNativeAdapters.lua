@@ -72,6 +72,14 @@ A.WINDROWER_AREA_PROFILE = "NATIVE_WINDROWER_AREA_V1"
 -- material that rides into later passes and calls (SG-2 :296, :684), so this carrier persists.
 A.KIND_TEDDER_BUFFER = "tedderBuffer"
 A.TEDDER_BUFFER_PROFILE = "NATIVE_TEDDER_BUFFER_V1"
+-- SG2-5d-b: a Baler's pickups within one work-area tick, between the cells and the one add
+-- (Baler.lua:1954-2009): live only while the BALER frame is open, like the windrower area.
+A.KIND_BALER_PICKUP = "balerPickup"
+A.BALER_PICKUP_PROFILE = "NATIVE_BALER_PICKUP_V1"
+-- SG2-5d-b: the Baler's native overflow, fillUnitOverflowFillLevel (SG-2 :471), real pending volume.
+A.KIND_BALER_OVERFLOW = "balerOverflow"
+A.BALER_OVERFLOW_PROFILE = "NATIVE_BALER_OVERFLOW_V1"
+A.BALER_OVERFLOW_GROUP = "NATIVE_BALER_OVERFLOW_V1"
 A.STORAGE_PROFILE     = "NATIVE_STORAGE_SLOT_V1"
 A.FILLUNIT_PROFILE    = "NATIVE_FILL_UNIT_V1"
 A.PROFILE_VERSION     = 1
@@ -803,6 +811,153 @@ function A.tedderBufferKind(vehicles)
     return spec
 end
 
+-- ── Baler pickups (SG2-5d-b) ─────────────────────────────────────────────────
+--
+-- LIVE ONLY (Bob's 5d shape ruling, the frame). A Baler's pickups in one work-area tick lie
+-- between the cells they lowered and the one add that lands them (Baler.lua:1954-2009). Native
+-- keeps nothing of them but lastPickedUpLiters, which onStart zeroes, so this carrier is live
+-- only while its BALER frame is open: SGGroundObserver binds it at the first pickup that removed
+-- material and withdraws it at the close. Its native amount is the frame's balance: each pickup's
+-- produced litres P_b in (its step in lastPickedUpLiters, :1910), each settled share out. One per
+-- Baler. Never enumerated, never restored, never saved.
+
+A.balerPickups = A.balerPickups or {}
+
+function A.balerPickupBinding(vehicle)
+    if type(vehicle) ~= "table" then return nil end
+    local ownerKey = persistentIdOf(vehicle)
+    if ownerKey == nil then return nil end
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.KIND_BALER_PICKUP, A.BALER_PICKUP_PROFILE,
+        { kind = A.KIND_BALER_PICKUP, configFileName = type(vehicle.configFileName) == "string" and vehicle.configFileName or "" })
+end
+
+--- Is this carrier key a Baler pickup of the native adapter?
+function A.isBalerPickupKey(carrierKey)
+    return type(carrierKey) == "table" and carrierKey.adapterId == A.NATIVE_ADAPTER_ID and carrierKey.componentKey == A.KIND_BALER_PICKUP
+end
+
+--- The Baler pickup KIND of the native adapter.
+---@param vehicles function  () -> list of vehicles
+function A.balerPickupKind(vehicles)
+    local spec = {}
+
+    spec.resolveCarrier = function(binding)
+        if not isServer() then return nil, "CLIENT" end
+        if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil, "BINDING" end
+        local d = binding.sourceDescriptor
+        if type(d) ~= "table" or d.kind ~= A.KIND_BALER_PICKUP or binding.carrierKey.componentKey ~= A.KIND_BALER_PICKUP then return nil, "DESCRIPTOR" end
+        local live = A.balerPickups[SGRecords.carrierKeyString(binding.carrierKey)]
+        if live == nil then return nil, "NOT_LIVE" end
+        local vehicle = vehicleOf(vehicles, binding.carrierKey.nativeOwnerKey)
+        if vehicle == nil or vehicle ~= live.vehicle then return nil, "VEHICLE_ABSENT" end
+        return { vehicle = vehicle, live = live }
+    end
+
+    --- The frame's balance, and nothing else.
+    spec.readNativeState = function(binding, native)
+        if not isServer() then return nil, "CLIENT" end
+        if type(native) ~= "table" or type(native.live) ~= "table" or type(native.vehicle) ~= "table" then return nil, "NATIVE" end
+        local level = native.live.amount
+        if type(level) ~= "number" or level ~= level or level < 0 then return nil, "LEVEL" end
+        local name = level > 0 and native.live.fillTypeName or nil
+        if level > 0 and name == nil then return nil, "FILL_TYPE_UNNAMED" end
+        return {
+            materialRef = name ~= nil and { kind = "FILL_TYPE", fillTypeName = name } or nil,
+            amount = level,
+            unit = A.UNIT,
+            ownerFarmId = ownerFarmOf(native.vehicle),
+            storeKind = "vehicle_buffer",
+            nativeUniqueId = persistentIdOf(native.vehicle),
+        }
+    end
+
+    spec.enumerateCarriers = function() return {} end
+
+    spec.hasAccess = function(binding, actor)
+        local native = spec.resolveCarrier(binding)
+        if native == nil then return false end
+        return actorCanAccess(actor, native.vehicle)
+    end
+
+    return spec
+end
+
+-- ── Baler overflow (SG2-5d-b) ────────────────────────────────────────────────
+--
+-- SG-2 v2.3 :471 (Bob's 5d ruling, Q3): spec_baler.fillUnitOverflowFillLevel is real pending
+-- volume the Baler later adds to its chamber (Baler.lua:1176-1183). An opaque buffer with its
+-- actual scalar amount; its material is NATIVE_GROUP NATIVE_BALER_OVERFLOW_V1, because native
+-- keeps no type beside it. Bound when a full add assigns it, live across ticks while native holds
+-- it, withdrawn when it empties, retired as destruction when its vehicle goes (SG-2 :136). Never
+-- enumerated and never restored: its save is 5e's (:477), so a reload retires it, as native
+-- discards it. Inside the nested re-add native has zeroed the field before its add (:1180-1182);
+-- the frame settles that transfer with the after-state it computes, never this read.
+
+A.balerOverflows = A.balerOverflows or {}
+
+function A.balerOverflowBinding(vehicle)
+    if type(vehicle) ~= "table" then return nil end
+    local ownerKey = persistentIdOf(vehicle)
+    if ownerKey == nil then return nil end
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.KIND_BALER_OVERFLOW, A.BALER_OVERFLOW_PROFILE,
+        { kind = A.KIND_BALER_OVERFLOW, configFileName = type(vehicle.configFileName) == "string" and vehicle.configFileName or "" })
+end
+
+--- The overflow's native state at `level` litres: the frame's own figure inside the nested re-add,
+--- where native has zeroed its field (header), and readNativeState's otherwise.
+function A.balerOverflowState(vehicle, level)
+    return {
+        materialRef = level > 0 and { kind = "NATIVE_GROUP", groupId = A.BALER_OVERFLOW_GROUP } or nil,
+        amount = level,
+        unit = A.UNIT,
+        ownerFarmId = ownerFarmOf(vehicle),
+        storeKind = "vehicle_buffer",
+        nativeUniqueId = persistentIdOf(vehicle),
+    }
+end
+
+--- Is this carrier key a Baler overflow of the native adapter?
+function A.isBalerOverflowKey(carrierKey)
+    return type(carrierKey) == "table" and carrierKey.adapterId == A.NATIVE_ADAPTER_ID and carrierKey.componentKey == A.KIND_BALER_OVERFLOW
+end
+
+--- The Baler overflow KIND of the native adapter.
+---@param vehicles function  () -> list of vehicles
+function A.balerOverflowKind(vehicles)
+    local spec = {}
+
+    spec.resolveCarrier = function(binding)
+        if not isServer() then return nil, "CLIENT" end
+        if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil, "BINDING" end
+        local d = binding.sourceDescriptor
+        if type(d) ~= "table" or d.kind ~= A.KIND_BALER_OVERFLOW or binding.carrierKey.componentKey ~= A.KIND_BALER_OVERFLOW then return nil, "DESCRIPTOR" end
+        local entry = A.balerOverflows[SGRecords.carrierKeyString(binding.carrierKey)]
+        if entry == nil then return nil, "NOT_BOUND" end
+        local vehicle = vehicleOf(vehicles, binding.carrierKey.nativeOwnerKey)
+        if vehicle == nil or vehicle ~= entry.vehicle or type(vehicle.spec_baler) ~= "table" then return nil, "VEHICLE_ABSENT" end
+        return { vehicle = vehicle, entry = entry }
+    end
+
+    --- The native overflow exactly.
+    spec.readNativeState = function(binding, native)
+        if not isServer() then return nil, "CLIENT" end
+        if type(native) ~= "table" or type(native.vehicle) ~= "table" or type(native.vehicle.spec_baler) ~= "table" then return nil, "NATIVE" end
+        local level = native.vehicle.spec_baler.fillUnitOverflowFillLevel
+        if type(level) ~= "number" or level ~= level or level < 0 then return nil, "LEVEL" end
+        return A.balerOverflowState(native.vehicle, level)
+    end
+
+    spec.enumerateCarriers = function() return {} end
+
+    spec.hasAccess = function(binding, actor)
+        local native = spec.resolveCarrier(binding)
+        if native == nil then return false end
+        return actorCanAccess(actor, native.vehicle)
+    end
+
+    return spec
+end
+
 -- ── Ground cells (SG2-4b) ───────────────────────────────────────────────────
 --
 -- ONE CARRIER PER NATIVE HEIGHT PIXEL (SG-2 :158-160; SG-1 :104, :220). The grain is the
@@ -930,11 +1085,14 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         [A.KIND_GROUND] = A.groundKind(samplers),
         [A.KIND_WINDROWER_AREA] = A.windrowerAreaKind(vehicles),
         [A.KIND_TEDDER_BUFFER] = A.tedderBufferKind(vehicles),
+        [A.KIND_BALER_PICKUP] = A.balerPickupKind(vehicles),
+        [A.KIND_BALER_OVERFLOW] = A.balerOverflowKind(vehicles),
     }
     local spec = {
         version        = A.ADAPTER_VERSION,
-        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT, A.KIND_GROUND, A.KIND_WINDROWER_AREA, A.KIND_TEDDER_BUFFER },
-        materialGroups = {},
+        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT, A.KIND_GROUND, A.KIND_WINDROWER_AREA, A.KIND_TEDDER_BUFFER,
+                          A.KIND_BALER_PICKUP, A.KIND_BALER_OVERFLOW },
+        materialGroups = { A.BALER_OVERFLOW_GROUP },
         kinds          = kinds,
     }
     local function route(binding)
@@ -970,6 +1128,9 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         -- A Tedder buffer is not saved yet (SG-2 :144 is a later slice): a reload retires it, as
         -- native zeroes litersToDrop at load (Tedder.lua:242).
         if kind == A.KIND_TEDDER_BUFFER then return nil, "NOT_RESTORABLE" end
+        -- A Baler pickup lives only inside one work-area tick; the overflow's save is 5e's (SG-2
+        -- :477): a reload retires it, as native discards it.
+        if kind == A.KIND_BALER_PICKUP or kind == A.KIND_BALER_OVERFLOW then return nil, "NOT_RESTORABLE" end
         return nil, "DESCRIPTOR"
     end
     spec.enumerateCarriers = function()

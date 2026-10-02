@@ -119,13 +119,15 @@ local function installNativeKernel(mission)
     if mission == nil or mission.stockGuard == nil or type(mission.getIsServer) ~= "function" or not mission:getIsServer() then return end
     SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem,
         Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil, SavegameController = SavegameController,
-        Dischargeable = Dischargeable, Leveler = Leveler, Shovel = Shovel, WheelDestruction = WheelDestruction })
+        Dischargeable = Dischargeable, Leveler = Leveler, Shovel = Shovel, WheelDestruction = WheelDestruction, Baler = Baler })
     local host = SGNativeHost.new(mission.stockGuard, {
         placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
         vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,
         storageSystem = function() return mission.storageSystem end,
         -- SG2-4b: the ground of this mission (attached below), for the ground carrier kind.
         ground = function() local sg = stockGuardOf(mission) return sg ~= nil and sg.ground or nil end,
+        -- SG2-5d-b: the seal store the Baler's add seals into (SGCollectionSeal, on the StockGuard host).
+        collectionSeals = function() local sg = stockGuardOf(mission) return sg ~= nil and sg.collectionSeals or nil end,
     })
     local ok, why = host:install()
     print("[StockGuard] native kernel " .. (ok and "installed: native carrier adapter registered (storage and fill-unit kinds)" or ("not installed: " .. tostring(why))))
@@ -137,6 +139,9 @@ local function installNativeKernel(mission)
         sg.operations:setRetiredClass("windrowerArea", SGNativeAdapters.isWindrowerAreaKey)
         -- SG2-5b: every emptying drop of a Tedder buffer retires a stock (Bob's 5b Q1).
         sg.operations:setRetiredClass("tedderBuffer", SGNativeAdapters.isTedderBufferKey)
+        -- SG2-5d-b: every Baler tick retires a pickup stock, and an overflow retires at each overwrite.
+        sg.operations:setRetiredClass("balerPickup", SGNativeAdapters.isBalerPickupKey)
+        sg.operations:setRetiredClass("balerOverflow", SGNativeAdapters.isBalerOverflowKey)
     end
     if sg ~= nil and SGGround ~= nil then
         local ground, whyGround = SGGround.attach(sg)
