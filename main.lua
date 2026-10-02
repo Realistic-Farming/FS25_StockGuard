@@ -70,6 +70,8 @@ source(modDirectory .. "src/native/SGGroundObserver.lua")
 source(modDirectory .. "src/native/SGSoilCondition.lua")
 -- SG2-5d: the collection seal and receipt store (StockGuard is the collection's producer).
 source(modDirectory .. "src/native/SGCollectionSeal.lua")
+source(modDirectory .. "src/native/SGGroundBrush.lua")
+source(modDirectory .. "src/native/SGGroundArea.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
@@ -117,7 +119,7 @@ local function installNativeKernel(mission)
     if mission == nil or mission.stockGuard == nil or type(mission.getIsServer) ~= "function" or not mission:getIsServer() then return end
     SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem,
         Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil, SavegameController = SavegameController,
-        Dischargeable = Dischargeable, Leveler = Leveler, Shovel = Shovel })
+        Dischargeable = Dischargeable, Leveler = Leveler, Shovel = Shovel, WheelDestruction = WheelDestruction })
     local host = SGNativeHost.new(mission.stockGuard, {
         placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
         vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,
