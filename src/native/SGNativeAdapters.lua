@@ -62,6 +62,12 @@ A.KIND_DELAY_SLOT     = "combineDelaySlot"
 A.KIND_STRAW_SLOT     = "combineStrawSlot"
 A.DELAY_SLOT_PROFILE  = "NATIVE_COMBINE_DELAY_SLOT_V1"
 A.STRAW_SLOT_PROFILE  = "NATIVE_COMBINE_STRAW_SLOT_V1"
+-- SG2-5a: a Windrower work area's material between its pickup and its drop inside ONE
+-- processing call (Windrower.lua:327-359). Native keeps no store of it: litersToDrop is an
+-- accumulator SG-2 :294 says is not material. So this carrier is live only while its frame
+-- is open, and its amount is the call's own observed balance (picked minus dropped).
+A.KIND_WINDROWER_AREA = "windrowerArea"
+A.WINDROWER_AREA_PROFILE = "NATIVE_WINDROWER_AREA_V1"
 A.STORAGE_PROFILE     = "NATIVE_STORAGE_SLOT_V1"
 A.FILLUNIT_PROFILE    = "NATIVE_FILL_UNIT_V1"
 A.PROFILE_VERSION     = 1
@@ -631,6 +637,82 @@ function A.combineSlotKind(vehicles, kind)
     return spec
 end
 
+-- ── Windrower work areas (SG2-5a) ───────────────────────────────────────────
+--
+-- LIVE ONLY (Bob's 5a ruling, conditions b and c). The carrier exists while its WINDROWER
+-- frame is open: SGGroundObserver binds it lazily, when a pickup in the call removed material,
+-- and withdraws it at the frame's close. Its native amount is the frame's balance, which the
+-- frame keeps in A.windrowerAreas under the carrier key while it is open; outside it the
+-- carrier resolves to nothing. Never enumerated, never restored, never saved (SG-2 :146).
+
+A.windrowerAreas = A.windrowerAreas or {}
+
+function A.windrowerAreaComponentKey(index)
+    return A.KIND_WINDROWER_AREA .. ":" .. tostring(index)
+end
+
+function A.windrowerAreaBinding(vehicle, index)
+    if type(vehicle) ~= "table" or type(index) ~= "number" then return nil end
+    local ownerKey = persistentIdOf(vehicle)
+    if ownerKey == nil then return nil end
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.windrowerAreaComponentKey(index), A.WINDROWER_AREA_PROFILE,
+        { kind = A.KIND_WINDROWER_AREA, workAreaIndex = index, configFileName = type(vehicle.configFileName) == "string" and vehicle.configFileName or "" })
+end
+
+--- Is this carrier key a Windrower work area of the native adapter?
+function A.isWindrowerAreaKey(carrierKey)
+    local prefix = A.KIND_WINDROWER_AREA .. ":"
+    return type(carrierKey) == "table" and carrierKey.adapterId == A.NATIVE_ADAPTER_ID
+        and type(carrierKey.componentKey) == "string" and carrierKey.componentKey:sub(1, #prefix) == prefix
+end
+
+--- The Windrower work-area KIND of the native adapter.
+---@param vehicles function  () -> list of vehicles
+function A.windrowerAreaKind(vehicles)
+    local spec = {}
+
+    spec.resolveCarrier = function(binding)
+        if not isServer() then return nil, "CLIENT" end
+        if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil, "BINDING" end
+        local d = binding.sourceDescriptor
+        if type(d) ~= "table" or d.kind ~= A.KIND_WINDROWER_AREA or type(d.workAreaIndex) ~= "number" then return nil, "DESCRIPTOR" end
+        if binding.carrierKey.componentKey ~= A.windrowerAreaComponentKey(d.workAreaIndex) then return nil, "DESCRIPTOR" end
+        local live = A.windrowerAreas[SGRecords.carrierKeyString(binding.carrierKey)]
+        if live == nil then return nil, "NOT_LIVE" end
+        local vehicle = vehicleOf(vehicles, binding.carrierKey.nativeOwnerKey)
+        if vehicle == nil or vehicle ~= live.vehicle then return nil, "VEHICLE_ABSENT" end
+        return { vehicle = vehicle, live = live }
+    end
+
+    --- The frame's balance, and nothing else: litersToDrop is not material (SG-2 :294).
+    spec.readNativeState = function(binding, native)
+        if not isServer() then return nil, "CLIENT" end
+        if type(native) ~= "table" or type(native.live) ~= "table" or type(native.vehicle) ~= "table" then return nil, "NATIVE" end
+        local level = native.live.amount
+        if type(level) ~= "number" or level ~= level or level < 0 then return nil, "LEVEL" end
+        local name = level > 0 and native.live.fillTypeName or nil
+        if level > 0 and name == nil then return nil, "FILL_TYPE_UNNAMED" end
+        return {
+            materialRef = name ~= nil and { kind = "FILL_TYPE", fillTypeName = name } or nil,
+            amount = level,
+            unit = A.UNIT,
+            ownerFarmId = ownerFarmOf(native.vehicle),
+            storeKind = "vehicle_buffer",
+            nativeUniqueId = persistentIdOf(native.vehicle),
+        }
+    end
+
+    spec.enumerateCarriers = function() return {} end
+
+    spec.hasAccess = function(binding, actor)
+        local native = spec.resolveCarrier(binding)
+        if native == nil then return false end
+        return actorCanAccess(actor, native.vehicle)
+    end
+
+    return spec
+end
+
 -- ── Ground cells (SG2-4b) ───────────────────────────────────────────────────
 --
 -- ONE CARRIER PER NATIVE HEIGHT PIXEL (SG-2 :158-160; SG-1 :104, :220). The grain is the
@@ -756,10 +838,11 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         [A.KIND_DELAY_SLOT] = A.combineSlotKind(vehicles, A.KIND_DELAY_SLOT),
         [A.KIND_STRAW_SLOT] = A.combineSlotKind(vehicles, A.KIND_STRAW_SLOT),
         [A.KIND_GROUND] = A.groundKind(samplers),
+        [A.KIND_WINDROWER_AREA] = A.windrowerAreaKind(vehicles),
     }
     local spec = {
         version        = A.ADAPTER_VERSION,
-        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT, A.KIND_GROUND },
+        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT, A.KIND_GROUND, A.KIND_WINDROWER_AREA },
         materialGroups = {},
         kinds          = kinds,
     }
@@ -791,6 +874,8 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         if kind == A.KIND_DELAY_SLOT or kind == A.KIND_STRAW_SLOT then return savedBinding end
         -- A ground cell keeps its own binding; resolveCarrier refuses a changed layer.
         if kind == A.KIND_GROUND then return savedBinding end
+        -- A Windrower work area lives only inside one processing call: nothing to restore.
+        if kind == A.KIND_WINDROWER_AREA then return nil, "NOT_RESTORABLE" end
         return nil, "DESCRIPTOR"
     end
     spec.enumerateCarriers = function()
