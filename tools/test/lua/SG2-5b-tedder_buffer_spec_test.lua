@@ -834,6 +834,8 @@ group("N", function()
         tostring(host.lastGroundFrame.refused.NO_CONVERTER_TARGET) .. "/" .. tostring(sg.operations.carriers[bufferId(w)] ~= nil) .. "/" .. tostring(s ~= nil and s.observedAmount == 0.0004) .. "/" .. liveBuffers(),
         "1/true/true/1")
     FSBaseMission.delete(m)
+    T.eq("N2 NAMED: the mission's end (FSBaseMission.delete, the host's teardown) drops every live Tedder buffer entry and the vehicle it held",
+        liveBuffers(), 0)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════

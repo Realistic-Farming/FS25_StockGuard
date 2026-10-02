@@ -170,6 +170,10 @@ function H:teardown()
     if SGGroundObserver ~= nil then SGGroundObserver.remove() end
     if SGGroundBrush ~= nil then SGGroundBrush.remove() end
     if SGGroundArea ~= nil then SGGroundArea.remove() end
+    -- SG2-5b: the mission's Tedder buffers go with it; their entries hold the mission's vehicles.
+    if SGNativeAdapters ~= nil and type(SGNativeAdapters.tedderBuffers) == "table" then
+        for k in pairs(SGNativeAdapters.tedderBuffers) do SGNativeAdapters.tedderBuffers[k] = nil end
+    end
     self:unbindAllStations()
     if H.current == self then H.current = nil end
     self.ready = false
