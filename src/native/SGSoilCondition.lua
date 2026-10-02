@@ -18,10 +18,11 @@
 --
 -- WHICH CALLS. Only a line call of the engine global addDensityMapHeightAtWorldLine (the
 -- line bracket, SGGroundObserver) made while one of StockGuard's own ground frames is
--- current: TIP (a discharge to the ground), WORK (a shovel's or leveler's update) or DROP (a
--- leveler node's callback). Each such call is one TIP_TO_GROUND_AROUND_LINE primitive, a tip
--- or a pickup by its sign. An unframed call is never admitted: GCC section 3 leaves the
--- Mower, Tedder and Windrower to Soil's standalone carriers until SG2-5 frames them, and
+-- current: TIP (a discharge to the ground), WORK (a shovel's or leveler's update), DROP (a
+-- leveler node's callback) or WINDROWER (one call of a Windrower work area, SG2-5a). Each such
+-- call is one TIP_TO_GROUND_AROUND_LINE primitive, a tip or a pickup by its sign. An unframed
+-- call is never admitted: GCC section 3 leaves the Mower and Tedder to Soil's standalone
+-- carriers until SG2-5 frames them, and
 -- those carriers stand aside whenever an admission moves Soil's count across their call, so
 -- admitting one would drop the condition Soil carries today. A dry run (applyChanges false)
 -- and a call deferred at the save boundary never reach here: neither is a primitive.
@@ -120,7 +121,7 @@ function S.admitLine(host, call)
         return nil
     end
     local G = SGGroundObserver
-    if gf.kind ~= G.TIP and gf.kind ~= G.WORK and gf.kind ~= G.DROP then return nil end
+    if gf.kind ~= G.TIP and gf.kind ~= G.WORK and gf.kind ~= G.DROP and gf.kind ~= G.WINDROWER then return nil end
     local receiver, why = S.receiver()
     if receiver == nil then
         count(S.stats.absent, why)
@@ -159,6 +160,8 @@ end
 --- material came from, read from this call's own capture. nil and the reason when there is none.
 function S.dropContributions(lease, litres)
     local gf, call = lease.frame, lease.call
+    -- A Windrower call that met a second pickup type proves no mixture (SG-2 :197): unknown.
+    if gf ~= nil and gf.area ~= nil and gf.area.unproved then return nil, "COALESCE_UNPROVED" end
     local op = gf ~= nil and gf.pending or nil
     if op == nil or op.pre == nil or op.pre.call ~= call then return nil, "NO_CAPTURE" end
     local before = op.capture ~= nil and op.capture.before ~= nil and op.capture.before.carriers or nil

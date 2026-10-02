@@ -120,6 +120,8 @@ local A = SGNativeAdapters
 G.GLOBAL = "addDensityMapHeightAtWorldLine"
 G.FRAME = "GROUND"
 G.TIP, G.WORK, G.DROP = "TIP", "WORK", "DROP"
+-- SG2-5a: a Windrower work area's one processing call (Windrower.lua:309-359).
+G.WINDROWER = "WINDROWER"
 G.TIP_KEY = "dischargeToGround"
 G.TIP_MARKER = "_sgGroundTip"
 G.LEVELER_KEY = "onLevelerRaycastCallback"
@@ -425,6 +427,14 @@ function G.admitPrimitive(gf, call)
     if name == nil then return "FILL_TYPE_UNNAMED" end
     if gf.expectType ~= nil and heightType.fillTypeIndex ~= gf.expectType then return "CONVERTED_AT_GROUND" end
     if gf.dropsOnly and call.maxDelta < 0 then return "NOT_A_DROP" end
+    -- SG2-5a (Bob's ruling, question 3): one pickup type per Windrower call. The native search
+    -- stops at the first positive type (Windrower.lua:327-334); the dual branch (:336-341) is
+    -- unreachable after onStart's reset (:285-290). A second type is SG-2 :197's unproved
+    -- coalesce: the frame refuses it, and the drop it feeds lands unknown.
+    if gf.area ~= nil and call.maxDelta < 0 and gf.area.fillTypeName ~= nil and gf.area.fillTypeName ~= name then
+        gf.area.unproved = true
+        return "COALESCE_UNPROVED"
+    end
     call.fillType, call.fillTypeName = heightType.fillTypeIndex, name
     return nil
 end
@@ -495,6 +505,7 @@ function G.afterLine(host, pre, ok, returned)
     G.stats.observed = G.stats.observed + 1
     pre.changes = G.diff(pre.before, after)
     if pre.frame ~= nil and ok then
+        if pre.frame.area ~= nil then G.areaBalance(host, pre) end
         G.captureOperation(host, pre, returned)
     else
         if pre.frame ~= nil then count(pre.frame.refused, "NATIVE_ERROR") end
@@ -637,13 +648,14 @@ function G.openFrame(host, vehicle, opts)
             end
         end
     end
-    if #units == 0 then return nil end
+    -- A WINDROWER frame opens with no unit: its area carrier binds at the first pickup.
+    if #units == 0 and opts.area == nil then return nil end
     local frame = SGOperationContext.open(host.context, vehicle, G.FRAME)
     if frame == nil then return nil end
     host.nextDischarge = host.nextDischarge + 1
     frame.ground = {
         kind = opts.kind, vehicle = vehicle, units = units, expectType = opts.expectType, dropsOnly = opts.dropsOnly == true,
-        requested = opts.requested, sequence = 0, pending = nil, operations = {}, refused = {},
+        requested = opts.requested, sequence = 0, pending = nil, operations = {}, refused = {}, area = opts.area,
         callRef = "ground:" .. string.lower(opts.kind) .. ":" .. tostring(host.epoch) .. ":" .. tostring(host.nextDischarge),
     }
     return frame
@@ -671,6 +683,7 @@ function G.closeFrame(host, frame, ok)
     SGOperationContext.close(host.context, frame)
     local gf = frame.ground
     G.settlePending(host, gf, ok)
+    if gf.area ~= nil then G.closeArea(host, gf) end
     host.lastGroundFrame = gf
     for _, obs in ipairs(frame.observations) do
         if not obs.groundConsumed then host:replayObservation(obs) end
@@ -696,6 +709,131 @@ function G.nodeUnits(nodes)
     table.sort(list)
     for _, i in ipairs(list) do out[#out + 1] = i end
     return out
+end
+
+-- ---------------------------------------------------------
+-- SG2-5a: the Windrower work area (Bob's 5a ruling, shape A)
+-- ---------------------------------------------------------
+-- One processing call picks windrowed material up (one or more negative line primitives) and
+-- drops what it picked (one positive primitive) in the same call (Windrower.lua:327-359). The
+-- material between them is held by a LIVE-ONLY carrier of the native adapter (windrowerArea,
+-- SGNativeAdapters), the frame's one unit:
+--   * it binds lazily, empty, when a pickup in the call first removes material, so the capture
+--     records its before-state as empty (condition b);
+--   * its amount is the frame's balance: litres the call's pickups removed minus litres its
+--     drop added, both read from the cells the bracket observed changing, never from the
+--     native litersToDrop accumulator, which SG-2 :294 says is not material (condition c);
+--   * each primitive is the ordinary per-primitive TRANSFER (cells to the area, the area to
+--     cells), settled at the next primitive's beforeLine and at the frame's close (condition d);
+--   * at the close a remainder the drop did not take is native loss: one REMOVE retires it with
+--     the picked, dropped and remainder litres as evidence, and the carrier is withdrawn. It is
+--     never saved and never enumerated; its retired stocks keep a budget of their own (main.lua,
+--     condition a).
+
+--- The area's balance over this primitive, from the cells it changed.
+function G.areaBalance(host, pre)
+    local gf, sampler, call = pre.frame, pre.sampler, pre.call
+    local area = gf.area
+    local moved = 0
+    for _, ch in ipairs(pre.changes) do
+        local b = G.cellState(sampler, ch.x, ch.z, ch.before)
+        local a = G.cellState(sampler, ch.x, ch.z, ch.after)
+        moved = moved + ((a.amount or 0) - (b.amount or 0))
+    end
+    if call.maxDelta < 0 then
+        local picked = -moved
+        if picked <= G.EPSILON then return end
+        if not area.bound then
+            local okB, why = G.bindArea(host, gf)
+            if not okB then count(gf.refused, "AREA_BIND:" .. tostring(why)) return end
+        end
+        area.live.amount = area.live.amount + picked
+        area.live.fillTypeName = call.fillTypeName
+        area.fillTypeName = call.fillTypeName
+        area.picked = area.picked + picked
+    elseif area.bound then
+        local dropped = math.max(0, moved)
+        area.live.amount = math.max(0, area.live.amount - dropped)
+        area.dropped = area.dropped + dropped
+    end
+end
+
+--- Bind the frame's area carrier, empty, and make it the frame's one unit.
+function G.bindArea(host, gf)
+    local area = gf.area
+    local live = { vehicle = area.vehicle, amount = 0, fillTypeName = nil }
+    A.windrowerAreas[area.carrierId] = live
+    local spec = host.nativeLease.spec
+    local native = spec.resolveCarrier(area.binding)
+    local ns = native ~= nil and spec.readNativeState(area.binding, native) or nil
+    local c, why = nil, "AREA_STATE"
+    if ns ~= nil then c, why = host.handle.bindCarrier(host.nativeLease, area.binding, ns) end
+    if c == nil then
+        A.windrowerAreas[area.carrierId] = nil
+        return false, why
+    end
+    area.live, area.bound = live, true
+    gf.units[#gf.units + 1] = { binding = area.binding, carrierId = area.carrierId }
+    return true
+end
+
+--- The frame's close: retire a remainder as native loss, then withdraw the carrier.
+function G.closeArea(host, gf)
+    local area = gf.area
+    if not area.bound then return end
+    local cid = area.carrierId
+    local remainder = area.live ~= nil and area.live.amount or 0
+    if remainder > G.EPSILON then
+        local cap, why = host.handle.captureOperation(host.nativeLease, "REMOVE", { { carrierId = cid } })
+        if cap ~= nil then
+            area.live.amount = 0
+            local spec = host.nativeLease.spec
+            local native = spec.resolveCarrier(area.binding)
+            local after = native ~= nil and spec.readNativeState(area.binding, native) or nil
+            local evidence = { nativePath = "GROUND_WINDROWER_REMAINDER", callRef = gf.callRef, fillTypeName = area.fillTypeName,
+                               picked = area.picked, dropped = area.dropped, remainder = remainder, loss = remainder }
+            local report = { participantsAfter = { [cid] = after }, outcomeEvidence = evidence,
+                             allocations = { { source = { carrierId = cid }, sourceAmount = remainder, sourceUnit = A.UNIT,
+                                               destination = { retire = true }, result = "LOSS", reason = "WINDROWER_REMAINDER" } } }
+            local outcome, reason = host.handle.settleOperation(cap.handle, report)
+            gf.operations[#gf.operations + 1] = { callRef = gf.callRef .. ":remainder", outcome = outcome, reason = reason, evidence = evidence, report = report }
+        else
+            count(gf.refused, "REMAINDER_CAPTURE:" .. tostring(why))
+        end
+    end
+    pcall(host.handle.withdrawCarrier, host.nativeLease, cid, "WINDROWER_FRAME_CLOSED")
+    A.windrowerAreas[cid] = nil
+    area.live = nil
+end
+
+--- Open the WINDROWER frame over one call of a Windrower work area, with no unit yet.
+function G.openWindrower(host, vehicle, workArea)
+    if type(workArea) ~= "table" or type(workArea.index) ~= "number" then return nil end
+    local binding = A.windrowerAreaBinding(vehicle, workArea.index)
+    if binding == nil then return nil end
+    local area = { vehicle = vehicle, index = workArea.index, binding = binding, carrierId = SGRecords.carrierKeyString(binding.carrierKey),
+                   bound = false, picked = 0, dropped = 0, fillTypeName = nil, unproved = false }
+    return G.openFrame(host, vehicle, { kind = G.WINDROWER, units = {}, area = area })
+end
+
+--- The bracket on a Windrower work area's captured processing pointer (SGWorkAreaInstaller):
+--- the frame around the one call, every return preserved, the error re-raised.
+function G.windrowerBracket(realFn, _workArea)
+    return function(vehicle, workArea, ...)
+        local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+        local frame = nil
+        if host ~= nil and g_server ~= nil then
+            local okOpen, result = pcall(G.openWindrower, host, vehicle, workArea)
+            if okOpen then frame = result else logOnce("windrowerOpen", "windrower frame failed to open (" .. tostring(result) .. ")") end
+        end
+        local n, r = packn(pcall(realFn, vehicle, workArea, ...))
+        if frame ~= nil then
+            local okClose, err = pcall(G.closeFrame, host, frame, r[1])
+            if not okClose then logOnce("windrowerClose", "windrower frame failed to close (" .. tostring(err) .. ")") end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
 end
 
 -- ---------------------------------------------------------
@@ -858,4 +996,7 @@ function G.observeVehicle(vehicle)
     if type(vehicle) ~= "table" then return end
     if vehicle.spec_dischargeable ~= nil then G.installTip(vehicle) end
     if vehicle.spec_leveler ~= nil then G.installLeveler(vehicle) end
+    if vehicle.spec_windrower ~= nil and SGWorkAreaInstaller ~= nil then
+        SGWorkAreaInstaller.install(vehicle, "spec_windrower", "processWindrowerArea", G.windrowerBracket)
+    end
 end

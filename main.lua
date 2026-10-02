@@ -127,6 +127,11 @@ local function installNativeKernel(mission)
     print("[StockGuard] native kernel " .. (ok and "installed: native carrier adapter registered (storage and fill-unit kinds)" or ("not installed: " .. tostring(why))))
     -- SG2-4a: the ground section and SG2's own save participant, then the boundary goes live.
     local sg = stockGuardOf(mission)
+    -- SG2-5a: a Windrower work area's per-call retirements keep a budget of their own, so they
+    -- never evict a silo's or a trailer's history (SG-2 :259; Bob's 5a ruling, condition a).
+    if sg ~= nil and sg.operations ~= nil and SGNativeAdapters ~= nil then
+        sg.operations:setRetiredClass("windrowerArea", SGNativeAdapters.isWindrowerAreaKey)
+    end
     if sg ~= nil and SGGround ~= nil then
         local ground, whyGround = SGGround.attach(sg)
         print("[StockGuard] native material save " .. (ground ~= nil and ("live: " .. SGNativeMaterialSave.PROFILE .. ", sg2Ground participant registered") or ("not live: " .. tostring(whyGround))))

@@ -257,7 +257,7 @@ group("S", function()
     for id in sg.registry:each(SGRegistry.KIND_CARRIER_ADAPTER) do ids[#ids + 1] = id end
     T.eq("S2 ONE carrier adapter is registered, the native one", table.concat(ids, ","), "sgNative")
     local lease0 = sg.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, "sgNative")
-    T.eq("S3 it owns every native kind: storage, fill unit, since SG2-3 the Combine's two buffers, and since SG2-4b the ground cell", lease0 and table.concat(lease0.spec.carrierKinds, ","), "storage,fillUnit,combineDelaySlot,combineStrawSlot,ground")
+    T.eq("S3 it owns every native kind: storage, fill unit, since SG2-3 the Combine's two buffers, since SG2-4b the ground cell, and since SG2-5a the Windrower work area", lease0 and table.concat(lease0.spec.carrierKinds, ","), "storage,fillUnit,combineDelaySlot,combineStrawSlot,ground,windrowerArea")
     T.eq("S4 neither SG2-1 id is registered", tostring(sg.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, "sgStorage")) .. "/" .. tostring(sg.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, "sgFillUnit")), "nil/nil")
     local n, foreign, kinds = 0, 0, {}
     for _, c in pairs(sg.operations.carriers) do
