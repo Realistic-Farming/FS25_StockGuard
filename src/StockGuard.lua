@@ -73,6 +73,8 @@ function SG.new(mission)
     self.transport.stockGuard = self
     -- SG2-4a: the native save boundary's participants for this mission.
     self.nativeSave = SGNativeMaterialSave ~= nil and SGNativeMaterialSave.new(self) or nil
+    -- SG2-5d: the producer's sealed collection allocations, transient and bounded (SGCollectionSeal).
+    self.collectionSeals = SGCollectionSeal ~= nil and SGCollectionSeal.newStore() or nil
     self.ground = nil
     self.capacity = nil
     self.finishedLoadingObserved = false
@@ -137,6 +139,20 @@ function SG:buildHandle()
         return SGNativeSale.inputs(native, saleFrame)
     end)
     h.readCarrierPending = serverOnly(function(lease, carrierKey, trustedActor) return host.operations:readCarrierPending(lease, carrierKey, trustedActor) end)
+    -- SG2-5d (SG-2 :344, :358): the collection receipt Soil's collected reader resolves
+    -- (MaterialWetness:resolveAllocation), and the read-only stock lookup Soil's bale birth names its
+    -- chamber with (Bob's 5d ruling, Q5). Both dot calls: a colon call hands the handle itself.
+    h.readCollectionReceipt = serverOnly(function(...)
+        local receiptRef = ...
+        if receiptRef == h then return nil, "CALLED_WITH_COLON" end
+        if host.collectionSeals == nil or SGCollectionSeal == nil then return nil, "UNAVAILABLE" end
+        return SGCollectionSeal.read(host.collectionSeals, receiptRef)
+    end)
+    h.fillUnitStockRef = serverOnly(function(...)
+        local vehicle, fillUnitIndex = ...
+        if vehicle == h then return nil, "CALLED_WITH_COLON" end
+        return SG.fillUnitStockRef(host, vehicle, fillUnitIndex)
+    end)
     h.setCarrierPending = serverOnly(function(lease, carrierKey, expectedEmptyEpoch, expectedSelectionRevision, newTarget, trustedActor) return host.operations:setCarrierPending(lease, carrierKey, expectedEmptyEpoch, expectedSelectionRevision, newTarget, trustedActor) end)
     h.onPendingComplete = serverOnly(function(pendingId, outcome, detail) local ok = host.commands:onPendingComplete(pendingId, outcome, detail) if ok then host.transport:markDirty() end return ok end)
     -- SG2-4a: SG_NATIVE_MATERIAL_SAVE_V1 participants (trusted owner modules, server only).
@@ -638,6 +654,21 @@ function SG:status()
     }
 end
 
+--- SG2-5d: the current stock reference of a vehicle fill unit's carrier, read only: it resolves no
+--- property and opens no operation. nil and the reason when the unit has no bound carrier or no
+--- stock (an empty unit).
+---@return table|nil stockRef, string|nil reason
+function SG.fillUnitStockRef(host, vehicle, fillUnitIndex)
+    if type(vehicle) ~= "table" or type(fillUnitIndex) ~= "number" then return nil, "NOT_BOUND" end
+    local binding = SGNativeAdapters ~= nil and SGNativeAdapters.fillUnitBinding(vehicle, fillUnitIndex) or nil
+    local key = binding ~= nil and SGRecords.carrierKeyString(binding.carrierKey) or nil
+    local carrier = key ~= nil and host.operations.carriers[key] or nil
+    if carrier == nil then return nil, "NOT_BOUND" end
+    local stock = carrier.stockId ~= nil and host.operations.stocks[carrier.stockId] or nil
+    if stock == nil then return nil, "NO_STOCK" end
+    return host.operations:stockRef(stock), nil
+end
+
 -- ---------------------------------------------------------
 -- Teardown
 -- ---------------------------------------------------------
@@ -655,6 +686,7 @@ function SG:delete()
     -- prepare guard is removed while it is still ours.
     if self.nativeSave ~= nil then self.nativeSave:close("MISSION_END") end
     self.ground = nil
+    if self.collectionSeals ~= nil and SGCollectionSeal ~= nil then SGCollectionSeal.clear(self.collectionSeals) end
     self.registry:clear()
     self.operations:clear()
     self.save:clear()

@@ -68,6 +68,8 @@ source(modDirectory .. "src/native/SGGroundSampler.lua")
 source(modDirectory .. "src/native/SGGroundObserver.lua")
 -- SG2-4c: the Soil caller, ground condition for the line bracket's framed calls.
 source(modDirectory .. "src/native/SGSoilCondition.lua")
+-- SG2-5d: the collection seal and receipt store (StockGuard is the collection's producer).
+source(modDirectory .. "src/native/SGCollectionSeal.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
