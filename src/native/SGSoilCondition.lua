@@ -41,6 +41,16 @@
 -- -math.huge, stays -math.huge).
 --
 -- Never Soil-grid cells: the footprint and the native facts only (revision 2).
+--
+-- WHAT A DROP CARRIES (SG2-5 slice 5-0b; SG-2 v2.3 :345, Bob's G1 ruling of 2026-10-02). A drop's
+-- observation names the condition of the material it drops: the `soil.groundCondition` record
+-- SG-1 carries on the frame unit's stock (2-4c-0), as `contributions = { { litres, record } }`.
+-- It is read from this primitive's own capture, the before-snapshot the line bracket took after
+-- the native write and before the unit side lands, so it is the stock the material left. Exactly
+-- one frame unit holding the dropped material is the source; none, more than one, or no capture
+-- of this call sends nothing and the drop lands unknown, as before. A source with no record sends
+-- its litres with none: Soil reads that as material of unknown condition. Soil reads the record
+-- through its own property and decides the cells (Soil #1074); StockGuard never reads a Soil cell.
 -- =========================================================
 
 SGSoilCondition = SGSoilCondition or {}
@@ -51,8 +61,12 @@ S.FOOTPRINT_SCHEMA = 1
 S.OBSERVATION_SCHEMA = 1
 S.KIND_TIP_LINE = "TIP_TO_GROUND_AROUND_LINE"
 S.ADMITTED = "ADMITTED"
+-- The owner-resolved property a drop's contributions carry (Soil's, registered by Soil #1073).
+S.PROPERTY_ID = "soil.groundCondition"
 
 S.stats = S.stats or { admitted = 0, delivered = 0, closed = 0, unframed = 0, absent = {}, refused = {}, faults = {} }
+S.stats.carried = S.stats.carried or 0
+S.stats.uncarried = S.stats.uncarried or {}
 S.logged = S.logged or {}
 S.sequence = S.sequence or 0
 
@@ -137,7 +151,33 @@ function S.admitLine(host, call)
         return nil
     end
     S.stats.admitted = S.stats.admitted + 1
-    return { receiver = receiver, token = result.leaseToken, fillTypeIndex = heightType.fillTypeIndex, scale = scale, maxDelta = call.maxDelta }
+    return { receiver = receiver, token = result.leaseToken, fillTypeIndex = heightType.fillTypeIndex, scale = scale, maxDelta = call.maxDelta,
+             frame = gf, call = call }
+end
+
+--- A drop's contributions (header): the record SG-1 carries on the one frame unit the dropped
+--- material came from, read from this call's own capture. nil and the reason when there is none.
+function S.dropContributions(lease, litres)
+    local gf, call = lease.frame, lease.call
+    local op = gf ~= nil and gf.pending or nil
+    if op == nil or op.pre == nil or op.pre.call ~= call then return nil, "NO_CAPTURE" end
+    local before = op.capture ~= nil and op.capture.before ~= nil and op.capture.before.carriers or nil
+    if before == nil then return nil, "NO_CAPTURE" end
+    local source, n = nil, 0
+    for _, u in ipairs(gf.units) do
+        local b = before[u.carrierId]
+        local stock = b ~= nil and b.stock or nil
+        -- A unit with a stock holds material: SG-1 retires a stock that empties.
+        if stock ~= nil and stock.materialRef ~= nil and stock.materialRef.fillTypeName == call.fillTypeName then
+            source, n = stock, n + 1
+        end
+    end
+    if n == 0 then return nil, "NO_SOURCE" end
+    if n > 1 then return nil, "AMBIGUOUS_SOURCE" end
+    -- Already detached: the capture's before-snapshot is SG-1's own copy (captureOperation
+    -- returns copy(before), SGOperations.lua:623), never the live stock's table.
+    local record = type(source.properties) == "table" and source.properties[S.PROPERTY_ID] or nil
+    return { { litres = litres, record = record } }, nil
 end
 
 --- After native: deliver the observation in litres. `ok` is whether native returned;
@@ -152,6 +192,15 @@ function S.deliverLine(lease, ok, returned, lineOffset)
             litresReturned = (type(returned) == "number" and returned or 0) / lease.scale,
             lineOffset = lineOffset,
         }
+        if observation.litresReturned > 0 then
+            local contributions, why = S.dropContributions(lease, observation.litresReturned)
+            if contributions ~= nil then
+                observation.contributions = contributions
+                S.stats.carried = S.stats.carried + 1
+            else
+                count(S.stats.uncarried, why)
+            end
+        end
     else
         observation = { schemaVersion = S.OBSERVATION_SCHEMA, primitiveKind = S.KIND_TIP_LINE, ok = false }
     end
