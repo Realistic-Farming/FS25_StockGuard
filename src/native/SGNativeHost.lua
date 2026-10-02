@@ -303,14 +303,19 @@ end
 function H:observeVehicle(vehicle)
     if type(vehicle) ~= "table" then return false end
     -- SG2-3: a cutter header usually has no fill unit of its own, so the harvest
-    -- brackets install before the fill-unit test.
+    -- brackets install before the fill-unit test. So do the ground observer's (SG2-4b's tip
+    -- frame and Leveler callback deferral, SG2-5's work-area frames; MAINTENANCE row 208): the
+    -- engine's own windrower and tedder types carry no fill unit (vehicleTypes.xml; WorkArea is
+    -- their only prerequisite, Windrower.lua:22-24, Tedder.lua:17-19), and their frames need
+    -- none. Each install keeps its own spec guard; the tip, the leveler and the baler only ever
+    -- meet a vehicle with a fill unit (FillUnit is a prerequisite of Dischargeable.lua:22-24,
+    -- Leveler.lua:6-8 and Baler.lua:141-143).
     if SGHarvestCapture ~= nil then SGHarvestCapture.observeVehicle(vehicle) end
+    if SGGroundObserver ~= nil then SGGroundObserver.observeVehicle(vehicle) end
     if vehicle.spec_fillUnit == nil then return false end
     if vehicle.spec_dischargeable ~= nil then
         SGDischargeCapture.install(vehicle, H.dispatchDischargeOpen, H.dispatchDischargeClose)
     end
-    -- SG2-4b: the tip frame (dischargeToGround) and the Leveler callback deferral.
-    if SGGroundObserver ~= nil then SGGroundObserver.observeVehicle(vehicle) end
     return SGFillUnitObserver.install(vehicle, H.dispatchFillUnitMovement)
 end
 
