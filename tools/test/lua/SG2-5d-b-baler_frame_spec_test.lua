@@ -1590,6 +1590,30 @@ group("W", function()
     FSBaseMission.delete(m)
 end)
 
+-- ══════════════════════════════════════════════════════════════════════════
+-- I. THE COST OF A TICK: WORKAREA RAISES ITS EVENTS EVERY UPDATE TICK (WorkArea.lua:124-126)
+-- ══════════════════════════════════════════════════════════════════════════
+group("I", function()
+    resetWorld()
+    soilReset()
+    local m, sg, host, w = boot5db({ lay = {} }, "w5db_i", 140)
+    local v = w.baler
+    local refreshes = 0
+    local realRefresh = host.handle.refreshCarrier
+    host.handle.refreshCarrier = function(...) refreshes = refreshes + 1 return realRefresh(...) end
+    host.lastBalerTick = nil
+    local wa = v.spec_workArea.workAreas
+    ENGINE_RAISE(v, "onStartWorkAreaProcessing", 16, wa)
+    ENGINE_RAISE(v, "onEndWorkAreaProcessing", 16, wa)
+    T.eq("I1 NAMED: an idle Baler (its events raised, no work area processed) opens no tick and refreshes nothing",
+        tostring(host.lastBalerTick) .. "/" .. liveCount(GO_.balerTicks) .. "/" .. refreshes, "nil/0/0")
+    tick(v)
+    T.eq("I2 NAMED: a working tick over empty ground opens and closes its tick with no operation, no carrier and no refresh",
+        tostring(host.lastBalerTick ~= nil) .. "/" .. #host.lastBalerTick.operations .. "/" .. liveCount(NA.balerPickups) .. "/" .. refreshes, "true/0/0/0")
+    host.handle.refreshCarrier = realRefresh
+    FSBaseMission.delete(m)
+end)
+
 end
 SG25DB_BENCH()
 end

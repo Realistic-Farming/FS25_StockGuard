@@ -1125,9 +1125,11 @@ end
 -- (FillUnit.lua:1203); the Baler's listener (:1155-1194) finishes a bale inside that event when
 -- the chamber is full and keeps D - A as its overflow, re-adding it at a later add.
 --
--- THE TICK, per Baler (G.balerTicks): opened by the inner onStartWorkAreaProcessing after the
--- original zeroes, closed by the inner onEndWorkAreaProcessing after the original returns. It
--- holds the balerPickup carrier's live balance (SGNativeAdapters) and the tick's pickup batches.
+-- THE TICK, per Baler (G.balerTicks): opened at the tick's first processBalerArea call, closed by
+-- the inner onEndWorkAreaProcessing after the original returns. WorkArea raises the start event on
+-- every update tick, working or idle (WorkArea.lua:124-126), so nothing opens there: the inner
+-- onStartWorkAreaProcessing only closes a tick a throw left open. It holds the balerPickup
+-- carrier's live balance (SGNativeAdapters) and the tick's pickup batches.
 -- Frames stay call-sized, because SGOperationContext is a stack: each processBalerArea call runs
 -- in its own BALER frame (the bracket on the captured pointer), and the add in one more, opened
 -- by the inner onEnd around its original. A tick a throw left open is closed at the Baler's next
@@ -1195,16 +1197,9 @@ end
 
 --- The inner onStartWorkAreaProcessing, after the original zeroed lastPickedUpLiters.
 function G.balerTickOpen(host, vehicle)
-    local stale = G.balerTicks[vehicle]
-    if stale ~= nil then G.balerTickClose(host, stale, "BALER_TICK_ABANDONED") end
     if not host.ready or host.nativeLease == nil or not G.balerFramed(vehicle) then return nil end
     local binding = A.balerPickupBinding(vehicle)
-    local unitBinding = chamberOf(vehicle)
-    if binding == nil or unitBinding == nil then return nil end
-    -- The chamber's record is brought to native now, before the tick: at the add native already
-    -- holds the new level, so its record must be current from before it.
-    local c, why = host.handle.refreshCarrier(host.nativeLease, unitBinding, SGNativeHost ~= nil and SGNativeHost.REASON or nil)
-    if c == nil and why ~= nil then return nil end
+    if binding == nil or chamberOf(vehicle) == nil then return nil end
     host.nextDischarge = host.nextDischarge + 1
     local tick = { vehicle = vehicle, binding = binding, carrierId = SGRecords.carrierKeyString(binding.carrierKey), bound = false,
                    live = nil, batches = {}, produced = 0, fillTypeName = nil, unproved = false, addArmed = false, expected = {},
@@ -1318,6 +1313,11 @@ function G.balerBracket(realFn, _workArea)
     return function(vehicle, workArea, ...)
         local host = SGNativeHost ~= nil and SGNativeHost.current or nil
         local frame, before = nil, nil
+        -- The tick opens at its first pickup call: a Baler whose work areas do not run opens nothing.
+        if host ~= nil and g_server ~= nil and G.balerTicks[vehicle] == nil then
+            local okTick, tick = pcall(G.balerTickOpen, host, vehicle)
+            if not okTick then logOnce("balerTick", "baler tick failed to open (" .. tostring(tick) .. ")") end
+        end
         if host ~= nil and g_server ~= nil and G.balerTicks[vehicle] ~= nil then
             local okOpen, result = pcall(G.openBalerPickup, host, vehicle)
             if okOpen then frame = result else logOnce("balerOpen", "baler frame failed to open (" .. tostring(result) .. ")") end
@@ -1617,9 +1617,11 @@ end
 local function balerStart(original, self, ...)
     local n, r = packn(original(self, ...))
     local host = SGNativeHost ~= nil and SGNativeHost.current or nil
-    if host ~= nil and g_server ~= nil then
-        local ok, err = pcall(G.balerTickOpen, host, self)
-        if not ok then logOnce("balerStart", "baler tick failed to open (" .. tostring(err) .. ")") end
+    -- A tick still open here is one a throw left (WorkArea.lua:183 has no pcall): what it held is loss.
+    local stale = host ~= nil and G.balerTicks[self] or nil
+    if stale ~= nil then
+        local ok, err = pcall(G.balerTickClose, host, stale, "BALER_TICK_ABANDONED")
+        if not ok then logOnce("balerStart", "a stale baler tick failed to close (" .. tostring(err) .. ")") end
     end
     return unpack(r, 1, n)
 end
@@ -1628,7 +1630,12 @@ local function balerEnd(original, self, ...)
     local host = SGNativeHost ~= nil and SGNativeHost.current or nil
     local tick = host ~= nil and G.balerTicks[self] or nil
     local frame = nil
-    if tick ~= nil then
+    -- Only a tick whose pickups were observed has an add to settle. Its chamber's record is brought
+    -- to native first: inside the add native already holds the new level.
+    if tick ~= nil and tick.bound then
+        local unitBinding = chamberOf(self)
+        local okR, c, why = pcall(host.handle.refreshCarrier, host.nativeLease, unitBinding, SGNativeHost ~= nil and SGNativeHost.REASON or nil)
+        if not okR or (c == nil and why ~= nil) then count(tick.refused, "CHAMBER_REFRESH:" .. tostring(okR and why or c)) end
         local okOpen, result = pcall(G.openBalerAdd, host, self, tick)
         if okOpen then frame = result else logOnce("balerAddOpen", "baler add frame failed to open (" .. tostring(result) .. ")") end
     end
