@@ -121,7 +121,7 @@ function S.admitLine(host, call)
         return nil
     end
     local G = SGGroundObserver
-    if gf.kind ~= G.TIP and gf.kind ~= G.WORK and gf.kind ~= G.DROP and gf.kind ~= G.WINDROWER then return nil end
+    if gf.kind ~= G.TIP and gf.kind ~= G.WORK and gf.kind ~= G.DROP and gf.kind ~= G.WINDROWER and gf.kind ~= G.TEDDER then return nil end
     local receiver, why = S.receiver()
     if receiver == nil then
         count(S.stats.absent, why)

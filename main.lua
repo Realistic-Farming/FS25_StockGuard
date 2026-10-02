@@ -135,6 +135,8 @@ local function installNativeKernel(mission)
     -- never evict a silo's or a trailer's history (SG-2 :259; Bob's 5a ruling, condition a).
     if sg ~= nil and sg.operations ~= nil and SGNativeAdapters ~= nil then
         sg.operations:setRetiredClass("windrowerArea", SGNativeAdapters.isWindrowerAreaKey)
+        -- SG2-5b: every emptying drop of a Tedder buffer retires a stock (Bob's 5b Q1).
+        sg.operations:setRetiredClass("tedderBuffer", SGNativeAdapters.isTedderBufferKey)
     end
     if sg ~= nil and SGGround ~= nil then
         local ground, whyGround = SGGround.attach(sg)
