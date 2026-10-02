@@ -1279,7 +1279,13 @@ function O:_settle(handle, st, report)
             end
             s.acceptedCauses = c.acceptedCauses or {}
             s.knowledge = O.knowledgeOf(s)
-            if c.unexplainedDelta then s.reason = "UNEXPLAINED_DELTA" end
+            -- [MAINTENANCE row 197] As UPDATE does: a stock born or replaced with part of its
+            -- amount unexplained holds material no contribution explains, so it is partially
+            -- known (SG-1 brief :90, :108; "unexplained increase is unknown only for added amount").
+            if c.unexplainedDelta then
+                if s.knowledge == "KNOWN" then s.knowledge = "PARTIAL" end
+                s.reason = "UNEXPLAINED_DELTA"
+            end
             if c.pendingReplacement ~= nil then
                 local p = self.pending[carrier.carrierId]
                 local r = c.pendingReplacement

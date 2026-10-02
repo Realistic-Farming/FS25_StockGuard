@@ -1421,6 +1421,10 @@ group("Q", function()
     T.eq("Q1 NAMED: of 200 L native produced StockGuard observed 100: the add explains 100 of A = 200 (source 100, destination 100, the account of 100); the chamber holds 200 with the other 100 unexplained (its record covers 100)",
         num(leg and leg.sourceAmount) .. "/" .. num(leg and leg.destinationAmount) .. "/" .. accText(acc) .. "|" .. num(s and s.observedAmount) .. "/" .. tostring(s and s.reason) .. "/" .. num(p and p.knownAmount),
         "100/100/100/100/0/0/30|200/UNEXPLAINED_DELTA/100")
+    -- MAINTENANCE row 197: the chamber was empty, so the add BORE its stock, and half of it is
+    -- unexplained. It reads PARTIAL, as an UPDATE would (SG-1 brief :90, :108).
+    T.eq("Q2 NAMED [entry point, MAINTENANCE row 197]: the chamber born with 100 of its 200 L unexplained reads PARTIAL with reason UNEXPLAINED_DELTA, not KNOWN",
+        tostring(s and s.knowledge) .. "/" .. tostring(s and s.reason), "PARTIAL/UNEXPLAINED_DELTA")
     FSBaseMission.delete(m)
 end)
 
