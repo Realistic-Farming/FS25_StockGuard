@@ -52,6 +52,19 @@
 -- of this call sends nothing and the drop lands unknown, as before. A source with no record sends
 -- its litres with none: Soil reads that as material of unknown condition. Soil reads the record
 -- through its own property and decides the cells (Soil #1074); StockGuard never reads a Soil cell.
+--
+-- THE MOWER (SG2-5c; Bob's 5c ruling, Q1 and Q2, on Soil #1082). A MOWER frame admits its cut
+-- before the native call, as one MOWER_CUT primitive whose footprint is the work area's start,
+-- width and height corners and whose identity is the work area table native passes, and closes it
+-- in the bracket's finally; nothing is delivered for it (the cut writes no Soil cell). Soil's mower
+-- carrier then stands aside for that call in either wrap order. Its dry-grass pickup line is
+-- admitted only when that call's MOWER_CUT was, and a MOWER_DROP frame's line only while its buffer
+-- holds nothing a call without one put in (SGGroundObserver, entry.soilFramed): otherwise Soil's
+-- own carrier keeps what it carried. A MOWER_DROP's contributions split the dropped litres by the
+-- buffer's fresh fraction, read from this call's capture: the fresh share as
+-- { litres, birth = { kind = "MOWER", fillTypeIndex } }, which Soil makes at this deposit, and the
+-- rest with the stock's record. A share within a millionth of the litres is the whole drop, so a
+-- rounding residue never enters as record-less (unknown) litres.
 -- =========================================================
 
 SGSoilCondition = SGSoilCondition or {}
@@ -61,6 +74,9 @@ S.REVISION = 2
 S.FOOTPRINT_SCHEMA = 1
 S.OBSERVATION_SCHEMA = 1
 S.KIND_TIP_LINE = "TIP_TO_GROUND_AROUND_LINE"
+S.KIND_MOWER_CUT = "MOWER_CUT"
+S.BIRTH_KIND_MOWER = "MOWER"
+S.SHARE_SLACK = 1e-6
 S.ADMITTED = "ADMITTED"
 -- The owner-resolved property a drop's contributions carry (Soil's, registered by Soil #1073).
 S.PROPERTY_ID = "soil.groundCondition"
@@ -68,6 +84,8 @@ S.PROPERTY_ID = "soil.groundCondition"
 S.stats = S.stats or { admitted = 0, delivered = 0, closed = 0, unframed = 0, absent = {}, refused = {}, faults = {} }
 S.stats.carried = S.stats.carried or 0
 S.stats.uncarried = S.stats.uncarried or {}
+S.stats.withheld = S.stats.withheld or {}
+S.stats.mowerCuts = S.stats.mowerCuts or { admitted = 0, closed = 0, refused = {} }
 S.logged = S.logged or {}
 S.sequence = S.sequence or 0
 
@@ -121,9 +139,19 @@ function S.admitLine(host, call)
         return nil
     end
     local G = SGGroundObserver
-    if gf.kind ~= G.TIP and gf.kind ~= G.WORK and gf.kind ~= G.DROP and gf.kind ~= G.WINDROWER and gf.kind ~= G.TEDDER and gf.kind ~= G.BALER then return nil end
+    if gf.kind ~= G.TIP and gf.kind ~= G.WORK and gf.kind ~= G.DROP and gf.kind ~= G.WINDROWER and gf.kind ~= G.TEDDER and gf.kind ~= G.BALER
+       and gf.kind ~= G.MOWER and gf.kind ~= G.MOWER_DROP then return nil end
     -- SG2-5d-b: a Baler's add frame draws no line of its own.
     if gf.balerAdd then return nil end
+    -- SG2-5c: the Mower's lines are Soil's to receive only while the cut is StockGuard's (header).
+    if gf.kind == G.MOWER and not (gf.mower ~= nil and gf.mower.soilAdmitted) then
+        count(S.stats.withheld, "MOWER_CUT_NOT_ADMITTED")
+        return nil
+    end
+    if gf.kind == G.MOWER_DROP and not (gf.mowerDrop ~= nil and gf.mowerDrop.entry.soilFramed) then
+        count(S.stats.withheld, "MOWER_BUFFER_NOT_FRAMED")
+        return nil
+    end
     local receiver, why = S.receiver()
     if receiver == nil then
         count(S.stats.absent, why)
@@ -182,7 +210,58 @@ function S.dropContributions(lease, litres)
     -- Already detached: the capture's before-snapshot is SG-1's own copy (captureOperation
     -- returns copy(before), SGOperations.lua:623), never the live stock's table.
     local record = type(source.properties) == "table" and source.properties[S.PROPERTY_ID] or nil
+    -- SG2-5c: a Mower buffer's drop carries its fresh share as a birth (header).
+    local d = gf.mowerDrop
+    if d ~= nil then
+        local b = before[d.carrierId]
+        local held = b ~= nil and b.amount or 0
+        local share = held > 0 and math.max(0, math.min(1, (d.entry.fresh or 0) / held)) or 0
+        local born = litres * share
+        local slack = S.SHARE_SLACK * math.max(1, litres)
+        local birth = { kind = S.BIRTH_KIND_MOWER, fillTypeIndex = lease.fillTypeIndex }
+        if litres - born <= slack then return { { litres = litres, birth = birth } }, nil end
+        if born > slack then return { { litres = born, birth = birth }, { litres = litres - born, record = record } }, nil end
+    end
     return { { litres = litres, record = record } }, nil
+end
+
+--- [SG2-5c] Admit one Mower work area's cut with Soil, before the native call (header): the work
+--- area's corners, read as the engine reads them (Mower.lua:333-335). Returns the lease, or nil.
+function S.admitMowerCut(vehicle, workArea)
+    local receiver, why = S.receiver()
+    if receiver == nil then
+        count(S.stats.absent, why)
+        return nil
+    end
+    if type(workArea) ~= "table" then return nil end
+    local xs, _, zs = getWorldTranslation(workArea.start)
+    local xw, _, zw = getWorldTranslation(workArea.width)
+    local xh, _, zh = getWorldTranslation(workArea.height)
+    local footprint = { schemaVersion = S.FOOTPRINT_SCHEMA, kind = "AREA", x0 = xs, z0 = zs, x1 = xw, z1 = zw, x2 = xh, z2 = zh }
+    local ok, result = pcall(receiver.admitPrimitive, footprint, S.KIND_MOWER_CUT, vehicle, workArea)
+    if not ok then
+        count(S.stats.faults, "ADMIT_THREW")
+        logOnce("mowerCutThrew", "Soil's admitPrimitive threw on a mower cut (" .. tostring(result) .. "); that cut stays with Soil's own carrier")
+        return nil
+    end
+    if type(result) ~= "table" or result.status ~= S.ADMITTED or result.leaseToken == nil then
+        count(S.stats.mowerCuts.refused, type(result) == "table" and result.reason or "NO_ANSWER")
+        return nil
+    end
+    S.stats.mowerCuts.admitted = S.stats.mowerCuts.admitted + 1
+    return { receiver = receiver, token = result.leaseToken }
+end
+
+--- [SG2-5c] Close a mower cut's lease (the bracket's finally). Nothing is delivered for it.
+function S.closeMowerCut(lease)
+    local ok, err = pcall(lease.receiver.closePrimitive, lease.token)
+    if not ok then
+        count(S.stats.faults, "CLOSE_THREW")
+        logOnce("closeThrew", "Soil's closePrimitive threw (" .. tostring(err) .. ")")
+        return false
+    end
+    S.stats.mowerCuts.closed = S.stats.mowerCuts.closed + 1
+    return true
 end
 
 --- After native: deliver the observation in litres. `ok` is whether native returned;

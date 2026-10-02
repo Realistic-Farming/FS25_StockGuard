@@ -447,6 +447,12 @@ function G.admitPrimitive(gf, call)
         if target == nil or targetName == nil then return "NO_CONVERTER_TARGET" end
         call.tedderTarget, call.tedderTargetName = target, targetName
     end
+    -- SG2-5c: a MOWER frame's one line is the dry-grass pickup into its buffer (Mower.lua:361-365);
+    -- a MOWER_DROP frame's lines are the buffer's drops (dropsOnly and expectType, above).
+    if gf.mower ~= nil then
+        if call.maxDelta >= 0 or name ~= G.HAY_TO then return "NOT_MOWER_PICKUP" end
+        if gf.mower.mode ~= "BUFFER" or A.mowerBuffers[gf.mower.carrierId] == nil then return "NO_BUFFER" end
+    end
     -- SG2-5a (Bob's ruling, question 3): one pickup type per Windrower call. The native search
     -- stops at the first positive type (Windrower.lua:327-334); the dual branch (:336-341) is
     -- unreachable after onStart's reset (:285-290). A second type is SG-2 :197's unproved
@@ -550,6 +556,8 @@ end
 --- side lands. A primitive that changed no cell captures nothing.
 function G.captureOperation(host, pre, returned)
     if #pre.changes == 0 then return end
+    -- SG2-5c: a Mower's dry-grass pickup is captured with its cut (G.mowerCapture).
+    if pre.frame.mower ~= nil then return G.mowerCapture(host, pre.frame, pre, returned) end
     local gf, sampler = pre.frame, pre.sampler
     local participants, capture = {}, {}
     for _, u in ipairs(gf.units) do
@@ -591,6 +599,8 @@ function G.settlePending(host, gf, ok, unitIndex)
     if op == nil then return end
     gf.pending = nil
     G.stats.operations = G.stats.operations + 1
+    -- SG2-5c: the Mower's cut and pickup settle by its own rule (the cap, the fresh litres).
+    if op.mowerKind ~= nil then return G.mowerSettle(host, gf, op, ok) end
     local pre, sampler, call = op.pre, op.pre.sampler, op.pre.call
     local spec = host.nativeLease.spec
     local before = op.capture.before.carriers
@@ -654,6 +664,7 @@ function G.settlePending(host, gf, ok, unitIndex)
             evidence.quantizationDifference = nil
             evidence.nativeGain = { boost = D - S, fillScale = op.balerGain.fillScale }
         end
+        if gf.mowerDrop ~= nil then G.mowerDropEvidence(gf, op, before, after, evidence) end
         local report = { participantsAfter = after, allocations = legs, outcomeEvidence = evidence }
         local outcome, reason = host.handle.settleOperation(op.capture.handle, report)
         result = { callRef = op.callRef, outcome = outcome, reason = reason, evidence = evidence, report = report }
@@ -706,14 +717,14 @@ function G.openFrame(host, vehicle, opts)
     end
     -- A WINDROWER frame opens with no unit: its area carrier binds at the first pickup. A TEDDER
     -- frame's buffer binds at its first pickup too, or is already bound from an earlier call.
-    if #units == 0 and opts.area == nil and opts.tedder == nil and opts.baler == nil then return nil end
+    if #units == 0 and opts.area == nil and opts.tedder == nil and opts.baler == nil and opts.mower == nil and opts.mowerDrop == nil then return nil end
     local frame = SGOperationContext.open(host.context, vehicle, G.FRAME)
     if frame == nil then return nil end
     host.nextDischarge = host.nextDischarge + 1
     frame.ground = {
         kind = opts.kind, vehicle = vehicle, units = units, expectType = opts.expectType, dropsOnly = opts.dropsOnly == true,
         requested = opts.requested, sequence = 0, pending = nil, operations = {}, refused = {}, area = opts.area, tedder = opts.tedder,
-        baler = opts.baler, balerAdd = opts.balerAdd == true,
+        baler = opts.baler, balerAdd = opts.balerAdd == true, mower = opts.mower, mowerDrop = opts.mowerDrop,
         callRef = "ground:" .. string.lower(opts.kind) .. ":" .. tostring(host.epoch) .. ":" .. tostring(host.nextDischarge),
     }
     return frame
@@ -746,9 +757,12 @@ function G.closeFrame(host, frame, ok)
     SGOperationContext.close(host.context, frame)
     local gf = frame.ground
     if gf.tedder ~= nil then G.tedderFold(gf, nil) end
+    if gf.mower ~= nil then G.mowerFlush(host, gf) end
     G.settlePending(host, gf, ok)
     if gf.area ~= nil then G.closeArea(host, gf) end
     if gf.tedder ~= nil then G.closeTedder(host, gf) end
+    if gf.mower ~= nil then G.closeMowerBuffer(host, gf) end
+    if gf.mowerDrop ~= nil then G.closeMowerDrop(host, gf) end
     host.lastGroundFrame = gf
     for _, obs in ipairs(frame.observations) do
         if not obs.groundConsumed then host:replayObservation(obs) end
@@ -1111,9 +1125,548 @@ function G.retireTedderBuffers(host, vehicle)
 end
 
 -- ---------------------------------------------------------
--- Installation: the tip slot, the work listeners, the Leveler callback
+-- The Mower (SG2-5c; Bob's 5c shape ruling, BOB-RULING-SG2-5C-MOWER-SHAPE-2026-10-02)
 -- ---------------------------------------------------------
---- Install the tip frame on one vehicle's dischargeToGround instance slot.
+-- A Mower work area's captured processMowerArea (Mower.lua:328-382) runs, for each fruit
+-- converter, updateMowerArea: the meadow preparation, then cutFruitArea (FSDensityMapUtil.lua
+-- :1886-1921). A positive cut (:347) adds its litres (area litres x harvest scale x conversion
+-- factor, :348-349, kept in workArea.lastPickupLiters, :350) to the work area's DROP AREA and
+-- overwrites the area's fillType (:358-360); a GRASS_WINDROW output then picks the dry grass under
+-- the work area up into it (one line, :361-365); and the area is capped at 1000 L (:366-367). With
+-- no drop area the output goes to the mower's fill unit instead (:353-356). Each processDropArea
+-- call (the instance copy, from onEndWorkAreaProcessing, :564-566) tips the area along a random
+-- chord and keeps the rest (:383-405).
+--
+-- THE BUFFER (condition 1). The drop area's material is the mowerBuffer carrier (SGNativeAdapters):
+-- litersToDrop exactly, as the area's fillType. Bound at the first positive cut, live across calls,
+-- withdrawn when a close finds it empty, destruction through a REMOVE when its vehicle goes (SG-2
+-- :136), never enumerated or restored (its save is 5bc-save, :144, :247). Its retirements keep their
+-- own class (main.lua).
+--
+-- THE MOWER FRAME, per processMowerArea call (the bracket on the captured pointer). Its witness is
+-- SGCutState's reading under MOWER_STATE_VOLUME_V1 (Q4, :513-517), named for the call in
+-- SGCutState.target. ONE OPERATION PER CONVERTER: at each cut, as it returns,
+--   * the previous converter's operation settles first: its output and pickup have landed and its
+--     cap has run by now;
+--   * a positive cut is planned as a BIRTH into the buffer (or the fill unit): one slot per witnessed
+--     state/Soil portion when the witness admitted the cut, a prepared group with no origin (:515),
+--     else one UNKNOWN slot saying why (:517).
+-- Its capture waits: SG-1 still holds the buffer as it was before the add, because nothing refreshes
+-- it inside the frame. The cut's dry-grass pickup line (:361-365) is captured WITH it, cells and slots
+-- and buffer in one capture (:247: native combines those portions, and the dry grass's prior ground
+-- record is another input, never a fresh witness); a cut with no pickup is captured at the next cut or
+-- the close. Either way it settles after native's cap, at the litres native produced (lastPickupLiters,
+-- :350) and the cells' observed loss. The fill unit's own report replays at the close, as any report a
+-- frame did not consume.
+--
+-- THE CAP (condition 2) is read, never recreated. An operation whose buffer holds less than its
+-- before-state plus what came in (D = before + in - after) lost D from the now-uniform mixture: each
+-- part (the remainder, the birth, each pickup cell) keeps after / (before + in) of itself and the rest
+-- is a LOSS (MOWER_BUFFER_CAP). A fill unit clamps only its add: its contents stay.
+-- A CHANGED TYPE (:296): a cut that overwrites the type of a remainder it does not match makes SG-1
+-- replace the stock (a new generation). The remainder enters with no contribution, unexplained, and
+-- its fresh share is dropped: "unknown unsupported facts never cleaned by renaming".
+--
+-- THE FRESH LITRES (Q1). Soil makes a mower's fresh birth at the deposit (5c-soil), so the buffer
+-- entry keeps the litres of it still waiting (entry.fresh): the litres a positive cut put into the
+-- buffer while its MOWER_CUT was admitted (Q2), scaled with every cap and drop by the share kept,
+-- dropped by a changed type. They are provenance, not a second condition. Every buffer settle names
+-- them in outcomeEvidence["soil.groundCondition"].pendingFresh (each birth slot's allocation, and the
+-- destination's own remainder), so Soil's combine leaves them out of its floor.
+--
+-- THE DROP FRAME (condition 3), per processDropArea call of a drop area with a live buffer, on the
+-- instance slot whatever it holds: it only observes, so Soil's wrapper inside or outside it runs as
+-- it would. The drop line is the ordinary capture, buffer to cells. Its delivery to Soil splits the
+-- litres by the buffer's fresh fraction into a birth and the stock's record (SGSoilCondition).
+--
+-- SOIL (Q2, and the 5d invariant). The frame admits a MOWER_CUT before the native call and closes it
+-- in the finally, so Soil's cut frame stands aside in either wrap order. A call whose MOWER_CUT was
+-- not admitted admits none of its lines, and a buffer that took such a call's output admits no drop
+-- until it empties: Soil's own carrier keeps what it carried. Feed eligibility (:185) is WITHHELD on
+-- SG-3; the fill-unit branch reaches no ground and no Soil.
+
+G.MOWER = "MOWER"
+G.MOWER_DROP = "MOWER_DROP"
+G.MOWER_BIRTH_KIND = "MOWER"                    -- the birth kind Soil makes at a deposit (5c-soil)
+G.MOWER_CAP_REASON = "MOWER_BUFFER_CAP"
+G.MOWER_UNIT_REASON = "MOWER_UNIT_REFUSED"
+G.MOWER_PREPARED_REASON = "PREPARED_FOLIAGE_UNATTRIBUTED"
+G.MOWER_DROP_KEY = "processDropArea"
+G.MOWER_DROP_MARKER = "_sgMowerDrop"
+
+--- A finite number. (Module functions here, not file locals: a bench that loads this file with
+--- many others sits near Lua's 200-local limit for one chunk.)
+function G.isFinite(n) return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge end
+
+--- Do two quantities agree within the quantization tolerance (header, :225, :231)?
+function G.nearly(a, b)
+    return math.abs(a - b) <= G.QUANT_ABS + G.QUANT_REL * (math.abs(a) + math.abs(b))
+end
+
+--- A carrier's native state, read now.
+function G.readNow(host, binding)
+    local spec = host.nativeLease.spec
+    local native = spec.resolveCarrier(binding)
+    return native ~= nil and spec.readNativeState(binding, native) or nil
+end
+
+--- The output type of a fruit's converter and its name (Mower.lua:345, converterData.fillTypeIndex).
+function G.mowerOutput(vehicle, fruitIndex)
+    local spec = type(vehicle) == "table" and vehicle.spec_mower or nil
+    local c = spec ~= nil and type(spec.fruitTypeConverters) == "table" and spec.fruitTypeConverters[fruitIndex] or nil
+    local ft = type(c) == "table" and c.fillTypeIndex or nil
+    return ft, fillTypeNameOf(ft)
+end
+
+--- Bind the frame's buffer at its first positive cut, holding what native holds. (It is never in the
+--- frame's unit list: a Mower frame captures it itself, G.mowerCapture.) A buffer bound over litres
+--- native already held carries material Soil's own carrier accounted for, so its deposit stays Soil's
+--- until it empties.
+function G.bindMowerBuffer(host, gf)
+    local m = gf.mower
+    local held = m.dropArea.litersToDrop
+    local entry = { vehicle = m.vehicle, dropArea = m.dropArea, index = m.dropArea.index, fresh = 0, soilFramed = held == 0 }
+    A.mowerBuffers[m.carrierId] = entry
+    local ns = G.readNow(host, m.binding)
+    local c, why = nil, "BUFFER_STATE"
+    if ns ~= nil then c, why = host.handle.bindCarrier(host.nativeLease, m.binding, ns) end
+    if c == nil then
+        A.mowerBuffers[m.carrierId] = nil
+        return false, why
+    end
+    return true
+end
+
+--- One cut of the frame, as it returns (SGCutState calls the target's afterCut with the input fruit,
+--- the scaled area native returned and the witness's reading). The previous converter's operation
+--- has landed and been capped by now, so it settles first; then a positive cut is planned. Its
+--- capture waits for the pickup line or the next settle point: SG-1 still holds the buffer as it
+--- was before native added this cut, because nothing refreshes the buffer inside the frame.
+function G.mowerAfterCut(host, frame, fruitIndex, returned, result)
+    if frame.closed then return end
+    local gf = frame.ground
+    G.mowerFlush(host, gf)
+    G.settlePending(host, gf, true)
+    if type(returned) ~= "number" or not (returned > 0) then return end
+    local m = gf.mower
+    m.cuts = m.cuts + 1
+    local outputType, outputName = G.mowerOutput(m.vehicle, fruitIndex)
+    local dest, destBinding
+    if m.mode == "BUFFER" then
+        local entry = A.mowerBuffers[m.carrierId]
+        if entry == nil then
+            local okB, why = G.bindMowerBuffer(host, gf)
+            if not okB then count(gf.refused, "BUFFER_BIND:" .. tostring(why)) return end
+            entry = A.mowerBuffers[m.carrierId]
+        else
+            local c, why = host.handle.refreshCarrier(host.nativeLease, m.binding, SGNativeHost.REASON)
+            if c == nil and why ~= nil then count(gf.refused, "BUFFER_REFRESH:" .. tostring(why)) return end
+        end
+        -- Output of a cut Soil did not admit is Soil's own carrier's (header, SOIL).
+        if not m.soilAdmitted then entry.soilFramed = false end
+        dest, destBinding = m.carrierId, m.binding
+    else
+        local u = gf.units[1]
+        local c, why = host.handle.refreshCarrier(host.nativeLease, u.binding, SGNativeHost.REASON)
+        if c == nil and why ~= nil then count(gf.refused, "UNIT_REFRESH:" .. tostring(why)) return end
+        dest, destBinding = u.carrierId, u.binding
+    end
+    gf.sequence = gf.sequence + 1
+    local callRef = gf.callRef .. ":" .. tostring(gf.sequence)
+    local creator = "mower:" .. tostring(A.persistentIdOf(m.vehicle) or "?") .. ":" .. tostring(m.workArea.index)
+    local portions, weightSum = {}, 0
+    if type(result) == "table" and result.admitted == true and (result.weightSum or 0) > 0 then
+        for k, grp in ipairs(result.groups) do
+            portions[#portions + 1] = { slotId = callRef .. ":p" .. k, nativeCreatorKey = creator, weight = grp.weight,
+                knowledge = grp.prepared and "UNKNOWN" or "KNOWN", reason = grp.prepared and G.MOWER_PREPARED_REASON or nil,
+                profile = SGCutState.MOWER_PROFILE, growthState = grp.state, pixels = grp.pixels, yieldScale = grp.yieldScale,
+                soilCell = grp.cell, soil = grp.soil, prepared = grp.prepared == true }
+            weightSum = weightSum + grp.weight
+        end
+    end
+    if #portions == 0 then
+        local reason = type(result) == "table" and result.reason or "MOWER_STATE_NOT_OBSERVED"
+        portions[1] = { slotId = callRef .. ":unknown", nativeCreatorKey = creator, weight = 1, knowledge = "UNKNOWN", reason = reason }
+        weightSum = 1
+    end
+    m.planned = { callRef = callRef, portions = portions, weightSum = weightSum, destId = dest, destBinding = destBinding,
+                  fresh = m.soilAdmitted and m.mode == "BUFFER", fruitIndex = fruitIndex, returned = returned,
+                  outputType = outputType, outputName = outputName }
+end
+
+--- Capture the frame's planned cut, with the line's cells when it is the cut's own dry-grass pickup
+--- (`pre`, from the line bracket, Mower.lua:361-365), as ONE operation: native's buffer combines those
+--- portions before its cap (:247), so they settle together after it. Without a plan (a buffer bound
+--- late, or a capture refused) the line's cells and the buffer are an operation of their own.
+function G.mowerCapture(host, gf, pre, returned)
+    local m = gf.mower
+    local plan = m.planned
+    m.planned = nil
+    local changes = pre ~= nil and pre.changes or {}
+    if plan == nil and #changes == 0 then return end
+    local destId = plan ~= nil and plan.destId or m.carrierId
+    if destId == nil or (plan == nil and A.mowerBuffers[m.carrierId] == nil) then
+        if pre ~= nil then G.reconcileChanges(host, pre.sampler, changes) end
+        return
+    end
+    local captureList, participants = {}, {}
+    for _, p in ipairs(plan ~= nil and plan.portions or {}) do captureList[#captureList + 1] = { slotId = p.slotId, nativeCreatorKey = p.nativeCreatorKey } end
+    captureList[#captureList + 1] = { carrierId = destId }
+    for _, ch in ipairs(changes) do
+        -- Each moved cell is recorded at its before-state first, as any capture does.
+        local cid, why = G.recordCell(host, pre.sampler, ch.x, ch.z, G.cellState(pre.sampler, ch.x, ch.z, ch.before), true)
+        if cid == nil then
+            count(gf.refused, "GROUND_BIND:" .. tostring(why))
+            G.reconcileChanges(host, pre.sampler, changes)
+            changes = {}
+            break
+        end
+        participants[cid] = { kind = A.KIND_GROUND, x = ch.x, z = ch.z, before = ch.before, after = G.cellState(pre.sampler, ch.x, ch.z, ch.after) }
+        captureList[#captureList + 1] = { carrierId = cid }
+    end
+    if plan == nil and #changes == 0 then return end
+    local cap, why = host.handle.captureOperation(host.nativeLease, plan ~= nil and "BIRTH" or "TRANSFER", captureList)
+    if cap == nil then
+        count(gf.refused, "CUT_CAPTURE:" .. tostring(why))
+        if #changes > 0 then G.reconcileChanges(host, pre.sampler, changes) end
+        return
+    end
+    if plan == nil then
+        gf.sequence = gf.sequence + 1
+        plan = { callRef = gf.callRef .. ":" .. tostring(gf.sequence), portions = {}, weightSum = 1, destId = m.carrierId, destBinding = m.binding,
+                 fresh = false, outputName = A.mowerBuffers[m.carrierId] ~= nil and fillTypeNameOf(m.dropArea.fillType) or nil }
+    end
+    plan.capture, plan.mowerKind, plan.participants, plan.pre = cap, "CUT", participants, (#changes > 0) and pre or nil
+    plan.returnedLine = returned
+    gf.pending = plan
+end
+
+--- A cut planned and not yet captured is captured now, with no line: its output has landed (and
+--- been capped) with no pickup between (a non-grass output never has one, :361, nor a fill unit).
+function G.mowerFlush(host, gf)
+    if gf.mower ~= nil and gf.mower.planned ~= nil then G.mowerCapture(host, gf, nil) end
+end
+
+--- A settled (or abandoned) Mower operation into the frame's record.
+function G.mowerRecord(host, gf, result)
+    gf.operations[#gf.operations + 1] = result
+    host.lastSettlement = { callRef = result.callRef, outcome = result.outcome, reason = result.reason, report = result.report or { outcomeEvidence = result.evidence } }
+end
+
+--- Settle one converter's operation: the cut's litres native produced (lastPickupLiters, :350) born
+--- from its slots, each pickup cell's loss moved in, at the share the buffer kept after its cap; the
+--- cap's loss taken from every part of the uniform mixture; the pending fresh litres named.
+function G.mowerSettle(host, gf, op, ok)
+    local m = gf.mower
+    local entry = m.mode == "BUFFER" and A.mowerBuffers[m.carrierId] or nil
+    local before = op.capture.before.carriers
+    local ns = G.readNow(host, op.destBinding)
+    local b = before[op.destId]
+    local B = b ~= nil and b.amount or 0
+    local L = #op.portions > 0 and m.workArea.lastPickupLiters or 0
+    local pre = op.pre
+    local evidencePortions = {}
+    for _, p in ipairs(op.portions) do
+        evidencePortions[#evidencePortions + 1] = { slotId = p.slotId, weight = p.weight, knowledge = p.knowledge, reason = p.reason, profile = p.profile,
+            growthState = p.growthState, pixels = p.pixels, yieldScale = p.yieldScale, soilCell = p.soilCell, soil = p.soil, prepared = p.prepared }
+    end
+    local evidence = { nativePath = "GROUND_MOWER_CUT", callRef = op.callRef, fillTypeName = op.outputName, destination = m.mode,
+                       returnedArea = op.returned, produced = L, before = B, fresh = op.fresh, portions = evidencePortions, weightSum = op.weightSum }
+    local refuse = (not ok) and "NATIVE_ERROR" or nil
+    if refuse == nil and ns == nil then refuse = "AFTER_STATE_UNREADABLE" end
+    if refuse == nil and b == nil then refuse = "NO_DESTINATION" end
+    if refuse == nil and (not G.isFinite(L) or L < 0) then refuse = "PRODUCED_UNREADABLE" end
+    -- The pickup's cells: each only loses, and only the line's own material (:247).
+    local after, cells, P = {}, {}, 0
+    if ns ~= nil then after[op.destId] = ns end
+    for cid, p in pairs(op.participants or {}) do
+        after[cid] = p.after
+        local cb = before[cid]
+        local n = (p.after.amount or 0) - (cb ~= nil and cb.amount or 0)
+        local name = pre ~= nil and pre.call.fillTypeName or nil
+        if n > G.EPSILON then refuse = refuse or "GROUND_INCREASE" end
+        if cb ~= nil and cb.amount > 0 and (cb.materialRef == nil or cb.materialRef.fillTypeName ~= name) then refuse = refuse or "GROUND_MATERIAL" end
+        if p.after.amount > 0 and (p.after.materialRef == nil or p.after.materialRef.fillTypeName ~= name) then refuse = refuse or "GROUND_MATERIAL" end
+        if n < -G.EPSILON then cells[#cells + 1] = { cid = cid, amount = -n }; P = P - n end
+    end
+    local Aafter = ns ~= nil and ns.amount or 0
+    local name = op.outputName
+    if refuse == nil and Aafter > G.EPSILON and (ns.materialRef == nil or name == nil or ns.materialRef.fillTypeName ~= name) then refuse = "UNIT_MATERIAL" end
+    if pre ~= nil then
+        local e = pre.envelope
+        evidence.pickup = { fillTypeName = pre.call.fillTypeName, lineReturned = op.returnedLine, picked = P, cells = #pre.changes,
+                            envelope = { x0 = e.x0, z0 = e.z0, x1 = e.x1, z1 = e.z1 } }
+    end
+    if refuse ~= nil then
+        host.handle.abandonOperation(op.capture.handle, refuse, after)
+        if entry ~= nil then entry.fresh = math.max(0, math.min(entry.fresh, Aafter)) end
+        G.mowerRecord(host, gf, { callRef = op.callRef, outcome = "ABANDONED", reason = refuse, evidence = evidence })
+        if pre ~= nil then G.withdrawEmpty(host, pre.sampler, pre.changes) end
+        return
+    end
+    table.sort(cells, function(p, q) return p.cid < q.cid end)
+    -- k: the share of the mixture the destination kept. A fill unit clamps only the add (FillUnit's
+    -- own clamp, :353-356 has no cap), so its contents always stay.
+    local M = B + L + P
+    local k, clean, born = 1, false, nil
+    if m.mode == "BUFFER" then
+        clean = G.nearly(Aafter, M)
+        if not clean and Aafter < M then k = M > 0 and Aafter / M or 0 end
+    else
+        born = math.max(0, math.min(L, Aafter - B))
+    end
+    -- Within the tolerance each side moves at its own measured amount (no rescaling, :231): the
+    -- gain the destination shows is split over what came in by litres.
+    local gainShare = (clean and (L + P) > 0) and math.max(0, Aafter - B) / (L + P) or nil
+    local legs, pending = {}, {}
+    local bornTotal = 0
+    for _, p in ipairs(op.portions) do
+        local share = p.weight / op.weightSum
+        local src = L * share
+        local amount
+        if born ~= nil then amount = born * share
+        elseif gainShare ~= nil then amount = src * gainShare
+        else amount = src * k end
+        if amount > G.EPSILON then
+            legs[#legs + 1] = { source = { slotId = p.slotId }, sourceAmount = amount, sourceUnit = A.UNIT,
+                                destination = { carrierId = op.destId }, destinationAmount = amount, destinationUnit = A.UNIT,
+                                result = "BORN", reason = p.reason }
+            bornTotal = bornTotal + amount
+            if op.fresh then pending[#pending + 1] = { allocation = #legs, litres = amount } end
+        end
+        local lost = gainShare ~= nil and 0 or (src - amount)
+        if lost > G.EPSILON then
+            legs[#legs + 1] = { source = { slotId = p.slotId }, sourceAmount = lost, sourceUnit = A.UNIT, destination = { retire = true },
+                                result = "LOSS", reason = m.mode == "BUFFER" and G.MOWER_CAP_REASON or G.MOWER_UNIT_REASON }
+        end
+    end
+    for _, c in ipairs(cells) do
+        local src = gainShare ~= nil and c.amount or c.amount * k
+        local dst = gainShare ~= nil and c.amount * gainShare or src
+        if src > G.EPSILON or dst > G.EPSILON then
+            legs[#legs + 1] = { source = { carrierId = c.cid }, sourceAmount = src, sourceUnit = A.UNIT,
+                                destination = { carrierId = op.destId }, destinationAmount = dst, destinationUnit = A.UNIT, result = "TRANSFERRED" }
+        end
+        if c.amount - src > G.EPSILON then
+            legs[#legs + 1] = { source = { carrierId = c.cid }, sourceAmount = c.amount - src, sourceUnit = A.UNIT, destination = { retire = true },
+                                result = "LOSS", reason = G.MOWER_CAP_REASON }
+        end
+    end
+    if B * (1 - k) > G.EPSILON then
+        legs[#legs + 1] = { source = { carrierId = op.destId }, sourceAmount = B * (1 - k), sourceUnit = A.UNIT, destination = { retire = true },
+                            result = "LOSS", reason = G.MOWER_CAP_REASON }
+    end
+    -- A cut that overwrote the type of a remainder it does not match (:296, header).
+    local retype = B > G.EPSILON and b.materialRef ~= nil and b.materialRef.fillTypeName ~= name
+    evidence.retained, evidence.capLoss, evidence.retyped = Aafter, (m.mode == "BUFFER" and not clean) and math.max(0, M - Aafter) or 0, retype or nil
+    if born ~= nil then evidence.refused = L - born end
+    if entry ~= nil then
+        local pf = { allocations = pending }
+        if not retype then pf.destinationBefore = entry.fresh * k end
+        evidence[G.SOIL_PROPERTY] = { pendingFresh = pf }
+    end
+    local report = { participantsAfter = after, allocations = legs, outcomeEvidence = evidence }
+    local outcome, reason = host.handle.settleOperation(op.capture.handle, report)
+    if entry ~= nil then
+        local f = retype and 0 or entry.fresh * k
+        if op.fresh and outcome == "COMMITTED" then f = f + bornTotal end
+        entry.fresh = math.max(0, math.min(f, Aafter))
+    end
+    G.mowerRecord(host, gf, { callRef = op.callRef, outcome = outcome, reason = reason, evidence = evidence, report = report })
+    if pre ~= nil then G.withdrawEmpty(host, pre.sampler, pre.changes) end
+end
+
+--- The MOWER frame's close: the buffer is brought to what native holds (a change the frame did not
+--- observe is the store's generic change), and an emptied buffer is withdrawn. A remainder stays
+--- (no epsilon of its own, condition 1).
+function G.closeMowerBuffer(host, gf)
+    local m = gf.mower
+    if m.mode ~= "BUFFER" then return end
+    local entry = A.mowerBuffers[m.carrierId]
+    if entry == nil then return end
+    host.handle.refreshCarrier(host.nativeLease, m.binding, SGNativeHost ~= nil and SGNativeHost.REASON or nil)
+    local held = m.dropArea.litersToDrop
+    entry.fresh = math.max(0, math.min(entry.fresh, type(held) == "number" and held or 0))
+    if held == 0 then
+        pcall(host.handle.withdrawCarrier, host.nativeLease, m.carrierId, "MOWER_BUFFER_EMPTY")
+        A.mowerBuffers[m.carrierId] = nil
+    end
+end
+
+--- Open the MOWER frame over one processMowerArea call: the drop area's buffer (or, with no drop
+--- area, the mower's fill unit), the witness target, and the MOWER_CUT with Soil (Q2). Server only:
+--- the work area also runs on a client inside the update radius (:330-332), and nothing opens there.
+function G.openMower(host, vehicle, workArea)
+    if g_server == nil or not host.ready or type(workArea) ~= "table" or type(workArea.index) ~= "number" then return nil end
+    local spec = type(vehicle) == "table" and vehicle.spec_mower or nil
+    if type(spec) ~= "table" or type(vehicle.getDropArea) ~= "function" then return nil end
+    local okD, dropArea = pcall(vehicle.getDropArea, vehicle, workArea)
+    if not okD then return nil end
+    local m = { vehicle = vehicle, workArea = workArea, cuts = 0, soilAdmitted = false, cutLease = nil }
+    local units = {}
+    if type(dropArea) == "table" and type(dropArea.index) == "number" then
+        local binding = A.mowerBufferBinding(vehicle, dropArea.index)
+        if binding == nil then return nil end
+        m.mode, m.dropArea, m.binding, m.carrierId = "BUFFER", dropArea, binding, SGRecords.carrierKeyString(binding.carrierKey)
+        local entry = A.mowerBuffers[m.carrierId]
+        if entry ~= nil and (entry.vehicle ~= vehicle or entry.dropArea ~= dropArea) then
+            pcall(host.handle.withdrawCarrier, host.nativeLease, m.carrierId, "MOWER_BUFFER_STALE")
+            A.mowerBuffers[m.carrierId] = nil
+        end
+    elseif dropArea == nil and type(spec.fillUnitIndex) == "number" then
+        m.mode = "UNIT"
+        units[1] = spec.fillUnitIndex
+    else
+        return nil       -- native keeps no output here (:353-356): nothing to frame
+    end
+    local frame = G.openFrame(host, vehicle, { kind = G.MOWER, units = units, mower = m })
+    if frame == nil then return nil end
+    if m.mode == "UNIT" and #frame.ground.units == 0 then
+        SGOperationContext.close(host.context, frame)
+        return nil
+    end
+    local converters = type(spec.fruitTypeConverters) == "table" and spec.fruitTypeConverters or {}
+    m.target = { profile = SGCutState ~= nil and SGCutState.MOWER_PROFILE or nil, cutStates = {}, prepSnapshot = nil,
+                 wantsPrep = FruitType ~= nil and FruitType.MEADOW ~= nil and converters[FruitType.MEADOW] ~= nil,
+                 afterCut = function(_target, fruitIndex, returned, result) G.mowerAfterCut(host, frame, fruitIndex, returned, result) end }
+    -- The cut is Soil's to stand aside for only when it reaches the ground: the fill-unit branch
+    -- carries no Soil (Bob's 5c ruling, condition 3).
+    if m.mode == "BUFFER" and SGSoilCondition ~= nil then
+        local okC, lease = pcall(SGSoilCondition.admitMowerCut, vehicle, workArea)
+        if okC and lease ~= nil then m.cutLease, m.soilAdmitted = lease, true end
+    end
+    return frame
+end
+
+--- The bracket on a Mower work area's captured processing pointer (SGWorkAreaInstaller): the frame
+--- and its witness around the one call, every return preserved, the MOWER_CUT closed in the finally,
+--- the error re-raised.
+function G.mowerBracket(realFn, _workArea)
+    return function(vehicle, workArea, ...)
+        local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+        local frame = nil
+        if host ~= nil and g_server ~= nil then
+            local okOpen, result = pcall(G.openMower, host, vehicle, workArea)
+            if okOpen then frame = result else logOnce("mowerOpen", "mower frame failed to open (" .. tostring(result) .. ")") end
+        end
+        local previous = SGCutState ~= nil and SGCutState.target or nil
+        if frame ~= nil and SGCutState ~= nil then SGCutState.target = frame.ground.mower.target end
+        local n, r = packn(pcall(realFn, vehicle, workArea, ...))
+        if frame ~= nil then
+            if SGCutState ~= nil then SGCutState.target = previous end
+            local okClose, err = pcall(G.closeFrame, host, frame, r[1])
+            if not okClose then logOnce("mowerClose", "mower frame failed to close (" .. tostring(err) .. ")") end
+            local lease = frame.ground.mower.cutLease
+            if lease ~= nil then pcall(SGSoilCondition.closeMowerCut, lease) end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
+end
+
+--- The drop's pending fresh litres (Q1): what the buffer keeps after the drop holds the same fresh
+--- share as before it, the buffer being one mixture.
+function G.mowerDropEvidence(gf, op, before, after, evidence)
+    local d = gf.mowerDrop
+    local entry = A.mowerBuffers[d.carrierId]
+    local b, a = before[d.carrierId], after[d.carrierId]
+    if entry == nil or b == nil or a == nil or not (b.amount > 0) then return end
+    evidence[G.SOIL_PROPERTY] = { pendingFresh = { destinationBefore = entry.fresh * math.max(0, math.min(1, (a.amount or 0) / b.amount)), allocations = {} } }
+end
+
+--- Open the MOWER_DROP frame over one processDropArea call, when its drop area has a live buffer.
+function G.openMowerDrop(host, vehicle, dropArea)
+    if g_server == nil or not host.ready or type(dropArea) ~= "table" or type(dropArea.index) ~= "number" then return nil end
+    local binding = A.mowerBufferBinding(vehicle, dropArea.index)
+    if binding == nil then return nil end
+    local cid = SGRecords.carrierKeyString(binding.carrierKey)
+    local entry = A.mowerBuffers[cid]
+    if entry == nil or entry.vehicle ~= vehicle or entry.dropArea ~= dropArea then return nil end
+    local held = dropArea.litersToDrop
+    local frame = G.openFrame(host, vehicle, { kind = G.MOWER_DROP, units = {}, dropsOnly = true, expectType = dropArea.fillType,
+        mowerDrop = { entry = entry, dropArea = dropArea, binding = binding, carrierId = cid, before = type(held) == "number" and held or 0 } })
+    if frame ~= nil then frame.ground.units[1] = { binding = binding, carrierId = cid } end
+    return frame
+end
+
+--- The MOWER_DROP frame's close: the fresh litres keep the share native kept, the buffer is brought
+--- to native, and an emptied buffer is withdrawn.
+function G.closeMowerDrop(host, gf)
+    local d = gf.mowerDrop
+    local entry = A.mowerBuffers[d.carrierId]
+    if entry == nil then return end
+    local held = d.dropArea.litersToDrop
+    held = type(held) == "number" and held or 0
+    if d.before > 0 then entry.fresh = entry.fresh * math.max(0, math.min(1, held / d.before)) end
+    host.handle.refreshCarrier(host.nativeLease, d.binding, SGNativeHost ~= nil and SGNativeHost.REASON or nil)
+    entry.fresh = math.max(0, math.min(entry.fresh, held))
+    if held == 0 then
+        pcall(host.handle.withdrawCarrier, host.nativeLease, d.carrierId, "MOWER_BUFFER_EMPTY")
+        A.mowerBuffers[d.carrierId] = nil
+    end
+end
+
+--- The drop frame on one Mower's processDropArea instance slot (onEndWorkAreaProcessing calls
+--- self:processDropArea, :565: mechanism 2). It wraps whatever the slot holds, once: it only
+--- observes, so another mod's wrapper (Soil's drop frame) runs inside or outside it unchanged.
+function G.installMowerDrop(vehicle)
+    if g_server == nil then return false, "CLIENT" end
+    if type(vehicle) ~= "table" or vehicle.spec_mower == nil then return false, "NO_SPEC" end
+    local rec = rawget(vehicle, G.MOWER_DROP_MARKER)
+    if rec ~= nil then return rec.wrapper == vehicle[G.MOWER_DROP_KEY], "ALREADY" end
+    local inner = vehicle[G.MOWER_DROP_KEY]
+    if type(inner) ~= "function" then return false, "NO_SLOT" end
+    local wrapper = function(self, dropArea, ...)
+        local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+        local frame = nil
+        if host ~= nil then
+            local okOpen, result = pcall(G.openMowerDrop, host, self, dropArea)
+            if okOpen then frame = result else logOnce("mowerDropOpen", "mower drop frame failed to open (" .. tostring(result) .. ")") end
+        end
+        local n, r = packn(pcall(inner, self, dropArea, ...))
+        if frame ~= nil then
+            local okClose, err = pcall(G.closeFrame, host, frame, r[1])
+            if not okClose then logOnce("mowerDropClose", "mower drop frame failed to close (" .. tostring(err) .. ")") end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
+    vehicle[G.MOWER_DROP_KEY] = wrapper
+    rawset(vehicle, G.MOWER_DROP_MARKER, { inner = inner, wrapper = wrapper })
+    return true
+end
+
+--- A vehicle with a live Mower remainder is going: the remainder is destruction (SG-2 :136),
+--- retired through a REMOVE before the carrier is withdrawn, never by a bare withdraw.
+function G.retireMowerBuffers(host, vehicle)
+    for cid, entry in pairs(A.mowerBuffers) do
+        if entry.vehicle == vehicle then
+            local cap, why = host.handle.captureOperation(host.nativeLease, "REMOVE", { { carrierId = cid } })
+            if cap ~= nil then
+                -- The amount is the capture's own (SG-1's carrier as it stands), never a native read:
+                -- the vehicle is already out of the vehicle list (VehicleSystem.removeVehicle).
+                local b = cap.before ~= nil and cap.before.carriers ~= nil and cap.before.carriers[cid] or nil
+                local amount = b ~= nil and b.stock ~= nil and (b.amount or 0) or 0
+                if amount > 0 then
+                    local after = { amount = 0, unit = A.UNIT, storeKind = "vehicle_buffer" }
+                    local report = { participantsAfter = { [cid] = after },
+                                     outcomeEvidence = { nativePath = "MOWER_BUFFER_DESTRUCTION", remainder = amount },
+                                     allocations = { { source = { carrierId = cid }, sourceAmount = amount, sourceUnit = A.UNIT,
+                                                       destination = { retire = true }, result = "DESTRUCTION", reason = "VEHICLE_REMOVED" } } }
+                    local outcome, reason = host.handle.settleOperation(cap.handle, report)
+                    host.lastSettlement = { callRef = "mower:destruction:" .. cid, outcome = outcome, reason = reason, report = report }
+                else
+                    host.handle.abandonOperation(cap.handle, "EMPTY", nil)
+                end
+            else
+                count(G.stats.refused, "DESTRUCTION_CAPTURE:" .. tostring(why))
+            end
+            pcall(host.handle.withdrawCarrier, host.nativeLease, cid, "VEHICLE_REMOVED")
+            A.mowerBuffers[cid] = nil
+        end
+    end
+end
+
 -- ---------------------------------------------------------
 -- The Baler (SG2-5d-b; Bob's 5d shape ruling with its addendum)
 -- ---------------------------------------------------------
@@ -1676,6 +2229,10 @@ local function balerFill(original, self, fillUnitIndex, fillLevelDelta, fillType
 end
 G.balerStart, G.balerEnd, G.balerFill = balerStart, balerEnd, balerFill
 
+-- ---------------------------------------------------------
+-- Installation: the tip slot, the work listeners, the Leveler callback
+-- ---------------------------------------------------------
+--- Install the tip frame on one vehicle's dischargeToGround instance slot.
 function G.installTip(vehicle)
     if g_server == nil then return false, "CLIENT" end
     if type(vehicle) ~= "table" or vehicle.spec_dischargeable == nil then return false, "NO_SPEC" end
@@ -1828,6 +2385,10 @@ function G.installClassHooks(classes)
     installed = wrapClass(classes.Baler, "onStartWorkAreaProcessing", balerStart) or installed
     installed = wrapClass(classes.Baler, "onEndWorkAreaProcessing", balerEnd) or installed
     installed = wrapClass(classes.Baler, "onFillUnitFillLevelChanged", balerFill) or installed
+    -- SG2-5c: the meadow preparation read the Mower's witness needs (SGCutState.installPrep).
+    if SGCutState ~= nil and classes.FSDensityMapUtil ~= nil then
+        installed = SGCutState.installPrep(classes.FSDensityMapUtil) or installed
+    end
     return installed
 end
 
@@ -1844,5 +2405,9 @@ function G.observeVehicle(vehicle)
     end
     if vehicle.spec_baler ~= nil and SGWorkAreaInstaller ~= nil then
         SGWorkAreaInstaller.install(vehicle, "spec_baler", "processBalerArea", G.balerBracket)
+    end
+    if vehicle.spec_mower ~= nil and SGWorkAreaInstaller ~= nil then
+        SGWorkAreaInstaller.install(vehicle, "spec_mower", "processMowerArea", G.mowerBracket)
+        G.installMowerDrop(vehicle)
     end
 end
