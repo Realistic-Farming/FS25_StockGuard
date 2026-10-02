@@ -121,7 +121,9 @@ function S.admitLine(host, call)
         return nil
     end
     local G = SGGroundObserver
-    if gf.kind ~= G.TIP and gf.kind ~= G.WORK and gf.kind ~= G.DROP and gf.kind ~= G.WINDROWER and gf.kind ~= G.TEDDER then return nil end
+    if gf.kind ~= G.TIP and gf.kind ~= G.WORK and gf.kind ~= G.DROP and gf.kind ~= G.WINDROWER and gf.kind ~= G.TEDDER and gf.kind ~= G.BALER then return nil end
+    -- SG2-5d-b: a Baler's add frame draws no line of its own.
+    if gf.balerAdd then return nil end
     local receiver, why = S.receiver()
     if receiver == nil then
         count(S.stats.absent, why)
@@ -214,7 +216,25 @@ function S.deliverLine(lease, ok, returned, lineOffset)
         return nil
     end
     S.stats.delivered = S.stats.delivered + 1
+    -- SG2-5d-b: a Baler pickup's delivery names its collection (Soil 5d-soil): the tick's batch.
+    if ok and lease.frame ~= nil and lease.frame.baler ~= nil and type(result) == "table" and type(result.collection) == "table" then
+        lease.call.soilCollection = result.collection
+    end
     return result
+end
+
+--- [SG2-5d-b] Soil's published collected read of one sealed share (Soil 5d-soil): the coverage, or
+--- nil and the reason. Read for every share, because Soil can stand down mid-mission.
+function S.readCollected(snapshotRef, receipt)
+    local receiver, why = S.receiver()
+    if receiver == nil then return nil, why end
+    if type(receiver.readCollectedCondition) ~= "function" then return nil, "NO_COLLECTED_READ" end
+    local ok, coverage = pcall(receiver.readCollectedCondition, snapshotRef, receipt)
+    if not ok or type(coverage) ~= "table" then
+        count(S.stats.faults, "READ_FAILED")
+        return nil, "READ_FAILED"
+    end
+    return coverage
 end
 
 --- Close the lease (the bracket's finally).
