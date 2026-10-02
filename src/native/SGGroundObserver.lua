@@ -122,6 +122,13 @@ G.FRAME = "GROUND"
 G.TIP, G.WORK, G.DROP = "TIP", "WORK", "DROP"
 -- SG2-5a: a Windrower work area's one processing call (Windrower.lua:309-359).
 G.WINDROWER = "WINDROWER"
+-- SG2-5b: a Tedder work area's one processing call (Tedder.lua:279-350); its buffer persists.
+G.TEDDER = "TEDDER"
+-- SG-2 :652's NATIVE_HAY_CONVERT_V1 admits one converting pair. An input already of its target's
+-- type is a plain transfer; any other converter pair is unadmitted (Bob's 5b ruling, Q2).
+G.HAY_CONVERT_BASIS = "NATIVE_HAY_CONVERT_V1"
+G.HAY_FROM, G.HAY_TO = "GRASS_WINDROW", "DRYGRASS_WINDROW"
+G.RETARGET_REASON = "TEDDER_RETARGET_UNPROVED"
 G.TIP_KEY = "dischargeToGround"
 G.TIP_MARKER = "_sgGroundTip"
 G.LEVELER_KEY = "onLevelerRaycastCallback"
@@ -427,6 +434,13 @@ function G.admitPrimitive(gf, call)
     if name == nil then return "FILL_TYPE_UNNAMED" end
     if gf.expectType ~= nil and heightType.fillTypeIndex ~= gf.expectType then return "CONVERTED_AT_GROUND" end
     if gf.dropsOnly and call.maxDelta < 0 then return "NOT_A_DROP" end
+    -- SG2-5b: a Tedder pickup feeds its converter's target (Tedder.lua:47-65, :286-292); a type
+    -- with no converter is not one of the Tedder's own pickups.
+    if gf.tedder ~= nil and call.maxDelta < 0 then
+        local target, targetName = G.tedderTarget(gf.vehicle, heightType.fillTypeIndex)
+        if target == nil or targetName == nil then return "NO_CONVERTER_TARGET" end
+        call.tedderTarget, call.tedderTargetName = target, targetName
+    end
     -- SG2-5a (Bob's ruling, question 3): one pickup type per Windrower call. The native search
     -- stops at the first positive type (Windrower.lua:327-334); the dual branch (:336-341) is
     -- unreachable after onStart's reset (:285-290). A second type is SG-2 :197's unproved
@@ -443,6 +457,9 @@ end
 function G.beforeLine(host, call)
     if not host.ready or host.nativeLease == nil then return nil end
     local gf = G.currentFrame(host)
+    -- SG2-5b: has native folded the current pass's pickups yet? Decided before anything reads
+    -- the buffer, so the settle below reads it as native holds it.
+    if gf ~= nil and gf.tedder ~= nil then G.tedderFold(gf, call) end
     -- The previous operation of this frame has seen its unit side land: settle it first.
     if gf ~= nil then G.settlePending(host, gf, true) end
     local sampler, why = host:groundSampler()
@@ -474,6 +491,7 @@ function G.beforeLine(host, call)
     local pre = { sampler = sampler, call = call, envelope = { x0 = x0, z0 = z0, x1 = x1, z1 = z1 }, before = before }
     if gf ~= nil then
         local refused = G.admitPrimitive(gf, call)
+        if refused == nil and gf.tedder ~= nil then refused = G.tedderRetarget(host, gf, call) end
         if refused == nil then
             for _, u in ipairs(gf.units) do
                 local c, whyU = host.handle.refreshCarrier(host.nativeLease, u.binding, SGNativeHost.REASON)
@@ -506,6 +524,7 @@ function G.afterLine(host, pre, ok, returned)
     pre.changes = G.diff(pre.before, after)
     if pre.frame ~= nil and ok then
         if pre.frame.area ~= nil then G.areaBalance(host, pre) end
+        if pre.frame.tedder ~= nil then G.tedderBalance(host, pre) end
         G.captureOperation(host, pre, returned)
     else
         if pre.frame ~= nil then count(pre.frame.refused, "NATIVE_ERROR") end
@@ -548,6 +567,7 @@ function G.captureOperation(host, pre, returned)
     gf.sequence = gf.sequence + 1
     gf.pending = { capture = cap, participants = participants, pre = pre, returned = returned,
                    callRef = gf.callRef .. ":" .. tostring(gf.sequence) }
+    if gf.tedder ~= nil and pre.call.maxDelta < 0 then G.tedderLeg(gf, gf.pending, pre.call) end
 end
 
 --- Settle the frame's pending operation from what each side actually did. `ok` false means
@@ -582,6 +602,8 @@ function G.settlePending(host, gf, ok, unitIndex)
         end
     end
     if refuse == nil then refuse = G.checkDirection(op, before, after, net, drop, call.fillTypeName) end
+    -- SG2-5b: a converter pair :652 does not admit leaves that quantity UNAVAILABLE (Bob's Q2).
+    if refuse == nil and op.pairUnadmitted then refuse = "CONVERTER_PAIR_UNADMITTED" end
     local e = pre.envelope
     local evidence = { nativePath = "GROUND_" .. gf.kind, callRef = op.callRef, fillTypeName = call.fillTypeName, requestedAmount = gf.requested,
                        lineReturned = op.returned, direction = drop and "DROP" or "PICKUP", cells = #pre.changes,
@@ -595,6 +617,14 @@ function G.settlePending(host, gf, ok, unitIndex)
         for _, v in pairs(net) do if v < 0 then S0 = S0 - v else D0 = D0 + v end end
         local tol = G.tolerance(call.fillType, S0, D0)
         local legs, S, D, matched, clean = G.legs(net, tol)
+        -- SG2-5b: the buffer's legs of a converting pickup carry the profile's basis. No other leg
+        -- does: an unchanged input joins with none (SGOperations.lua:752 sends them all to the owner).
+        if op.conversionBasisId ~= nil then
+            for _, leg in ipairs(legs) do
+                if leg.destination.carrierId == op.bufferId then leg.conversionBasisId = op.conversionBasisId end
+            end
+            evidence.conversionBasisId = op.conversionBasisId
+        end
         evidence.sourceTotal, evidence.destinationTotal, evidence.matched = S, D, matched
         evidence.loss = clean and 0 or math.max(0, S - matched)
         evidence.unexplainedGain = clean and 0 or math.max(0, D - matched)
@@ -624,7 +654,9 @@ function G.checkDirection(op, before, after, net, drop, name)
         elseif a ~= nil then
             if drop and n > G.EPSILON then return "UNIT_INCREASE" end
             if not drop and n < -G.EPSILON then return "UNIT_DECREASE" end
-            if n > G.EPSILON and (a.materialRef == nil or a.materialRef.fillTypeName ~= name) then return "UNIT_MATERIAL" end
+            -- A Tedder pickup's buffer gains its converter's target (SG2-5b), not the line's type.
+            local unitName = op.unitMaterial or name
+            if n > G.EPSILON and (a.materialRef == nil or a.materialRef.fillTypeName ~= unitName) then return "UNIT_MATERIAL" end
         end
     end
     return nil
@@ -648,14 +680,15 @@ function G.openFrame(host, vehicle, opts)
             end
         end
     end
-    -- A WINDROWER frame opens with no unit: its area carrier binds at the first pickup.
-    if #units == 0 and opts.area == nil then return nil end
+    -- A WINDROWER frame opens with no unit: its area carrier binds at the first pickup. A TEDDER
+    -- frame's buffer binds at its first pickup too, or is already bound from an earlier call.
+    if #units == 0 and opts.area == nil and opts.tedder == nil then return nil end
     local frame = SGOperationContext.open(host.context, vehicle, G.FRAME)
     if frame == nil then return nil end
     host.nextDischarge = host.nextDischarge + 1
     frame.ground = {
         kind = opts.kind, vehicle = vehicle, units = units, expectType = opts.expectType, dropsOnly = opts.dropsOnly == true,
-        requested = opts.requested, sequence = 0, pending = nil, operations = {}, refused = {}, area = opts.area,
+        requested = opts.requested, sequence = 0, pending = nil, operations = {}, refused = {}, area = opts.area, tedder = opts.tedder,
         callRef = "ground:" .. string.lower(opts.kind) .. ":" .. tostring(host.epoch) .. ":" .. tostring(host.nextDischarge),
     }
     return frame
@@ -682,8 +715,10 @@ end
 function G.closeFrame(host, frame, ok)
     SGOperationContext.close(host.context, frame)
     local gf = frame.ground
+    if gf.tedder ~= nil then G.tedderFold(gf, nil) end
     G.settlePending(host, gf, ok)
     if gf.area ~= nil then G.closeArea(host, gf) end
+    if gf.tedder ~= nil then G.closeTedder(host, gf) end
     host.lastGroundFrame = gf
     for _, obs in ipairs(frame.observations) do
         if not obs.groundConsumed then host:replayObservation(obs) end
@@ -833,6 +868,215 @@ function G.windrowerBracket(realFn, _workArea)
         end
         if not r[1] then error(r[2], 0) end
         return unpack(r, 2, n)
+    end
+end
+
+-- ---------------------------------------------------------
+-- The TEDDER frame (SG2-5b; Bob's 5b ruling)
+-- ---------------------------------------------------------
+--- The target a Tedder pickup of `fillTypeIndex` feeds: its converter's own (Tedder.lua:47-65
+--- builds fillTypeConvertersReverse from fillTypeConverters[input].targetFillTypeIndex, so each
+--- input feeds exactly one target). nil when the type has no converter.
+function G.tedderTarget(vehicle, fillTypeIndex)
+    local spec = type(vehicle) == "table" and vehicle.spec_tedder or nil
+    local converters = spec ~= nil and spec.fillTypeConverters or nil
+    local converted = type(converters) == "table" and converters[fillTypeIndex] or nil
+    local target = type(converted) == "table" and converted.targetFillTypeIndex or nil
+    if target == nil then return nil end
+    return target, fillTypeNameOf(target)
+end
+
+--- Before each line of a TEDDER frame, and at its close, before its pending operation settles:
+--- has native folded the current pass's pickups into litersToDrop (Tedder.lua:296-297, after the
+--- pass's last input)? It has once any line arrives other than another pickup of the same pass:
+--- the pass's drop, or the next pass's first pickup (each target appears once in pairs), and at
+--- the close. Then the entry's pending is native's own, and reading the buffer reads native.
+--- A pickup of a type with no converter target is no Tedder input (a foreign line inside the
+--- call): it starts no pass, so it folds nothing.
+function G.tedderFold(gf, call)
+    local t = gf.tedder
+    if call ~= nil and type(call.maxDelta) == "number" and call.maxDelta < 0 then
+        local hm = g_densityMapHeightManager
+        local ht = hm ~= nil and hm:getDensityMapHeightTypeByIndex(call.heightTypeIndex) or nil
+        local target = ht ~= nil and G.tedderTarget(gf.vehicle, ht.fillTypeIndex) or nil
+        if target == nil or target == t.passTarget then return end
+        t.passTarget = target
+    end
+    local entry = A.tedderBuffers[t.carrierId]
+    if entry ~= nil then entry.pending = 0 end
+end
+
+--- The buffer takes another type than the material it holds: no admitted transform covers that
+--- (SG-2 :199; Bob's 5b Q2), so it takes the new type as material of unknown condition and its old
+--- stock retires. nil, or the reason. Only material that actually moves under the new type does
+--- this: a pass that picks nothing drops its remainder under the last drop's type
+--- (Tedder.lua:293-295), so a pickup retargets only once it has taken something.
+function G.tedderTakeType(host, gf, name)
+    local t = gf.tedder
+    local entry = A.tedderBuffers[t.carrierId]
+    if entry == nil or name == nil or entry.fillTypeName == name then return nil end
+    local held = (entry.workArea.litersToDrop or 0) + (entry.pending or 0)
+    entry.fillTypeName = name
+    if not (held > 0) then return nil end
+    t.retargets = t.retargets + 1
+    local c, why = host.handle.refreshCarrier(host.nativeLease, t.binding, G.RETARGET_REASON)
+    if c == nil and why ~= nil then return "RETARGET_REFRESH:" .. tostring(why) end
+    return nil
+end
+
+--- Before a Tedder DROP: a remainder dropped as another type (the zero-pickup substitution after
+--- a pass that held no drop area) is retargeted before the native call moves it.
+function G.tedderRetarget(host, gf, call)
+    if call.maxDelta <= 0 then return nil end
+    return G.tedderTakeType(host, gf, call.fillTypeName)
+end
+
+--- Bind the frame's buffer carrier at its first pickup, holding what native holds, and make it
+--- the frame's unit.
+function G.bindTedder(host, gf, name)
+    local t = gf.tedder
+    local entry = { vehicle = t.vehicle, workArea = t.workArea, index = t.index, fillTypeName = name, pending = 0 }
+    A.tedderBuffers[t.carrierId] = entry
+    local spec = host.nativeLease.spec
+    local native = spec.resolveCarrier(t.binding)
+    local ns = native ~= nil and spec.readNativeState(t.binding, native) or nil
+    local c, why = nil, "BUFFER_STATE"
+    if ns ~= nil then c, why = host.handle.bindCarrier(host.nativeLease, t.binding, ns) end
+    if c == nil then
+        A.tedderBuffers[t.carrierId] = nil
+        return false, why
+    end
+    gf.units[#gf.units + 1] = { binding = t.binding, carrierId = t.carrierId }
+    return true
+end
+
+--- After a Tedder pickup line: what it took from the cells joins the pass's pending pickups.
+--- Native folds them into litersToDrop only after the pass's last input (Tedder.lua:296-297).
+function G.tedderBalance(host, pre)
+    local gf, sampler, call = pre.frame, pre.sampler, pre.call
+    if call.maxDelta >= 0 or call.tedderTargetName == nil then return end
+    local moved = 0
+    for _, ch in ipairs(pre.changes) do
+        local b = G.cellState(sampler, ch.x, ch.z, ch.before)
+        local a = G.cellState(sampler, ch.x, ch.z, ch.after)
+        moved = moved + ((a.amount or 0) - (b.amount or 0))
+    end
+    local picked = -moved
+    if picked <= G.EPSILON then return end
+    local t = gf.tedder
+    if A.tedderBuffers[t.carrierId] == nil then
+        local okB, why = G.bindTedder(host, gf, call.tedderTargetName)
+        if not okB then count(gf.refused, "BUFFER_BIND:" .. tostring(why)) return end
+    else
+        -- What it held before this pickup takes the pass's target first (a straw pass over a
+        -- dry-grass remainder): unknown condition, never the new pickup's.
+        local why = G.tedderTakeType(host, gf, call.tedderTargetName)
+        if why ~= nil then count(gf.refused, why) end
+    end
+    local entry = A.tedderBuffers[t.carrierId]
+    entry.pending = (entry.pending or 0) + picked
+end
+
+--- A Tedder pickup's operation: its buffer gains the converter's target, and the buffer's legs
+--- carry the profile's basis when the input converts (SG-2 :652). Any other converting pair is
+--- unadmitted: the operation is refused at its settle and its quantity goes UNAVAILABLE.
+function G.tedderLeg(gf, op, call)
+    op.unitMaterial = call.tedderTargetName
+    op.bufferId = gf.tedder.carrierId
+    if call.fillTypeName ~= call.tedderTargetName then
+        if call.fillTypeName == G.HAY_FROM and call.tedderTargetName == G.HAY_TO then
+            op.conversionBasisId = G.HAY_CONVERT_BASIS
+        else
+            op.pairUnadmitted = true
+        end
+    end
+end
+
+--- The TEDDER frame's close: the buffer is brought to what native holds (a line the frame did not
+--- observe is the store's generic change), and an emptied buffer is withdrawn. A remainder stays:
+--- it is native's, and a sub-unit residue drops later (Bob's 5b Q1, no epsilon of its own).
+function G.closeTedder(host, gf)
+    local t = gf.tedder
+    local entry = A.tedderBuffers[t.carrierId]
+    if entry == nil then return end
+    host.handle.refreshCarrier(host.nativeLease, t.binding, SGNativeHost ~= nil and SGNativeHost.REASON or nil)
+    if entry.workArea.litersToDrop == 0 and (entry.pending or 0) == 0 then
+        pcall(host.handle.withdrawCarrier, host.nativeLease, t.carrierId, "TEDDER_BUFFER_EMPTY")
+        A.tedderBuffers[t.carrierId] = nil
+    end
+end
+
+--- Open the TEDDER frame over one call of a Tedder work area. Server only: the work area also
+--- runs on a client inside the update radius (Tedder.lua:281-283), and nothing opens there.
+function G.openTedder(host, vehicle, workArea)
+    if g_server == nil or type(workArea) ~= "table" or type(workArea.index) ~= "number" then return nil end
+    local binding = A.tedderBufferBinding(vehicle, workArea.index)
+    if binding == nil then return nil end
+    local cid = SGRecords.carrierKeyString(binding.carrierKey)
+    local entry = A.tedderBuffers[cid]
+    if entry ~= nil and (entry.vehicle ~= vehicle or entry.workArea ~= workArea) then
+        pcall(host.handle.withdrawCarrier, host.nativeLease, cid, "TEDDER_BUFFER_STALE")
+        A.tedderBuffers[cid] = nil
+        entry = nil
+    end
+    local tedder = { vehicle = vehicle, workArea = workArea, index = workArea.index, binding = binding, carrierId = cid,
+                     passTarget = nil, retargets = 0 }
+    local frame = G.openFrame(host, vehicle, { kind = G.TEDDER, units = {}, tedder = tedder })
+    if frame ~= nil and entry ~= nil then
+        entry.pending = 0
+        frame.ground.units[1] = { binding = binding, carrierId = cid }
+    end
+    return frame
+end
+
+--- The bracket on a Tedder work area's captured processing pointer (SGWorkAreaInstaller): the
+--- frame around the one call, every return preserved, the error re-raised.
+function G.tedderBracket(realFn, _workArea)
+    return function(vehicle, workArea, ...)
+        local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+        local frame = nil
+        if host ~= nil and g_server ~= nil then
+            local okOpen, result = pcall(G.openTedder, host, vehicle, workArea)
+            if okOpen then frame = result else logOnce("tedderOpen", "tedder frame failed to open (" .. tostring(result) .. ")") end
+        end
+        local n, r = packn(pcall(realFn, vehicle, workArea, ...))
+        if frame ~= nil then
+            local okClose, err = pcall(G.closeFrame, host, frame, r[1])
+            if not okClose then logOnce("tedderClose", "tedder frame failed to close (" .. tostring(err) .. ")") end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
+end
+
+--- A vehicle with a live Tedder remainder is going: the remainder is destruction (SG-2 :136),
+--- retired through a REMOVE before the carrier is withdrawn, never by a bare withdraw.
+function G.retireTedderBuffers(host, vehicle)
+    for cid, entry in pairs(A.tedderBuffers) do
+        if entry.vehicle == vehicle then
+            local cap, why = host.handle.captureOperation(host.nativeLease, "REMOVE", { { carrierId = cid } })
+            if cap ~= nil then
+                -- The amount is the capture's own (SG-1's carrier as it stands), never a native read:
+                -- the vehicle is already out of the vehicle list (VehicleSystem.removeVehicle).
+                local b = cap.before ~= nil and cap.before.carriers ~= nil and cap.before.carriers[cid] or nil
+                local amount = b ~= nil and b.stock ~= nil and (b.amount or 0) or 0
+                if amount > 0 then
+                    local after = { amount = 0, unit = A.UNIT, storeKind = "vehicle_buffer" }
+                    local report = { participantsAfter = { [cid] = after },
+                                     outcomeEvidence = { nativePath = "TEDDER_BUFFER_DESTRUCTION", remainder = amount },
+                                     allocations = { { source = { carrierId = cid }, sourceAmount = amount, sourceUnit = A.UNIT,
+                                                       destination = { retire = true }, result = "DESTRUCTION", reason = "VEHICLE_REMOVED" } } }
+                    local outcome, reason = host.handle.settleOperation(cap.handle, report)
+                    host.lastSettlement = { callRef = "tedder:destruction:" .. cid, outcome = outcome, reason = reason, report = report }
+                else
+                    host.handle.abandonOperation(cap.handle, "EMPTY", nil)
+                end
+            else
+                count(G.stats.refused, "DESTRUCTION_CAPTURE:" .. tostring(why))
+            end
+            pcall(host.handle.withdrawCarrier, host.nativeLease, cid, "VEHICLE_REMOVED")
+            A.tedderBuffers[cid] = nil
+        end
     end
 end
 
@@ -998,5 +1242,8 @@ function G.observeVehicle(vehicle)
     if vehicle.spec_leveler ~= nil then G.installLeveler(vehicle) end
     if vehicle.spec_windrower ~= nil and SGWorkAreaInstaller ~= nil then
         SGWorkAreaInstaller.install(vehicle, "spec_windrower", "processWindrowerArea", G.windrowerBracket)
+    end
+    if vehicle.spec_tedder ~= nil and SGWorkAreaInstaller ~= nil then
+        SGWorkAreaInstaller.install(vehicle, "spec_tedder", "processTedderArea", G.tedderBracket)
     end
 end

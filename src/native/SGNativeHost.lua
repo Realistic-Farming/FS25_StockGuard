@@ -397,6 +397,10 @@ function H:onVehicleRemoved(vehicle)
     for index in ipairs(fu ~= nil and type(fu.fillUnits) == "table" and fu.fillUnits or {}) do
         withdraw(A.fillUnitBinding(vehicle, index))
     end
+    -- SG2-5b: a live Tedder remainder is destruction too (SG-2 :136), retired through a REMOVE.
+    if SGGroundObserver ~= nil and type(SGGroundObserver.retireTedderBuffers) == "function" then
+        SGGroundObserver.retireTedderBuffers(self, vehicle)
+    end
     local cs = type(vehicle) == "table" and vehicle.spec_combine or nil
     if cs ~= nil then
         for index, slot in ipairs(type(cs.loadingDelaySlots) == "table" and cs.loadingDelaySlots or {}) do

@@ -68,6 +68,10 @@ A.STRAW_SLOT_PROFILE  = "NATIVE_COMBINE_STRAW_SLOT_V1"
 -- is open, and its amount is the call's own observed balance (picked minus dropped).
 A.KIND_WINDROWER_AREA = "windrowerArea"
 A.WINDROWER_AREA_PROFILE = "NATIVE_WINDROWER_AREA_V1"
+-- SG2-5b: a Tedder work area's retained buffer, workArea.litersToDrop (Tedder.lua:296-304): real
+-- material that rides into later passes and calls (SG-2 :296, :684), so this carrier persists.
+A.KIND_TEDDER_BUFFER = "tedderBuffer"
+A.TEDDER_BUFFER_PROFILE = "NATIVE_TEDDER_BUFFER_V1"
 A.STORAGE_PROFILE     = "NATIVE_STORAGE_SLOT_V1"
 A.FILLUNIT_PROFILE    = "NATIVE_FILL_UNIT_V1"
 A.PROFILE_VERSION     = 1
@@ -713,6 +717,92 @@ function A.windrowerAreaKind(vehicles)
     return spec
 end
 
+-- ── Tedder work-area buffers (SG2-5b) ────────────────────────────────────────
+--
+-- PERSISTENT AND NATIVE-BACKED (Bob's 5b ruling, Q1). A Tedder work area keeps what its passes
+-- picked up and did not drop in workArea.litersToDrop (Tedder.lua:296-304): real material that
+-- rides into later passes and calls, unlike the Windrower's counter. One carrier per Tedder work
+-- area, bound at the first pickup that removed material and live across calls. Its native amount
+-- is litersToDrop exactly, plus what the current pass has picked and native has not yet folded
+-- into it (a pass adds its pickups at :296-297, after its last input): the TEDDER frame keeps
+-- that in the entry's `pending` and clears it once native has folded it (SGGroundObserver).
+-- Its material is the target type of what it holds: the buffer is target-typed (Q2). It is
+-- withdrawn when it empties at a frame's close, retired as destruction when its vehicle goes
+-- (SG-2 :136), never enumerated, never restored and never saved: :144's save is a later slice,
+-- and a reload retires it as native discards it (Tedder.lua:242).
+
+A.tedderBuffers = A.tedderBuffers or {}
+
+function A.tedderBufferComponentKey(index)
+    return A.KIND_TEDDER_BUFFER .. ":" .. tostring(index)
+end
+
+function A.tedderBufferBinding(vehicle, index)
+    if type(vehicle) ~= "table" or type(index) ~= "number" then return nil end
+    local ownerKey = persistentIdOf(vehicle)
+    if ownerKey == nil then return nil end
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.tedderBufferComponentKey(index), A.TEDDER_BUFFER_PROFILE,
+        { kind = A.KIND_TEDDER_BUFFER, workAreaIndex = index, configFileName = type(vehicle.configFileName) == "string" and vehicle.configFileName or "" })
+end
+
+--- Is this carrier key a Tedder work-area buffer of the native adapter?
+function A.isTedderBufferKey(carrierKey)
+    local prefix = A.KIND_TEDDER_BUFFER .. ":"
+    return type(carrierKey) == "table" and carrierKey.adapterId == A.NATIVE_ADAPTER_ID
+        and type(carrierKey.componentKey) == "string" and carrierKey.componentKey:sub(1, #prefix) == prefix
+end
+
+--- The Tedder buffer KIND of the native adapter.
+---@param vehicles function  () -> list of vehicles
+function A.tedderBufferKind(vehicles)
+    local spec = {}
+
+    spec.resolveCarrier = function(binding)
+        if not isServer() then return nil, "CLIENT" end
+        if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil, "BINDING" end
+        local d = binding.sourceDescriptor
+        if type(d) ~= "table" or d.kind ~= A.KIND_TEDDER_BUFFER or type(d.workAreaIndex) ~= "number" then return nil, "DESCRIPTOR" end
+        if binding.carrierKey.componentKey ~= A.tedderBufferComponentKey(d.workAreaIndex) then return nil, "DESCRIPTOR" end
+        local entry = A.tedderBuffers[SGRecords.carrierKeyString(binding.carrierKey)]
+        if entry == nil then return nil, "NOT_BOUND" end
+        local vehicle = vehicleOf(vehicles, binding.carrierKey.nativeOwnerKey)
+        if vehicle == nil or vehicle ~= entry.vehicle then return nil, "VEHICLE_ABSENT" end
+        local areas = type(vehicle.spec_workArea) == "table" and vehicle.spec_workArea.workAreas or nil
+        if type(areas) ~= "table" or areas[d.workAreaIndex] ~= entry.workArea then return nil, "WORK_AREA_ABSENT" end
+        return { vehicle = vehicle, entry = entry }
+    end
+
+    --- litersToDrop exactly, plus the current pass's pickups native has not folded yet.
+    spec.readNativeState = function(binding, native)
+        if not isServer() then return nil, "CLIENT" end
+        if type(native) ~= "table" or type(native.entry) ~= "table" or type(native.vehicle) ~= "table" then return nil, "NATIVE" end
+        local held, pending = native.entry.workArea.litersToDrop, native.entry.pending or 0
+        if type(held) ~= "number" or held ~= held or held < 0 then return nil, "LEVEL" end
+        if type(pending) ~= "number" or pending ~= pending or pending < 0 then return nil, "LEVEL" end
+        local level = held + pending
+        local name = level > 0 and native.entry.fillTypeName or nil
+        if level > 0 and name == nil then return nil, "FILL_TYPE_UNNAMED" end
+        return {
+            materialRef = name ~= nil and { kind = "FILL_TYPE", fillTypeName = name } or nil,
+            amount = level,
+            unit = A.UNIT,
+            ownerFarmId = ownerFarmOf(native.vehicle),
+            storeKind = "vehicle_buffer",
+            nativeUniqueId = persistentIdOf(native.vehicle),
+        }
+    end
+
+    spec.enumerateCarriers = function() return {} end
+
+    spec.hasAccess = function(binding, actor)
+        local native = spec.resolveCarrier(binding)
+        if native == nil then return false end
+        return actorCanAccess(actor, native.vehicle)
+    end
+
+    return spec
+end
+
 -- ── Ground cells (SG2-4b) ───────────────────────────────────────────────────
 --
 -- ONE CARRIER PER NATIVE HEIGHT PIXEL (SG-2 :158-160; SG-1 :104, :220). The grain is the
@@ -839,10 +929,11 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         [A.KIND_STRAW_SLOT] = A.combineSlotKind(vehicles, A.KIND_STRAW_SLOT),
         [A.KIND_GROUND] = A.groundKind(samplers),
         [A.KIND_WINDROWER_AREA] = A.windrowerAreaKind(vehicles),
+        [A.KIND_TEDDER_BUFFER] = A.tedderBufferKind(vehicles),
     }
     local spec = {
         version        = A.ADAPTER_VERSION,
-        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT, A.KIND_GROUND, A.KIND_WINDROWER_AREA },
+        carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT, A.KIND_GROUND, A.KIND_WINDROWER_AREA, A.KIND_TEDDER_BUFFER },
         materialGroups = {},
         kinds          = kinds,
     }
@@ -876,6 +967,9 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         if kind == A.KIND_GROUND then return savedBinding end
         -- A Windrower work area lives only inside one processing call: nothing to restore.
         if kind == A.KIND_WINDROWER_AREA then return nil, "NOT_RESTORABLE" end
+        -- A Tedder buffer is not saved yet (SG-2 :144 is a later slice): a reload retires it, as
+        -- native zeroes litersToDrop at load (Tedder.lua:242).
+        if kind == A.KIND_TEDDER_BUFFER then return nil, "NOT_RESTORABLE" end
         return nil, "DESCRIPTOR"
     end
     spec.enumerateCarriers = function()
