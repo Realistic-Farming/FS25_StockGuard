@@ -3,8 +3,8 @@
 -- MAINTENANCE row 208 (repairs SG2-5 5a, #31, and 5b, #32): the native host installed the ground
 -- observer's hooks only after its fill-unit test (SGNativeHost:observeVehicle), and the engine's own
 -- windrower and tedder types carry no fill unit (vehicleTypes.xml: `windrower`, `windrowerUnpowered` and
--- `tedder` stack baseGroundTool on baseAttachable and base, none of which names fillUnit; WorkArea is
--- their only prerequisite, Windrower.lua:22-24, Tedder.lua:17-19). So their WINDROWER and TEDDER frames
+-- `tedder` stack baseGroundTool on baseAttachable and base, none of which names fillUnit; neither
+-- specialization needs one, Windrower.lua:22-24, Tedder.lua:17-19). So their WINDROWER and TEDDER frames
 -- never installed in play. The SG2-5a and SG2-5b benches built both machines on ENGINE_NEW_TRAILER, which
 -- carries a fill unit, so no bar could see it. The host now runs SGGroundObserver.observeVehicle before
 -- that test; each install there keeps its own spec guard.
