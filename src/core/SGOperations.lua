@@ -2024,6 +2024,21 @@ function O:restoreCore(core, context)
     -- history row at today's amount did exactly that) nor reset its knowledge to
     -- UNKNOWN (an older row at another amount did that on every load).
     local claimed, superseded = {}, 0
+    -- [MAINTENANCE row 206] The saved and the reloaded native amount are the same quantity when
+    -- they are equal as numbers, or, for a carrier whose adapter supplies restoredQuantityImage,
+    -- when their images are equal: the engine saves a FLOAT level as float32 to six decimals,
+    -- so the reloaded level is the saved one as native wrote it, never the exact double SG-1
+    -- recorded. Exact integer equality of the images, never a tolerance (SG-1 brief :392).
+    local function sameAmount(carrier, nativeAmount, savedAmount)
+        local lease = self.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, carrier.adapterId)
+        local image = lease ~= nil and lease.spec.restoredQuantityImage or nil
+        if type(image) == "function" then
+            local okA, a = pcall(image, copy(carrier.binding), nativeAmount)
+            local okB, b = pcall(image, copy(carrier.binding), savedAmount)
+            if okA and okB and type(a) == "number" and type(b) == "number" then return a == b end
+        end
+        return nativeAmount == savedAmount
+    end
     for _, s in ipairs(saved) do
         local carrier = nil
         if refused[s.carrierId] == nil then carrier = self.carriers[target[s.carrierId] or s.carrierId] end
@@ -2033,7 +2048,7 @@ function O:restoreCore(core, context)
         if carrier ~= nil and live ~= nil and claimed[carrier.carrierId] then
             retainHistorical(self, s, "RESTORE_SUPERSEDED", bindingOf[s.carrierId])
             superseded = superseded + 1
-        elseif carrier ~= nil and live ~= nil and self.stocks[s.stockId] == nil and nativeAmount == s.observedAmount and SGValues.equal(nativeMaterial, s.materialRef) then
+        elseif carrier ~= nil and live ~= nil and self.stocks[s.stockId] == nil and sameAmount(carrier, nativeAmount, s.observedAmount) and SGValues.equal(nativeMaterial, s.materialRef) then
             claimed[carrier.carrierId] = true
             -- Reattach: identity, generation, properties and causes carried; native quantity stands.
             self.stocks[live.stockId] = nil

@@ -1133,6 +1133,18 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         if kind == A.KIND_BALER_PICKUP or kind == A.KIND_BALER_OVERFLOW then return nil, "NOT_RESTORABLE" end
         return nil, "DESCRIPTOR"
     end
+    --- [MAINTENANCE row 206] The quantity as native saves it, for the kinds whose level the
+    --- engine writes as an XMLValueType.FLOAT: a fill unit (FillUnit.lua:138, :438), a storage
+    --- (Storage.lua:26) and a Combine delay or straw slot (SGCombineBufferSave's own FLOAT path).
+    --- SG-1's restore compares the saved and the reloaded level through it, so a level the
+    --- writer rounded still reattaches, exactly. Other kinds give nil and compare as numbers.
+    spec.restoredQuantityImage = function(binding, amount)
+        local kind = kindOf(binding)
+        if kind == A.KIND_FILL_UNIT or kind == A.KIND_STORAGE or kind == A.KIND_DELAY_SLOT or kind == A.KIND_STRAW_SLOT then
+            return SGValues.nativeFloatImage(amount)
+        end
+        return nil
+    end
     spec.enumerateCarriers = function()
         local out = {}
         for _, e in ipairs(kinds[A.KIND_STORAGE].enumerateCarriers()) do out[#out + 1] = e end
