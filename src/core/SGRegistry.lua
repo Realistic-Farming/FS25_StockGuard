@@ -124,7 +124,8 @@ function G:registerCarrierAdapter(adapterId, spec)
     if not isFn(spec.resolveCarrier) or not isFn(spec.readNativeState) or not isFn(spec.enumerateCarriers) or not isFn(spec.hasAccess) then
         return nil, "CALLBACKS"
     end
-    if not optFn(spec.resolveAlias) or not optFn(spec.restoreBinding) or not optFn(spec.onCarrierBindingChanged) or not optFn(spec.getNavigationCarrierId) then
+    if not optFn(spec.resolveAlias) or not optFn(spec.restoreBinding) or not optFn(spec.onCarrierBindingChanged) or not optFn(spec.getNavigationCarrierId)
+       or not optFn(spec.restoredQuantityImage) then
         return nil, "OPTIONAL_CALLBACKS"
     end
     return issue(self, G.KIND_CARRIER_ADAPTER, adapterId, spec)

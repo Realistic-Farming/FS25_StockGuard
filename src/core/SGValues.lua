@@ -34,6 +34,40 @@ V.isFinite = isFinite
 local function isInteger(n) return isFinite(n) and n == math.floor(n) and math.abs(n) < V.INTEGER_LIMIT end
 V.isInteger = isInteger
 
+--- [MAINTENANCE row 206] The quantity the engine's float XML writer saves for x, as an integer
+--- count of millionths: x rounded to float32 (24 significant bits, ties to even), then to six
+--- decimals (ties to even). That is how the engine writes an XMLValueType.FLOAT, measured from
+--- its own save files (every fillLevel is the six-decimal rendering of its float32; ties go to
+--- even). A level read back from that text, as a float32 or as a double, has the same image as
+--- the level that was written, so comparing images compares the quantity as native saved it.
+--- Pure arithmetic: no string.format (fengari rounds a tie up), no string.pack (absent in the
+--- game's Lua 5.1), no math.frexp. A module function, not a file local: the benches
+--- concatenate the sources into one chunk, which holds at most 200 locals.
+---@return number|nil the integer count of millionths, nil for a non-number or a non-finite one
+function V.nativeFloatImage(x)
+    if not isFinite(x) then return nil end
+    local sign = 1
+    if x < 0 then sign, x = -1, -x end
+    -- Below float32's normal range the six decimals are 0 whatever float32 does.
+    if x < 2 ^ -126 then return 0 end
+    if x >= 2 ^ 128 then return nil end
+    local function halfEven(v)
+        local r = math.floor(v)
+        local f = v - r
+        if f > 0.5 or (f == 0.5 and r % 2 == 1) then r = r + 1 end
+        return r
+    end
+    -- float32: scale by powers of two into [2^23, 2^24), round, scale back. Every step is exact.
+    local m, e = x, 0
+    while m >= 16777216 do m, e = m / 2, e + 1 end
+    while m < 8388608 do m, e = m * 2, e - 1 end
+    local y = halfEven(m)
+    while e > 0 do y, e = y * 2, e - 1 end
+    while e < 0 do y, e = y / 2, e + 1 end
+    -- six decimals: 24 significant bits times 10^6 (20 bits) is exact in a double.
+    return sign * halfEven(y * 1000000) + 0
+end
+
 --- Integer to a lossless decimal string (no exponent, no ".0").
 local function integerToken(n)
     return string.format("%d", n)

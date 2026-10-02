@@ -491,6 +491,11 @@ function S:stageLoad(payload, context)
         self.farmRestore = { receipts = copy(e.farmRestore.receipts), pendingUnits = copy(e.farmRestore.pendingUnits) }
     end
     result.core = self.operations:restoreCore(e.coreValues, context)
+    -- [MAINTENANCE row 206] The restore's counts, once per load: the line an in-game check
+    -- reads, since nothing in the game shows a stock's knowledge.
+    local rc = result.core or {}
+    log(string.format("restored stocks: %d reattached, %d mismatched (RESTORE_MISMATCH), %d kept as history, %d superseded",
+        rc.restored or 0, rc.unknown or 0, rc.historical or 0, rc.superseded or 0))
     -- Member sections as coupled dependency sets.
     local pending = {}
     for _, id in ipairs(e.initializedSections) do pending[id] = e.sections[id] end
