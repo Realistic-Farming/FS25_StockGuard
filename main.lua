@@ -139,6 +139,8 @@ local function installNativeKernel(mission)
         sg.operations:setRetiredClass("windrowerArea", SGNativeAdapters.isWindrowerAreaKey)
         -- SG2-5b: every emptying drop of a Tedder buffer retires a stock (Bob's 5b Q1).
         sg.operations:setRetiredClass("tedderBuffer", SGNativeAdapters.isTedderBufferKey)
+        -- SG2-5c: so does every emptying drop of a Mower buffer (Bob's 5c ruling, condition 1).
+        sg.operations:setRetiredClass("mowerBuffer", SGNativeAdapters.isMowerBufferKey)
         -- SG2-5d-b: every Baler tick retires a pickup stock, and an overflow retires at each overwrite.
         sg.operations:setRetiredClass("balerPickup", SGNativeAdapters.isBalerPickupKey)
         sg.operations:setRetiredClass("balerOverflow", SGNativeAdapters.isBalerOverflowKey)

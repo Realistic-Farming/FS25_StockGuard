@@ -174,6 +174,10 @@ function H:teardown()
     if SGNativeAdapters ~= nil and type(SGNativeAdapters.tedderBuffers) == "table" then
         for k in pairs(SGNativeAdapters.tedderBuffers) do SGNativeAdapters.tedderBuffers[k] = nil end
     end
+    -- SG2-5c: and the Mower's drop-area buffers.
+    if SGNativeAdapters ~= nil and type(SGNativeAdapters.mowerBuffers) == "table" then
+        for k in pairs(SGNativeAdapters.mowerBuffers) do SGNativeAdapters.mowerBuffers[k] = nil end
+    end
     -- SG2-5d-b: the Baler's carriers and open ticks go with the mission too.
     if SGNativeAdapters ~= nil then
         for _, t in ipairs({ SGNativeAdapters.balerPickups, SGNativeAdapters.balerOverflows }) do
@@ -418,6 +422,10 @@ function H:onVehicleRemoved(vehicle)
     -- SG2-5b: a live Tedder remainder is destruction too (SG-2 :136), retired through a REMOVE.
     if SGGroundObserver ~= nil and type(SGGroundObserver.retireTedderBuffers) == "function" then
         SGGroundObserver.retireTedderBuffers(self, vehicle)
+    end
+    -- SG2-5c: so is a live Mower remainder.
+    if SGGroundObserver ~= nil and type(SGGroundObserver.retireMowerBuffers) == "function" then
+        SGGroundObserver.retireMowerBuffers(self, vehicle)
     end
     -- SG2-5d-b: a live Baler overflow is destruction too, and an open tick closes.
     if SGGroundObserver ~= nil and type(SGGroundObserver.retireBalerCarriers) == "function" then
@@ -1081,7 +1089,9 @@ function H.installClassHooks(classes)
     if SGNativeMaterialSave ~= nil then SGNativeMaterialSave.installClassHooks({ SavegameController = classes.SavegameController, Combine = classes.Combine }) end
     -- SG2-4b: the Shovel and Leveler work listeners and the class half of the Leveler callback.
     -- SG2-5d-b: and the Baler's three listeners.
-    if SGGroundObserver ~= nil then SGGroundObserver.installClassHooks({ Leveler = classes.Leveler, Shovel = classes.Shovel, Dischargeable = classes.Dischargeable, Baler = classes.Baler }) end
+    -- SG2-5c: and the meadow preparation read of the Mower's witness, on this map load's util.
+    if SGGroundObserver ~= nil then SGGroundObserver.installClassHooks({ Leveler = classes.Leveler, Shovel = classes.Shovel, Dischargeable = classes.Dischargeable, Baler = classes.Baler,
+        FSDensityMapUtil = classes.FSDensityMapUtil }) end
     -- SG2-4b2: the WHEEL frame on WheelDestruction's class slot, read from the live class at
     -- each mission's install (the class is re-sourced with every map load).
     if SGGroundBrush ~= nil then SGGroundBrush.installClassHooks({ WheelDestruction = classes.WheelDestruction }) end

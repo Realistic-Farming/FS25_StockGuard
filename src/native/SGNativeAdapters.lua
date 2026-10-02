@@ -72,6 +72,10 @@ A.WINDROWER_AREA_PROFILE = "NATIVE_WINDROWER_AREA_V1"
 -- material that rides into later passes and calls (SG-2 :296, :684), so this carrier persists.
 A.KIND_TEDDER_BUFFER = "tedderBuffer"
 A.TEDDER_BUFFER_PROFILE = "NATIVE_TEDDER_BUFFER_V1"
+-- SG2-5c: a Mower drop area's retained buffer, dropArea.litersToDrop (Mower.lua:358-367, :398): real
+-- material that waits across ticks until a drop takes it (SG-2 :245-247), so this carrier persists.
+A.KIND_MOWER_BUFFER = "mowerBuffer"
+A.MOWER_BUFFER_PROFILE = "NATIVE_MOWER_BUFFER_V1"
 -- SG2-5d-b: a Baler's pickups within one work-area tick, between the cells and the one add
 -- (Baler.lua:1954-2009): live only while the BALER frame is open, like the windrower area.
 A.KIND_BALER_PICKUP = "balerPickup"
@@ -811,6 +815,89 @@ function A.tedderBufferKind(vehicles)
     return spec
 end
 
+-- ── Mower drop-area buffers (SG2-5c) ─────────────────────────────────────────
+--
+-- PERSISTENT AND NATIVE-BACKED (Bob's 5c ruling, condition 1, 5b's pattern). A Mower work area's
+-- cut adds its output to its drop area's litersToDrop and overwrites the area's fillType
+-- (Mower.lua:358-360); a GRASS_WINDROW output also takes the dry grass under the work area into it
+-- (:361-365), and the area is capped at 1000 L (:366-367). Each processDropArea call tips part of it
+-- and keeps the rest (:383-405). One carrier per drop area, keyed by the drop area's work-area index,
+-- bound at the first positive cut and live across calls. Its native amount is litersToDrop exactly,
+-- with no epsilon of its own; its material is the drop area's fillType. It is withdrawn when it
+-- empties at a frame's close, retired as destruction when its vehicle goes (SG-2 :136), never
+-- enumerated, never restored and never saved: :144's and :247's save is 5bc-save, and a reload
+-- retires it as native discards it (Mower:loadWorkAreaFromXML sets litersToDrop to 0, :481-482).
+
+A.mowerBuffers = A.mowerBuffers or {}
+
+function A.mowerBufferComponentKey(index)
+    return A.KIND_MOWER_BUFFER .. ":" .. tostring(index)
+end
+
+function A.mowerBufferBinding(vehicle, index)
+    if type(vehicle) ~= "table" or type(index) ~= "number" then return nil end
+    local ownerKey = persistentIdOf(vehicle)
+    if ownerKey == nil then return nil end
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.mowerBufferComponentKey(index), A.MOWER_BUFFER_PROFILE,
+        { kind = A.KIND_MOWER_BUFFER, workAreaIndex = index, configFileName = type(vehicle.configFileName) == "string" and vehicle.configFileName or "" })
+end
+
+--- Is this carrier key a Mower drop-area buffer of the native adapter?
+function A.isMowerBufferKey(carrierKey)
+    local prefix = A.KIND_MOWER_BUFFER .. ":"
+    return type(carrierKey) == "table" and carrierKey.adapterId == A.NATIVE_ADAPTER_ID
+        and type(carrierKey.componentKey) == "string" and carrierKey.componentKey:sub(1, #prefix) == prefix
+end
+
+--- The Mower buffer KIND of the native adapter.
+---@param vehicles function  () -> list of vehicles
+function A.mowerBufferKind(vehicles)
+    local spec = {}
+
+    spec.resolveCarrier = function(binding)
+        if not isServer() then return nil, "CLIENT" end
+        if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil, "BINDING" end
+        local d = binding.sourceDescriptor
+        if type(d) ~= "table" or d.kind ~= A.KIND_MOWER_BUFFER or type(d.workAreaIndex) ~= "number" then return nil, "DESCRIPTOR" end
+        if binding.carrierKey.componentKey ~= A.mowerBufferComponentKey(d.workAreaIndex) then return nil, "DESCRIPTOR" end
+        local entry = A.mowerBuffers[SGRecords.carrierKeyString(binding.carrierKey)]
+        if entry == nil then return nil, "NOT_BOUND" end
+        local vehicle = vehicleOf(vehicles, binding.carrierKey.nativeOwnerKey)
+        if vehicle == nil or vehicle ~= entry.vehicle then return nil, "VEHICLE_ABSENT" end
+        local areas = type(vehicle.spec_workArea) == "table" and vehicle.spec_workArea.workAreas or nil
+        if type(areas) ~= "table" or areas[d.workAreaIndex] ~= entry.dropArea then return nil, "WORK_AREA_ABSENT" end
+        return { vehicle = vehicle, entry = entry }
+    end
+
+    --- litersToDrop exactly, as the drop area's fillType.
+    spec.readNativeState = function(binding, native)
+        if not isServer() then return nil, "CLIENT" end
+        if type(native) ~= "table" or type(native.entry) ~= "table" or type(native.vehicle) ~= "table" then return nil, "NATIVE" end
+        local level = native.entry.dropArea.litersToDrop
+        if type(level) ~= "number" or level ~= level or level < 0 then return nil, "LEVEL" end
+        local name = level > 0 and fillTypeNameOf(native.entry.dropArea.fillType) or nil
+        if level > 0 and name == nil then return nil, "FILL_TYPE_UNNAMED" end
+        return {
+            materialRef = name ~= nil and { kind = "FILL_TYPE", fillTypeName = name } or nil,
+            amount = level,
+            unit = A.UNIT,
+            ownerFarmId = ownerFarmOf(native.vehicle),
+            storeKind = "vehicle_buffer",
+            nativeUniqueId = persistentIdOf(native.vehicle),
+        }
+    end
+
+    spec.enumerateCarriers = function() return {} end
+
+    spec.hasAccess = function(binding, actor)
+        local native = spec.resolveCarrier(binding)
+        if native == nil then return false end
+        return actorCanAccess(actor, native.vehicle)
+    end
+
+    return spec
+end
+
 -- ── Baler pickups (SG2-5d-b) ─────────────────────────────────────────────────
 --
 -- LIVE ONLY (Bob's 5d shape ruling, the frame). A Baler's pickups in one work-area tick lie
@@ -1085,13 +1172,14 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         [A.KIND_GROUND] = A.groundKind(samplers),
         [A.KIND_WINDROWER_AREA] = A.windrowerAreaKind(vehicles),
         [A.KIND_TEDDER_BUFFER] = A.tedderBufferKind(vehicles),
+        [A.KIND_MOWER_BUFFER] = A.mowerBufferKind(vehicles),
         [A.KIND_BALER_PICKUP] = A.balerPickupKind(vehicles),
         [A.KIND_BALER_OVERFLOW] = A.balerOverflowKind(vehicles),
     }
     local spec = {
         version        = A.ADAPTER_VERSION,
         carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT, A.KIND_GROUND, A.KIND_WINDROWER_AREA, A.KIND_TEDDER_BUFFER,
-                          A.KIND_BALER_PICKUP, A.KIND_BALER_OVERFLOW },
+                          A.KIND_MOWER_BUFFER, A.KIND_BALER_PICKUP, A.KIND_BALER_OVERFLOW },
         materialGroups = { A.BALER_OVERFLOW_GROUP },
         kinds          = kinds,
     }
@@ -1128,6 +1216,8 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         -- A Tedder buffer is not saved yet (SG-2 :144 is a later slice): a reload retires it, as
         -- native zeroes litersToDrop at load (Tedder.lua:242).
         if kind == A.KIND_TEDDER_BUFFER then return nil, "NOT_RESTORABLE" end
+        -- A Mower buffer likewise: its save is 5bc-save (SG-2 :144, :247); native zeroes it at load.
+        if kind == A.KIND_MOWER_BUFFER then return nil, "NOT_RESTORABLE" end
         -- A Baler pickup lives only inside one work-area tick; the overflow's save is 5e's (SG-2
         -- :477): a reload retires it, as native discards it.
         if kind == A.KIND_BALER_PICKUP or kind == A.KIND_BALER_OVERFLOW then return nil, "NOT_RESTORABLE" end

@@ -31,12 +31,28 @@
 -- (SoilFertilityManager:getSoilValueAtWorld, which returns nil when unavailable) split
 -- a state into Soil cells, keyed by Soil's own grain. Without it a state is one portion
 -- with no Soil snapshot: StockGuard never depends on Soil being installed.
+--
+-- THE WITNESS A FRAME NAMES (SG2-5c; Bob's 5c ruling, Q4). The cutter call records onto its
+-- own witness entry (SGHarvestCapture.activeEntry), unchanged. A Mower's frame names its own
+-- target in CS.target for the length of its processMowerArea call, and the same reading runs
+-- there under MOWER_STATE_VOLUME_V1 (SG-2 :513-517): updateMowerArea delegates to cutFruitArea
+-- (FSDensityMapUtil.lua:1919), so the capture is taken before the inner cut and after the
+-- meadow preparation (:1888-1917), and admitted only when the weighted sum matches the scaled
+-- area the cut returned. A target may ask to hear each cut (afterCut).
+-- PREPARED FOLIAGE (:515, "unattributable prepared foliage remains unknown origin"). With the
+-- target set, updateMowerArea is wrapped too: when it runs the meadow preparation for a MEADOW
+-- cut (not limitToField, :1913), the pixels are read before it, and a pixel the preparation
+-- changed is counted at its prepared state into the weighted sum (native harvests it so) but
+-- grouped apart as prepared, with no origin.
 
 SGCutState = SGCutState or {}
 local CS = SGCutState
 
 CS.PROFILE = "CUT_STATE_VOLUME_V1"
+CS.MOWER_PROFILE = "MOWER_STATE_VOLUME_V1"
 CS.HOOK_ID = "cutState"        -- its SGClassHook site on FSDensityMapUtil.cutFruitArea
+CS.PREP_HOOK_ID = "mowerPrep"  -- its SGClassHook site on FSDensityMapUtil.updateMowerArea
+CS.target = nil                -- the witness a Mower frame names for its call (SG2-5c)
 CS.MARGIN_PIXELS = 1
 CS.MAX_PIXELS = 4096          -- a cutter call's envelope is a thin strip; more is a refusal
 CS.TOLERANCE = 1e-6
@@ -54,10 +70,13 @@ local function logOnce(key, fmt, ...)
     print("[StockGuard] harvest: " .. string.format(fmt, ...))
 end
 
-local function refuse(reason, detail)
+--- A refusal under `profile` (the cutter's CUT_STATE_VOLUME_V1 unless a target names its own).
+local function refuse(reason, detail, profile)
+    profile = profile or CS.PROFILE
     CS.stats.refused[reason] = (CS.stats.refused[reason] or 0) + 1
-    logOnce("refused:" .. reason, "CUT_STATE_VOLUME_V1 refused a cut (%s)%s; that cut's output is an UNKNOWN portion. Logged once per reason.",
-        reason, detail or "")
+    local key = profile == CS.PROFILE and ("refused:" .. reason) or (profile .. ":refused:" .. reason)
+    logOnce(key, "%s refused a cut (%s)%s; that cut's output is an UNKNOWN portion. Logged once per reason.",
+        profile, reason, detail or "")
     return { admitted = false, reason = reason, detail = detail }
 end
 
@@ -99,15 +118,49 @@ local function soilAt(x, z)
     return snapshot, grain
 end
 
+--- The pixel box of a parallelogram on the grid: its corners' bounding box plus a margin,
+--- in pixel indices. nil when the box passes MAX_PIXELS.
+local function pixelBox(g, sx, sz, wx, wz, hx, hz)
+    local x4, z4 = wx + hx - sx, wz + hz - sz
+    local margin = CS.MARGIN_PIXELS * g.pixel
+    local x0, x1 = math.min(sx, wx, hx, x4) - margin, math.max(sx, wx, hx, x4) + margin
+    local z0, z1 = math.min(sz, wz, hz, z4) - margin, math.max(sz, wz, hz, z4) + margin
+    local i0, i1 = math.floor((x0 + g.half) / g.pixel), math.floor((x1 + g.half) / g.pixel)
+    local j0, j1 = math.floor((z0 + g.half) / g.pixel), math.floor((z1 + g.half) / g.pixel)
+    if (i1 - i0 + 1) * (j1 - j0 + 1) > CS.MAX_PIXELS then return nil end
+    return i0, i1, j0, j1
+end
+
+--- [SG2-5c] Every pixel of a parallelogram's box as "fruit|state", before the meadow
+--- preparation (header, PREPARED FOLIAGE). nil when the plane or the box is unavailable.
+function CS.snapshot(sx, sz, wx, wz, hx, hz)
+    local g = grid()
+    if g == nil then return nil end
+    local i0, i1, j0, j1 = pixelBox(g, sx, sz, wx, wz, hx, hz)
+    if i0 == nil then return nil end
+    local out = {}
+    for i = i0, i1 do
+        for j = j0, j1 do
+            local fruit, state = readPoint(g, -g.half + (i + 0.5) * g.pixel, -g.half + (j + 0.5) * g.pixel)
+            out[i .. ":" .. j] = tostring(fruit) .. "|" .. tostring(state)
+        end
+    end
+    return out
+end
+
 --- Before the native cut: every pixel centre of the envelope's bounding box plus a
 --- margin, with its fruit, state and Soil snapshot. Returns the capture, or a refusal.
+--- The profile names the reading (the cutter's by default); prior is the call's snapshot
+--- from before the meadow preparation (SG2-5c), false when it could not be read, nil when
+--- none was asked for.
 ---@return table
-function CS.before(fruitIndex, sx, sz, wx, wz, hx, hz, useMinForageState)
+function CS.before(fruitIndex, sx, sz, wx, wz, hx, hz, useMinForageState, profile, prior)
     CS.stats.calls = CS.stats.calls + 1
     local desc = g_fruitTypeManager ~= nil and g_fruitTypeManager:getFruitTypeByIndex(fruitIndex) or nil
-    if desc == nil then return refuse("NO_FRUIT") end
+    if desc == nil then return refuse("NO_FRUIT", nil, profile) end
     local g = grid()
-    if g == nil then return refuse("NO_PLANE") end
+    if g == nil then return refuse("NO_PLANE", nil, profile) end
+    if prior == false then return refuse("PREPARATION_UNREADABLE", nil, profile) end
     local minState = useMinForageState and desc.minForageGrowthState or desc.minHarvestingGrowthState
     local maxState = desc.maxHarvestingGrowthState
     local transitions = type(desc.harvestTransitions) == "table" and desc.harvestTransitions or {}
@@ -115,16 +168,11 @@ function CS.before(fruitIndex, sx, sz, wx, wz, hx, hz, useMinForageState)
     -- A target that is itself a harvestable source could be cut twice in one call.
     for src, target in pairs(transitions) do
         if src >= minState and src <= maxState and target >= minState and target <= maxState and transitions[target] ~= nil then
-            return refuse("RECUT_POSSIBLE")
+            return refuse("RECUT_POSSIBLE", nil, profile)
         end
     end
-    local x4, z4 = wx + hx - sx, wz + hz - sz
-    local margin = CS.MARGIN_PIXELS * g.pixel
-    local x0, x1 = math.min(sx, wx, hx, x4) - margin, math.max(sx, wx, hx, x4) + margin
-    local z0, z1 = math.min(sz, wz, hz, z4) - margin, math.max(sz, wz, hz, z4) + margin
-    local i0, i1 = math.floor((x0 + g.half) / g.pixel), math.floor((x1 + g.half) / g.pixel)
-    local j0, j1 = math.floor((z0 + g.half) / g.pixel), math.floor((z1 + g.half) / g.pixel)
-    if (i1 - i0 + 1) * (j1 - j0 + 1) > CS.MAX_PIXELS then return refuse("ENVELOPE_TOO_LARGE") end
+    local i0, i1, j0, j1 = pixelBox(g, sx, sz, wx, wz, hx, hz)
+    if i0 == nil then return refuse("ENVELOPE_TOO_LARGE", nil, profile) end
     local pixels, scales = {}, {}
     for i = i0, i1 do
         for j = j0, j1 do
@@ -134,22 +182,27 @@ function CS.before(fruitIndex, sx, sz, wx, wz, hx, hz, useMinForageState)
                 -- The state's own validated scale, or no profile for this call.
                 local scale = scaleTable[state]
                 if type(scale) ~= "number" or scale ~= scale or scale < 0 or scale == math.huge then
-                    return refuse("YIELD_SCALE_UNAVAILABLE", string.format(", growth state %d of fruit %d has no yieldScales entry", state, fruitIndex))
+                    return refuse("YIELD_SCALE_UNAVAILABLE", string.format(", growth state %d of fruit %d has no yieldScales entry", state, fruitIndex), profile)
                 end
                 scales[state] = scale
                 local soil, grain = soilAt(cx, cz)
-                pixels[#pixels + 1] = { x = cx, z = cz, state = state, target = transitions[state], soil = soil, grain = grain }
+                -- A pixel the preparation changed has no origin of its own (:515).
+                local prepared = nil
+                if type(prior) == "table" and prior[i .. ":" .. j] ~= (tostring(fruit) .. "|" .. tostring(state)) then prepared = true end
+                pixels[#pixels + 1] = { x = cx, z = cz, state = state, target = transitions[state], soil = soil, grain = grain, prepared = prepared }
             end
         end
     end
-    return { admitted = nil, fruitIndex = fruitIndex, grid = g, pixels = pixels, scales = scales }
+    return { admitted = nil, fruitIndex = fruitIndex, grid = g, pixels = pixels, scales = scales, profile = profile }
 end
 
 --- After the native cut: keep the pixels that made their harvest transition, group
 --- them by state and Soil cell, and admit the profile only on the native's own total.
+--- A prepared pixel counts into the total at its state and is grouped apart (SG2-5c).
 ---@param returnedArea number  the scaled area the native call returned
 function CS.after(cap, returnedArea)
     if cap == nil or cap.admitted == false then return cap end
+    local profile = cap.profile or CS.PROFILE
     local g = cap.grid
     local groups, order, sum = {}, {}, 0
     for _, p in ipairs(cap.pixels) do
@@ -159,10 +212,10 @@ function CS.after(cap, returnedArea)
             if p.soil ~= nil and p.grain ~= nil then
                 cell = tostring(math.floor((p.x + g.half) / p.grain)) .. ":" .. tostring(math.floor((p.z + g.half) / p.grain))
             end
-            local key = tostring(p.state) .. "|" .. cell
+            local key = tostring(p.state) .. "|" .. cell .. (p.prepared and "|prepared" or "")
             local grp = groups[key]
             if grp == nil then
-                grp = { state = p.state, cell = cell, pixels = 0, yieldScale = cap.scales[p.state], soil = p.soil }
+                grp = { state = p.state, cell = cell, pixels = 0, yieldScale = cap.scales[p.state], soil = p.soil, prepared = p.prepared }
                 groups[key] = grp
                 order[#order + 1] = key
             end
@@ -171,7 +224,7 @@ function CS.after(cap, returnedArea)
         end
     end
     if type(returnedArea) ~= "number" or math.abs(sum - returnedArea) > CS.TOLERANCE * math.max(1, returnedArea) then
-        return refuse("CUT_STATE_BASIS_MISMATCH", string.format(", observed %s against native %s", tostring(sum), tostring(returnedArea)))
+        return refuse("CUT_STATE_BASIS_MISMATCH", string.format(", observed %s against native %s", tostring(sum), tostring(returnedArea)), profile)
     end
     local out = {}
     for _, key in ipairs(order) do
@@ -180,37 +233,69 @@ function CS.after(cap, returnedArea)
         out[#out + 1] = grp
     end
     CS.stats.admitted = CS.stats.admitted + 1
-    logOnce("admitted", "FIRST CUT_STATE_VOLUME_V1 CUT ADMITTED: %d state/Soil portion(s) matched the native's own area %s. Cut output now carries its source states.",
-        #out, tostring(returnedArea))
+    logOnce(profile == CS.PROFILE and "admitted" or (profile .. ":admitted"),
+        "FIRST %s CUT ADMITTED: %d state/Soil portion(s) matched the native's own area %s. Cut output now carries its source states.",
+        profile, #out, tostring(returnedArea))
     return { admitted = true, fruitIndex = cap.fruitIndex, groups = out, weightSum = sum }
 end
 
+--- The witness entry the current cut records onto: a Mower frame's own target (SG2-5c),
+--- else the cutter call's entry. nil outside both.
+function CS.currentEntry()
+    if CS.target ~= nil then return CS.target end
+    return SGHarvestCapture ~= nil and SGHarvestCapture.activeEntry or nil
+end
+
 --- Bracket the engine's cutFruitArea table function (mechanism 4: the Cutter calls it
---- by table lookup, Cutter.lua:600), recording onto the witness entry of the cutter call
---- it runs inside. Outside a cutter call it is the native function, untouched.
+--- by table lookup, Cutter.lua:600, and updateMowerArea at FSDensityMapUtil.lua:1921),
+--- recording onto the witness entry of the call it runs inside. Outside one it is the
+--- native function, untouched.
 function CS.installOn(util)
     if type(util) ~= "table" or type(util.cutFruitArea) ~= "function" then return false end
     local packn = function(...) return select("#", ...), { ... } end
     -- One wrapper for the process, rebound by every install (SGClassHook, MAINTENANCE row
     -- 187): after a mods reload it reads the NEW SGHarvestCapture's active entry.
     return SGClassHook.wrap(util, "cutFruitArea", CS.HOOK_ID, function(original, fruitIndex, sx, sz, wx, wz, hx, hz, destroySpray, useMinForageState, ...)
-        local entry = SGHarvestCapture ~= nil and SGHarvestCapture.activeEntry or nil
+        local entry = CS.currentEntry()
         local cap = nil
         if entry ~= nil and g_server ~= nil then
-            local ok, result = pcall(CS.before, fruitIndex, sx, sz, wx, wz, hx, hz, useMinForageState)
+            local ok, result = pcall(CS.before, fruitIndex, sx, sz, wx, wz, hx, hz, useMinForageState, entry.profile, entry.prepSnapshot)
             if ok then cap = result end
         end
         local n, r = packn(pcall(original, fruitIndex, sx, sz, wx, wz, hx, hz, destroySpray, useMinForageState, ...))
+        local result = nil
         if cap ~= nil and r[1] then
-            local ok, result = pcall(CS.after, cap, r[2])
-            if ok and result ~= nil then
+            local ok, res = pcall(CS.after, cap, r[2])
+            if ok and res ~= nil then
+                result = res
                 entry.cutStates = entry.cutStates or {}
                 -- Only a call that cut something is a source; the Cutter stops at the
                 -- first fruit with a positive area (Cutter.lua:600-602).
                 if type(r[2]) == "number" and r[2] > 0 then entry.cutStates[#entry.cutStates + 1] = result end
             end
         end
+        -- SG2-5c: a Mower frame hears each of its cuts as it returns.
+        if entry ~= nil and r[1] and type(entry.afterCut) == "function" then
+            local ok, err = pcall(entry.afterCut, entry, fruitIndex, r[2], result)
+            if not ok then logOnce("afterCut", "a mower frame failed at its cut (%s)", tostring(err)) end
+        end
         if not r[1] then error(r[2], 0) end
         return unpack(r, 2, n)
+    end, CS) == "INSTALLED"
+end
+
+--- [SG2-5c] Bracket updateMowerArea (mechanism 4: Mower.lua:346 calls it by table lookup):
+--- inside a Mower frame that asks for it, the first call of the frame that runs the meadow
+--- preparation (not limitToField, FSDensityMapUtil.lua:1916) reads the pixels before it.
+--- Anywhere else it is the native function, untouched.
+function CS.installPrep(util)
+    if type(util) ~= "table" or type(util.updateMowerArea) ~= "function" then return false end
+    return SGClassHook.wrap(util, "updateMowerArea", CS.PREP_HOOK_ID, function(original, fruitType, sx, sz, wx, wz, hx, hz, limitToField, ...)
+        local t = CS.target
+        if t ~= nil and t.wantsPrep and t.prepSnapshot == nil and not limitToField and g_server ~= nil then
+            local ok, snap = pcall(CS.snapshot, sx, sz, wx, wz, hx, hz)
+            t.prepSnapshot = (ok and snap ~= nil) and snap or false
+        end
+        return original(fruitType, sx, sz, wx, wz, hx, hz, limitToField, ...)
     end, CS) == "INSTALLED"
 end
