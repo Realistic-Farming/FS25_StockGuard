@@ -21,8 +21,9 @@
 --     updateDiscHarrowArea :883, updateGrassRollerArea :448, updateMulcherArea :1879,
 --     updateDirectSowingArea :2303, and the plow through updateDestroyCommonArea (:1012,
 --     then :1202); the weeder's windrow removal (:1637-1638). (:243's premise that the plow
---     is an empty C++ stub is stale for 1.24. Plain updateSowingArea, :1998-2110, makes no
---     Lua clear: its process*Area profile is NOT carried here.)
+--     is an empty C++ stub is stale for 1.24, as Design's 2026-10-03 clarification records.
+--     Plain updateSowingArea, :1998-2110, makes no Lua clear: its process*Area profile is the
+--     sowing profile below.)
 --   * ManureHeap :76, PlaceableClearAreas :65, Landscaping :248, the console clear
 --     (DensityMapHeightManager :754), a restored destructible (DestructibleMapObjectSystem
 --     :204, a DensityMapCircle).
@@ -66,6 +67,8 @@ R.CONVERT = { changeFillTypeAtArea = true }
 
 R.wraps = R.wraps      -- { table, entries = { name -> { original, wrapper } } } while installed
 R.stats = R.stats or { calls = 0, untracked = 0, removed = 0, abandoned = 0, unobserved = {}, faults = {}, refused = {} }
+R.sowStats = R.sowStats or { calls = 0, untracked = 0, removed = 0, abandoned = 0, unobserved = {}, faults = {}, refused = {} }
+R.profiles = R.profiles or {}   -- the sowing profiles open around a native call, innermost last
 R.logged = R.logged or {}
 
 local function packn(...) return select("#", ...), { ... } end
@@ -125,6 +128,10 @@ function R.after(host, pre, ok)
         if G.trackedId(sampler, ch.x, ch.z) ~= nil then tracked[#tracked + 1] = ch end
     end
     if #tracked == 0 then return end
+    -- A sowing profile open around this call never judges these cells again (no double retirement).
+    for _, profile in ipairs(R.profiles) do
+        for _, ch in ipairs(tracked) do profile.accounted[ch.key] = true end
+    end
     if not ok then
         count(R.stats.refused, "NATIVE_ERROR")
         G.reconcileChanges(host, sampler, changes)
@@ -150,16 +157,18 @@ end
 
 --- Abandon the tracked changed cells with their actual after-states standing.
 function R.abandon(host, pre, after, tracked, reason)
+    local stats = pre.stats or R.stats
     local keys = {}
     for _, ch in ipairs(tracked) do keys[#keys + 1] = ch.key end
-    count(R.stats.refused, reason)
-    R.stats.abandoned = R.stats.abandoned + 1
+    count(stats.refused, reason)
+    stats.abandoned = stats.abandoned + 1
     local n = B.abandonCells(host, pre, after, keys, R.CONVERT[pre.name] and "CONVERT" or "REMOVE", reason)
     host.lastAreaOperation = { method = pre.name, outcome = "ABANDONED", reason = reason, cells = n }
 end
 
 --- One REMOVE operation retiring each tracked cell's actual removed quantity as DESTROYED.
 function R.retire(host, pre, after, tracked)
+    local stats = pre.stats or R.stats
     local sampler = pre.sampler
     local capture, afters, legs, removed = {}, {}, {}, 0
     for _, ch in ipairs(tracked) do
@@ -178,17 +187,115 @@ function R.retire(host, pre, after, tracked)
     if #capture == 0 then return end
     local cap, whyC = host.handle.captureOperation(host.nativeLease, "REMOVE", capture)
     if cap == nil then
-        count(R.stats.refused, "CAPTURE:" .. tostring(whyC))
+        count(stats.refused, "CAPTURE:" .. tostring(whyC))
         G.reconcileChanges(host, sampler, tracked)
         return
     end
     local e = pre.envelope
-    local evidence = { nativePath = "GROUND_AREA_" .. string.upper(pre.name), method = pre.name, removed = removed, cells = #capture,
+    local evidence = { nativePath = pre.nativePath or ("GROUND_AREA_" .. string.upper(pre.name)), method = pre.name, removed = removed, cells = #capture,
                        envelope = { x0 = e.x0, z0 = e.z0, x1 = e.x1, z1 = e.z1 } }
     local report = { participantsAfter = afters, allocations = legs, outcomeEvidence = evidence }
     local outcome, reason = host.handle.settleOperation(cap.handle, report)
-    R.stats.removed = R.stats.removed + 1
+    stats.removed = stats.removed + 1
     host.lastAreaOperation = { method = pre.name, outcome = outcome, reason = reason, removed = removed, cells = #capture, evidence = evidence, report = report }
+end
+
+-- ---------------------------------------------------------
+-- The sowing Destruction profile (SG-2 :243 as corrected 2026-10-03, :177)
+-- ---------------------------------------------------------
+-- Plain FSDensityMapUtil.updateSowingArea (:1998-2110) makes no Lua height call, and that
+-- absence proves neither an unseen C++ clear nor no clearing (the 2026-10-03 source
+-- clarification). So the sowing machine's own process call is bracketed with the same before
+-- and after cell sample the shovel and leveler profiles use, over its work area's
+-- parallelogram (the start, width and height nodes the native call reads, SowingMachine.lua
+-- :394-396), as a bounding box plus one pixel; no read when that box holds no tracked cell.
+-- The work area calls a CAPTURED pointer (WorkArea.lua:266, :182-183), so the bracket goes on
+-- through SGWorkAreaInstaller; on a fertilizing type that pointer is the override
+-- (FertilizingSowingMachine.lua:13, a full body with no superFunc).
+--
+-- THE JUDGEMENT is :243's, not the util wrap's REMOVE rule above. For each tracked cell that
+-- changed and that no inner primitive accounted for:
+--   * empty after the call: its record retires as Destruction (one REMOVE, DESTROYED legs);
+--   * changed in type or height but not empty: unknown (abandoned). A partial loss here has
+--     no accounted primitive, so it is not a retirement;
+--   * unchanged: nothing is recorded.
+-- NO DOUBLE RETIREMENT (Bob's intake ruling, 2026-10-03): every cell an inner wrapped
+-- primitive judged during the same call (today direct sowing's clearArea, FSDensityMapUtil
+-- :2303) is marked in the open profile by R.after and excluded here, a cell only partly
+-- inside the inner polygon included, so its accounted remainder is not made unknown.
+-- Server only (the installer is gated); a throw from the native call reconciles and re-raises.
+R.SOWING = { name = "processSowingMachineArea", nativePath = "GROUND_SOWING_PROFILE", reason = "UNACCOUNTED_CHANGE" }
+
+--- Before the sowing call. Returns the open profile, or nil when it is not observed.
+function R.openSowing(host, workArea)
+    if not host.ready or host.nativeLease == nil then return nil end
+    R.sowStats.calls = R.sowStats.calls + 1
+    local sx, _, sz = getWorldTranslation(workArea.start)
+    local wx, _, wz = getWorldTranslation(workArea.width)
+    local hx, _, hz = getWorldTranslation(workArea.height)
+    local minx, minz, maxx, maxz = R.bounds("clearArea", sx, sz, wx, wz, hx, hz)
+    local sampler, why = host:groundSampler()
+    if sampler == nil then count(R.sowStats.unobserved, why) return nil end
+    local x0, z0, x1, z1
+    if minx == nil then
+        x0, z0 = nil, minz
+    else
+        x0, z0, x1, z1 = sampler:lineEnvelope(minx, minz, maxx, maxz, 0, 0)
+    end
+    local pre = B.readBefore(host, R.sowStats, nil, x0, z0, x1, z1)
+    if pre == nil then return nil end
+    pre.name, pre.nativePath, pre.stats, pre.accounted = R.SOWING.name, R.SOWING.nativePath, R.sowStats, {}
+    R.profiles[#R.profiles + 1] = pre
+    return pre
+end
+
+--- After the sowing call: judge the residual change no inner primitive accounted for.
+function R.closeSowing(host, pre, ok)
+    for i = #R.profiles, 1, -1 do
+        if R.profiles[i] == pre then table.remove(R.profiles, i) break end
+    end
+    local after, changes = B.readAfter(host, R.sowStats, pre)
+    if after == nil or #changes == 0 then return end
+    local sampler = pre.sampler
+    local residual = {}
+    for _, ch in ipairs(changes) do
+        if not pre.accounted[ch.key] and G.trackedId(sampler, ch.x, ch.z) ~= nil then residual[#residual + 1] = ch end
+    end
+    if #residual == 0 then return end
+    if not ok then
+        count(R.sowStats.refused, "NATIVE_ERROR")
+        G.reconcileChanges(host, sampler, residual)
+        return
+    end
+    local emptied, changed = {}, {}
+    for _, ch in ipairs(residual) do
+        if ch.after == nil then emptied[#emptied + 1] = ch else changed[#changed + 1] = ch end
+    end
+    if #changed > 0 then R.abandon(host, pre, after, changed, R.SOWING.reason) end
+    if #emptied > 0 then R.retire(host, pre, after, emptied) end
+    G.withdrawEmpty(host, sampler, residual)
+end
+
+--- The bracket SGWorkAreaInstaller puts on the captured processSowingMachineArea pointer.
+function R.sowingBracket(realFn, _workArea)
+    return function(vehicle, workArea, ...)
+        local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+        local pre = nil
+        if host ~= nil and g_server ~= nil then
+            local okOpen, result = pcall(R.openSowing, host, workArea)
+            if okOpen then pre = result else logOnce("sowingOpen", "sowing profile failed to open (" .. tostring(result) .. ")") end
+        end
+        local n, r = packn(pcall(realFn, vehicle, workArea, ...))
+        if pre ~= nil then
+            local okClose, err = pcall(R.closeSowing, host, pre, r[1])
+            if not okClose then
+                for i = #R.profiles, 1, -1 do if R.profiles[i] == pre then table.remove(R.profiles, i) end end
+                logOnce("sowingClose", "sowing profile failed to close (" .. tostring(err) .. ")")
+            end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
 end
 
 -- ---------------------------------------------------------
