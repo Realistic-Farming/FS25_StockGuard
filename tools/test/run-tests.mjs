@@ -90,6 +90,64 @@ function reloadPart(files) {
   ].join("\n");
 }
 
+// A test may ask for NEW GAME PROCESSES with a fourth header line (MAINTENANCE row 214):
+//   --!launch: tools/test/lua/<model>.lua, ..., src/StockGuard.lua, ..., main.lua
+// The prelude and the named files are embedded as text, and ENGINE_NEW_PROCESS() sources them
+// again into a brand-new global table built from Lua's own globals as they stood before the
+// prelude ran (each library table copied), so every engine model, class, hook, module table and
+// counter starts over, as a new game process does; a mods reload (--!reload) keeps the engine's.
+// The engine files (tools/) run in that table; from the first file outside tools/ on, the files
+// run in the mod's own environment over it (mods.lua:489-495), as --!env: modenv does. It returns
+// the process's global table and the mod's environment. Nothing crosses from one process to the
+// next unless the test carries it (the save directory's files).
+function parseLaunch(src) {
+  const m = src.match(/--!launch:\s*(.+)/);
+  if (!m) return [];
+  return m[1].split(",").map((s) => s.trim()).filter(Boolean);
+}
+const PRISTINE_CAPTURE = [
+  "-- <<< launch: Lua's own globals, before the prelude ran (MAINTENANCE row 214) >>>",
+  "local ENGINE_PRISTINE = {}",
+  "for k, v in pairs(_G) do",
+  "  if type(v) == 'table' and k ~= '_G' then local t = {} for kk, vv in pairs(v) do t[kk] = vv end ENGINE_PRISTINE[k] = t",
+  "  elseif k ~= '_G' then ENGINE_PRISTINE[k] = v end",
+  "end",
+  "",
+].join("\n");
+function launchPart(files) {
+  let switched = false;
+  const entries = [{ name: "tools/test/lua/prelude.lua", text: prelude, mod: false }].concat(files.map((f) => {
+    if (!f.startsWith("tools/")) switched = true;
+    return { name: f, text: readFileSync(join(REPO_ROOT, f), "utf8"), mod: switched };
+  })).map((e) => {
+    const [open, close] = longBracket(e.text);
+    return `  { name = ${JSON.stringify(e.name)}, mod = ${e.mod}, text = ${open}${e.text}${close} },`;
+  });
+  return [
+    "-- <<< launch: a new game process (MAINTENANCE row 214) >>>",
+    "local ENGINE_LAUNCH_SOURCES = {",
+    ...entries,
+    "}",
+    "function ENGINE_NEW_PROCESS()",
+    "  local G = {}",
+    "  for k, v in pairs(ENGINE_PRISTINE) do",
+    "    if type(v) == 'table' then local t = {} for kk, vv in pairs(v) do t[kk] = vv end G[k] = t else G[k] = v end",
+    "  end",
+    "  G._G = G",
+    "  local env = G",
+    "  for _, s in ipairs(ENGINE_LAUNCH_SOURCES) do",
+    "    if s.mod and env == G then env = setmetatable({}, { __index = G }); env._G = env end",
+    "    local chunk, err = load(s.text, '=' .. s.name, 't', env)",
+    "    if chunk == nil then error('launch ' .. s.name .. ': ' .. tostring(err)) end",
+    "    chunk()",
+    "  end",
+    "  if env == G then env = setmetatable({}, { __index = G }); env._G = env end",
+    "  return G, env",
+    "end",
+    "",
+  ].join("\n");
+}
+
 // The mod's own environment, as mods.lua:489-495 builds it. `_G` on the right-hand
 // side is evaluated before the local takes effect, so it is the real global table.
 const MOD_ENV_SWITCH = [
@@ -146,7 +204,8 @@ for (const tf of testFiles) {
   // own. Concatenated bare, they leaked into every later file and piled up in one
   // function scope; the SG2-2 bench, the first to load everything main.lua sources
   // plus main.lua itself, passed Lua's 200-active-locals limit and could not load.
-  const parts = [prelude];
+  const launchFiles = parseLaunch(testSrc);
+  const parts = launchFiles.length > 0 ? [PRISTINE_CAPTURE, prelude] : [prelude];
   const modEnv = wantsModEnv(testSrc);
   let switched = false;
   for (const d of deps) {
@@ -176,6 +235,15 @@ for (const tf of testFiles) {
       parts.push(reloadPart(reloadFiles));
     } catch {
       console.log(c.red(`✗ ${tf}: cannot read a --!reload file`));
+      hadError = true;
+      continue;
+    }
+  }
+  if (launchFiles.length > 0) {
+    try {
+      parts.push(launchPart(launchFiles));
+    } catch {
+      console.log(c.red(`✗ ${tf}: cannot read a --!launch file`));
       hadError = true;
       continue;
     }
