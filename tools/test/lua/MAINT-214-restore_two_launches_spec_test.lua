@@ -32,9 +32,11 @@
 --   D  a save the trunk wrote at its second launch (a history twin of each live stock) loads
 --   E  CONTROL: an in-process reload (epoch "2") reattached on the trunk too
 --   R  restoreCore's first claim: a stock an earlier restore pass reattached keeps its id
+--   G  the ground payload's twin guard, on GR.coreOf
 --
--- NOT HERE: the ground's own restore pass through a native ground save (a ground payload is restored by
--- the same restoreCore, which group R drives directly, and its twin guard by the same function D drives).
+-- NOT HERE: the ground's own restore pass through a native ground save across new processes: the engine's
+-- height layer would have to be carried as well as the disk. The ground's records restore through the same
+-- restoreCore (group R drives a second pass), and group G drives its twin guard on GR.coreOf.
 --
 --!launch: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGSoilCondition.lua, src/native/SGCollectionSeal.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
@@ -162,6 +164,22 @@ local function round(r)
                 moved = res.moved, retired = sg.operations.retiredStocks[s.stockId] ~= nil }
         end
         out.claim = claim
+    end
+    if r.groundTwin then
+        -- group G: the ground payload's records through GR.coreOf, once clean and once with the
+        -- history twin of its cell's stock that the trunk's restore could leave
+        local identity = SGGround.currentIdentity(m)
+        local cells = { ["0:0"] = { x = 0, z = 0, stockId = "st:1:9", dataRevision = "4", knowledge = "KNOWN", reason = "INITIAL_OBSERVATION",
+            property = "p1", fillType = "WHEAT", liters = 100, generation = 1, lastGeneration = 1 } }
+        local props = { p1 = { properties = {}, acceptedCauses = {} } }
+        local clean, whyClean = SGGround.coreOf(identity, cells, props, {})
+        local twin = clean and SGValues.copy(clean.stocks[1]) or nil
+        if twin ~= nil then twin.retireReason = "RESTORE_MISMATCH" end
+        local first = #lines
+        local core, why = SGGround.coreOf(identity, cells, props, { twin })
+        local said = nil
+        for i = first + 1, #lines do if lines[i]:find("historical duplicates of cell stocks", 1, true) then said = lines[i] end end
+        out.ground = { clean = clean ~= nil and #clean.stocks or whyClean, accepted = core ~= nil, why = why, history = core and #core.historical or nil, said = said }
     end
     if r.save then
         ENGINE_SAVE.finalDir = plan.dir
@@ -304,7 +322,9 @@ group("C", function()
     T.eq("C2 NAMED: its live stock has a new id, its saved record is history under the saved id, and the save holds each id once",
         tostring(t2.id ~= nil and t2.id ~= savedT2) .. " " .. tostring(l2.retired[savedT2]) .. " " .. savedText(l2.saved), "true RESTORE_MISMATCH 3 stocks, 1 history, unique ids")
     local l3 = relaunch(d2, DIR .. "c", 3, l2.keys, nil, false)
-    T.eq("C3 NAMED: the third launch reads that save (not refused) and reattaches all three", refusal(l3) .. " " .. counts(l3), "none 3 reattached, 0 mismatched")
+    T.eq("C3 NAMED: the third launch reads that save (not refused), drops nothing, reattaches all three, and keeps trailer 2's old record as history",
+        refusal(l3) .. " " .. tostring(lineWith(l3.lines, "dropped") == nil) .. " " .. counts(l3) .. " " .. tostring(l3.retired[savedT2]),
+        "none true 3 reattached, 0 mismatched RESTORE_SUPERSEDED")
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -386,4 +406,20 @@ group("R", function()
     T.eq("R1 NAMED: trailer 1's stock keeps the id and the record it reattached with; the second pass moved nothing and kept the row as history",
         tostring(c.sameId) .. " " .. tostring(c.knowledge) .. "|" .. tostring(c.prop) .. " moved " .. tostring(c.moved) .. " " .. tostring(c.retired),
         "true KNOWN|0.11 moved 0 true")
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- G. THE GROUND PAYLOAD'S TWIN GUARD
+-- ══════════════════════════════════════════════════════════════════════════
+-- The ground's records restore through the same restoreCore, so a fresh launch could leave the history
+-- twin of a cell's stock in the ground payload the same way (when a cell's fresh id met its saved id),
+-- which GR.coreOf's validateCore refused, the whole ground binding UNAVAILABLE. Driven on GR.coreOf in a
+-- booted process, with one cell built as decodeRuns returns it (no ground save in this bench).
+group("G", function()
+    local r = launch(nil, { dir = DIR .. "g", index = 8, rounds = { { vehicles = THREE, save = false, groundTwin = true } } })[1]
+    local g = r.ground or {}
+    T.eq("G0 [reached] a cell's records build cleanly", tostring(g.clean), "1")
+    T.eq("G1 NAMED: with the history twin of its own stock, the ground's records still build: the twin dropped and named in the log",
+        tostring(g.accepted) .. " " .. tostring(g.why) .. " " .. tostring(g.history) .. " " .. tostring(g.said),
+        "true nil 0 [StockGuard] ground: dropped 1 historical duplicates of cell stocks")
 end)
