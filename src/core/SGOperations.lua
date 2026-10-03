@@ -63,6 +63,7 @@ function O.new(registry, loadEpoch)
     self.openHandles = {}          -- operationId -> handle (public part)
     self.handleState = {}          -- operationId -> { before, lease }
     self.retiredStocks = {}        -- stockId -> retired StockRecord (historical, bounded)
+    self.restoredIds = {}          -- stockId -> true: a saved id a restore pass of this mission reattached
     self.retiredLimit = O.RETIRED_LIMIT
     self.retiredClasses = {}       -- SG2-4b: { name, owns(carrierKey) }, each its own budget
     self.pending = {}              -- carrierId -> pending record (the canonical collection)
@@ -1922,6 +1923,62 @@ local function retainHistorical(self, saved, reason, binding)
     self.retiredStocks[saved.stockId] = h
 end
 
+--- [MAINTENANCE row 214] Before the restore walk, free every saved stock id that a stock minted
+--- at this load already holds. The load epoch restarts at "1" in every game process (SG.new), so
+--- the enumeration of a fresh launch mints "st:1:1", "st:1:2", ... again, and an unchanged
+--- carrier's fresh stock carries the very id its saved stock holds. The reattach requires that id
+--- to be free, so every such stock fell to RESTORE_MISMATCH and its saved record was kept as a
+--- historical twin of the live stock, which the next load's validateCore refused. A holder moves
+--- to an id no live, retired or saved record holds (SG-1 brief :224, a token is never reused),
+--- the way the reattach itself moves a live stock's id. A stock an earlier restore pass of this
+--- mission reattached keeps its id: the first claim on a saved id stands.
+local function freeSavedIds(self, saved)
+    local taken = {}
+    for _, s in ipairs(saved) do taken[s.stockId] = true end
+    local moved = 0
+    for _, s in ipairs(saved) do
+        local holder = self.stocks[s.stockId]
+        if holder ~= nil and not self.restoredIds[s.stockId] then
+            local id
+            repeat id = self:newStockId() until not taken[id] and self.stocks[id] == nil and self.retiredStocks[id] == nil
+            self.stocks[s.stockId] = nil
+            holder.stockId = id
+            holder.dataRevision = bump(self)
+            self.stocks[id] = holder
+            local carrier = self.carriers[holder.carrierId]
+            if carrier ~= nil and carrier.stockId == s.stockId then carrier.stockId = id end
+            moved = moved + 1
+        end
+    end
+    return moved
+end
+
+--- [MAINTENANCE row 214] The load-side guard for a save that already carries the twins the
+--- restore above used to write: drop each historical entry whose stockId is also a saved live
+--- stock's, and say how many. Without it validateCore refuses such an envelope on every load, and
+--- the refusal path writes the same bytes back. Live stocks are never touched, nothing else is
+--- altered, and every other uniqueness violation still refuses as before. Carried from #41
+--- (Wizard's REPAIR-208, ruling of 2026-09-30 23:24), where the save repair was first written.
+function O.dropHistoricalTwins(core)
+    if type(core) ~= "table" or type(core.stocks) ~= "table" or type(core.historical) ~= "table" then
+        return 0
+    end
+    local live = {}
+    for _, s in ipairs(core.stocks) do
+        if type(s) == "table" and s.stockId ~= nil then live[s.stockId] = true end
+    end
+    local kept, dropped = {}, 0
+    for _, s in ipairs(core.historical) do
+        if type(s) == "table" and s.stockId ~= nil and live[s.stockId] then
+            dropped = dropped + 1
+        else
+            kept[#kept + 1] = s
+        end
+    end
+    if dropped > 0 then core.historical = kept end
+    return dropped
+end
+
 --- The restore half of the join (SG-1 brief 4.7.1). Every saved carrier of a
 --- live adapter is mapped to its CURRENT binding: an adapter whose durable key
 --- or layout embeds farm or session identity stages the replacement through
@@ -2016,6 +2073,7 @@ function O:restoreCore(core, context)
     local saved = {}
     for _, s in ipairs(core.stocks) do saved[#saved + 1] = s end
     for _, s in ipairs(core.historical or {}) do saved[#saved + 1] = s end
+    local moved = freeSavedIds(self, saved)
     -- ONE CLAIM PER CARRIER PER LOAD (SG2-1 re-review BLOCKER). Saved live stocks
     -- are walked before history rows. The first saved stock that reattaches to, or
     -- is judged against, a carrier's live record claims that record for this load.
@@ -2062,6 +2120,7 @@ function O:restoreCore(core, context)
             for _, c in ipairs(s.acceptedCauses or {}) do live.acceptedCauses[c.key] = { sequence = c.sequence, fingerprint = c.fingerprint } end
             live.dataRevision = bump(self)
             self.stocks[s.stockId] = live
+            self.restoredIds[s.stockId] = true
             carrier.stockId = s.stockId
             carrier.lastGeneration = math.max(carrier.lastGeneration or 0, s.contentsGeneration)
             self.retiredStocks[s.stockId] = nil
@@ -2092,7 +2151,7 @@ function O:restoreCore(core, context)
             if carrier ~= nil then carrier.lastGeneration = math.max(carrier.lastGeneration or 0, sc.lastGeneration or 0) end
         end
     end
-    return { restored = restored, unknown = unknown, historical = historical, refused = refusedCount, superseded = superseded }
+    return { restored = restored, unknown = unknown, historical = historical, refused = refusedCount, superseded = superseded, moved = moved }
 end
 
 --- Mission teardown.
@@ -2103,6 +2162,7 @@ function O:clear()
     self.carriers = {}
     self.stocks = {}
     self.retiredStocks = {}
+    self.restoredIds = {}
     self.pending = {}
     self._deferred = nil
     self.busy = false

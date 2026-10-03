@@ -469,6 +469,11 @@ function GR.coreOf(identity, cells, properties, historical)
             carrierKey = copy(binding.carrierKey), quantityBasisKey = binding.quantityBasisKey, materialRef = copy(materialRef), observedAmount = c.liters,
             amountUnit = A.UNIT, knowledge = c.knowledge, reason = c.reason, properties = copy(shared.properties), acceptedCauses = copy(shared.acceptedCauses) }
     end
+    -- [MAINTENANCE row 214] A ground payload written before the fix can carry a historical twin
+    -- of a cell's stock (the restore wrote one whenever a fresh id met the cell's saved id), which
+    -- validateCore refuses; the same guard as the envelope's.
+    local droppedTwins = SGOperations.dropHistoricalTwins(core)
+    if droppedTwins > 0 then log("dropped " .. tostring(droppedTwins) .. " historical duplicates of cell stocks") end
     local ok, why = SGOperations.validateCore(core)
     if ok == nil then return nil, "RECORDS:" .. tostring(why) end
     return core

@@ -51,6 +51,10 @@ local nonempty = SGRecords.nonemptyString
 
 local function log(msg) print("[StockGuard] save: " .. tostring(msg)) end
 
+-- The load path's voice, so a restore repair greps as "[StockGuard] restore: ..." rather than
+-- under the save prefix (MAINTENANCE row 214, as #41 wrote it).
+local function logRestore(msg) print("[StockGuard] restore: " .. tostring(msg)) end
+
 function S.new(registry, operations, coordinator)
     local self = setmetatable({}, SGSave_mt)
     self.registry = registry
@@ -94,6 +98,14 @@ function S.validateEnvelope(e)
     end
     for id, sec in pairs(e.sections) do
         if type(sec) ~= "table" or not isInteger(sec.schemaVersion) then return nil, "SECTION_SHAPE:" .. tostring(id) end
+    end
+    -- [MAINTENANCE row 214] A save written before the fix can carry historical twins of live
+    -- stocks, which validateCore refuses on every load. Drop exactly those entries here, in
+    -- place, so the validation and the restore below both see the pruned list, as this function
+    -- already repairs e in place for a bad farmRestore proof.
+    local droppedTwins = SGOperations.dropHistoricalTwins(e.coreValues)
+    if droppedTwins > 0 then
+        logRestore("dropped " .. tostring(droppedTwins) .. " historical duplicates of live stocks")
     end
     local core, why = SGOperations.validateCore(e.coreValues)
     if core == nil then return nil, why end
