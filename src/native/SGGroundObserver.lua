@@ -2410,4 +2410,8 @@ function G.observeVehicle(vehicle)
         SGWorkAreaInstaller.install(vehicle, "spec_mower", "processMowerArea", G.mowerBracket)
         G.installMowerDrop(vehicle)
     end
+    -- SG-2 :243: the sowing Destruction profile (SGGroundArea), on the captured pointer.
+    if vehicle.spec_sowingMachine ~= nil and SGWorkAreaInstaller ~= nil and SGGroundArea ~= nil then
+        SGWorkAreaInstaller.install(vehicle, "spec_sowingMachine", "processSowingMachineArea", SGGroundArea.sowingBracket)
+    end
 end
