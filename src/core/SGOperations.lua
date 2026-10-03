@@ -2107,3 +2107,31 @@ function O:clear()
     self._deferred = nil
     self.busy = false
 end
+
+-- REPAIR-208, re-applied by REPAIR-217: the writer defect repair SGSave's
+-- restore path calls. A historical entry duplicating a live stockId made
+-- validateCore refuse the envelope on every load.
+--- Drop historical entries whose stockId is also a live stock id, and say how many (REPAIR-208, Wizard
+--- ruling 2026-09-30 23:24). Such an entry is the writer defect guarded above, not player corruption, and
+--- validateCore rightly refuses an envelope containing one. Dropping ONLY those entries lets the rest of a
+--- save restore instead of being refused for ever. Live stocks are never touched, nothing else in the
+--- envelope is altered, and every other uniqueness violation still refuses exactly as before.
+function O.dropHistoricalTwins(core)
+    if type(core) ~= "table" or type(core.stocks) ~= "table" or type(core.historical) ~= "table" then
+        return 0
+    end
+    local live = {}
+    for _, s in ipairs(core.stocks) do
+        if type(s) == "table" and s.stockId ~= nil then live[s.stockId] = true end
+    end
+    local kept, dropped = {}, 0
+    for _, s in ipairs(core.historical) do
+        if type(s) == "table" and s.stockId ~= nil and live[s.stockId] then
+            dropped = dropped + 1
+        else
+            kept[#kept + 1] = s
+        end
+    end
+    if dropped > 0 then core.historical = kept end
+    return dropped
+end

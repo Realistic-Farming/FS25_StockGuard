@@ -4,5 +4,15 @@
         <text name="sg6_capacity_refused" text="StockGuard could not arrange material capacity for this session: %s. Loading stops so no goods are misread. Check the mods set and the log."/>
         <text name="sg6_profile_mismatch" text="StockGuard: the material and map capacity profile differs from the server. Obtain the matching setup and consult the host log."/>
         <text name="sg_site_purpose_yard" text="StockGuard yard"/>
+        <text name="sg5_col_status" text="Status"/>
+        <text name="sg5_col_kind" text="Kind"/>
+        <text name="sg5_sheet_count_hint" text="%d items - scroll, or , and . to move"/>
+        <text name="sg5_detail_kind" text="Kind: %s"/>
+        <text name="sg5_detail_capacity" text="Capacity: %s"/>
+        <text name="sg5_detail_state" text="State: %s"/>
+        <text name="sg5_detail_amount" text="Amount: %s"/>
+        <text name="sg5_detail_knowledge" text="Knowledge: %s"/>
+        <text name="sg5_detail_where" text="Where: %s"/>
+        <text name="sg5_detail_actions" text="Actions: %s"/>
     </texts>
 </l10n>

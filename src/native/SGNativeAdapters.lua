@@ -88,6 +88,21 @@ A.STORAGE_PROFILE     = "NATIVE_STORAGE_SLOT_V1"
 A.FILLUNIT_PROFILE    = "NATIVE_FILL_UNIT_V1"
 A.PROFILE_VERSION     = 1
 A.UNIT                = "LITRE"
+--- The object's own display name, for the row label the Tablet shows. Tried in the order FS25 actually
+--- provides them, each under pcall, and nil when none answers: a place we cannot name is reported as unnamed
+--- rather than as a profile constant.
+local function displayNameOf(obj)
+    if type(obj) ~= "table" then return nil end
+    for _, fn in ipairs({ "getName", "getFullName" }) do
+        if type(obj[fn]) == "function" then
+            local ok, n = pcall(obj[fn], obj)
+            if ok and type(n) == "string" and n ~= "" then return n end
+        end
+    end
+    local si = obj.storeItem
+    if type(si) == "table" and type(si.name) == "string" and si.name ~= "" then return si.name end
+    return nil
+end
 
 local function isServer() return g_server ~= nil end
 
@@ -323,6 +338,7 @@ function A.storageKind(placeables)
             unit = A.UNIT,
             capacity = capacity,
             ownerFarmId = ownerFarmOf(storage),
+            label = displayNameOf(native.placeable),
             storeKind = native.partition ~= "shared" and "per_farm_partition" or "ordinary_station",
             nativeUniqueId = persistentIdOf(native.placeable),
         }
@@ -484,6 +500,7 @@ function A.fillUnitKind(vehicles)
             unit = A.UNIT,
             capacity = capacity,
             ownerFarmId = ownerFarmOf(v),
+            label = displayNameOf(v),
             storeKind = "vehicle",
             nativeUniqueId = persistentIdOf(v),
         }

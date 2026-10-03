@@ -271,6 +271,18 @@ local function stockRow(self, stock, carrier, actor)
         rowKind = "STOCK", stockRef = self.operations:stockRef(stock), carrierId = carrier.carrierId, quantityBasisKey = stock.quantityBasisKey,
         materialRef = copy(stock.materialRef), amount = stock.observedAmount, amountUnit = amountUnitToken(stock.amountUnit) or "UNAVAILABLE",
         label = tostring(n.label or carrier.binding.profileId), positionKnown = n.x ~= nil, x = n.x, z = n.z, knowledge = stock.knowledge,
+        -- REPAIR-215: the HOLDER's capacity, read from the same carrier.native table carrierRow uses. A stock
+        -- row carried none before, so the Esc page's Fill column had nothing to divide by and was blank on
+        -- every save since REPAIR-213 - not unknown, never populated. The capacity belongs to the carrier, not
+        -- to this one stock, so the page sums every stock on the carrier before dividing.
+        capacityKnown = n.capacity ~= nil, capacity = n.capacity,
+        capacityUnit = n.capacity ~= nil and amountUnitToken(n.unit) or nil,
+        -- REPAIR-215: the PHYSICAL holder's identity. One silo holding three grains is three carriers,
+        -- because the native layer keys a carrier on the placeable AND the fill type, and every one of those
+        -- carriers can report the same whole-silo capacity (Storage:getCapacity returns
+        -- capacities[fillType] or self.capacity). carrierId therefore cannot tell the page whether a
+        -- percentage is true. nativeUniqueId is persistentIdOf(placeable), so it can.
+        holderKey = n.nativeUniqueId,
         properties = disclosedProperties(self, stock, actor, carrier), navigationCarrierId = navId, navigationRole = role,
         actions = actionsFor(self, "STOCK", stock.stockId, actor),
     }
