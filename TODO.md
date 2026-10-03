@@ -7,5 +7,5 @@
 ## Bugs
 - [x] 2026-10-03: Restore across a game launch (MAINTENANCE row 214): an unchanged stock reattaches; no history twin forms; a pre-fix save with twins loads, its twinned stocks UNKNOWN until observed again. In-game check pending.
 
-## Later
-- [ ] Audit the other load-epoch tokens for reuse across launches (operation ids, view cursors, the session id) and a causal producer whose own cause epoch restarts per process (Bob's pointer, `src/core/SGOperations.lua` accepted causes). Not queued.
+## Notes
+- Not queued: an audit of the other load-epoch tokens for reuse across launches (operation ids, view cursors, the session id), and of a causal producer whose own cause epoch restarts per process (Bob's pointer at R-15, `src/core/SGOperations.lua` accepted causes).
