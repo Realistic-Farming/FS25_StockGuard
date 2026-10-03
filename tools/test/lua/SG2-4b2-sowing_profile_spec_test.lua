@@ -26,7 +26,8 @@
 -- bypassing every Lua wrapper. It models the unobservable path; it is not a claim that native does it.
 --
 -- Groups:
---   E  the entry-point bar: a modelled unseen clear under plain sowing retires the pile as Destruction, once
+--   E  the entry-point bar: a modelled unseen clear under plain sowing retires the pile as Destruction, once;
+--      the envelope reaches the parallelogram's far edge
 --   P  plain sowing that changes nothing: no operation; the pointer's returns unchanged (a control)
 --   U  a partial height change and a type change: unknown, not retired
 --   D  direct sowing: the util wrap retires the cleared cells and the profile books nothing more (a control
@@ -353,7 +354,7 @@ end
 --- spec_fertilizingSowingMachine, and its processSowingMachineArea is the override chained by
 --- Utils.overwrittenFunction (SpecializationUtil.lua:49-60, Utils.lua:394-402) and copied onto the instance
 --- (SpecializationUtil.lua:141-145). Its one work area covers the world box [9.5, 10.5] on both axes, the four
---- pixels around the corner (10, 10); opts.at shifts it along x.
+--- pixels around the corner (10, 10); opts.at shifts it along x, and opts.depth (metres) deepens it along z.
 local function newSeeder(uid, opts)
     opts = opts or {}
     local v = ENGINE_NEW_TRAILER(uid, { level = 0, capacity = 1000, supported = { [WHEAT] = true } })
@@ -370,9 +371,9 @@ local function newSeeder(uid, opts)
     else
         v.processSowingMachineArea = SowingMachine.processSowingMachineArea
     end
-    local dx = opts.at or 0
+    local dx, depth = opts.at or 0, opts.depth or 1
     local wa = { index = 1, type = WorkAreaType.SOWINGMACHINE, functionName = "processSowingMachineArea",
-                 start = { x = 9.5 + dx, y = 0, z = 9.5 }, width = { x = 10.5 + dx, y = 0, z = 9.5 }, height = { x = 9.5 + dx, y = 0, z = 10.5 } }
+                 start = { x = 9.5 + dx, y = 0, z = 9.5 }, width = { x = 10.5 + dx, y = 0, z = 9.5 }, height = { x = 9.5 + dx, y = 0, z = 9.5 + depth } }
     -- WorkArea.lua:266 VERBATIM: the loader captures the pointer the engine will call.
     wa.processingFunction = v[wa.functionName]
     v.spec_workArea = { workAreas = { wa } }
@@ -454,6 +455,15 @@ group("E", function()
     T.eq("E2 NAMED: exactly once: 3 DESTROYED legs of 24 L in the profile's one operation, and the util wrap saw no clear (the write bypassed every Lua wrapper)",
         legsOf(ao) .. "/" .. delta(s0, s1, "removed") .. "/" .. delta(s0, s1, "areaRemoved"), "3/24/1/0")
     T.eq("E3 the engine got the call's own returns through the bracket", tostring(a) .. "/" .. tostring(b), "4/4")
+    FSBaseMission.delete(m)
+    -- A deeper work area: a cell 1.75 m in, which only the parallelogram's height corner reaches.
+    m, sg, host, w = sown(91, { depth = 2 })
+    tipOn(w.dot7, CX, CZ + 3, 8)
+    unseen = unseenClear
+    pass(w.seeder, w.wa)
+    ao = host.lastAreaOperation or {}
+    T.eq("E4 NAMED: the envelope is the whole parallelogram: in a 2 m deep work area the cell only its far edge reaches is retired with the rest",
+        num(ao.removed) .. "/" .. (groundCount(sg)), "32/0")
     FSBaseMission.delete(m)
 end)
 
