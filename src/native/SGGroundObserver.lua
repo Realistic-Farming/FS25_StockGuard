@@ -994,6 +994,19 @@ function G.bindTedder(host, gf, name)
     return true
 end
 
+--- [SG2-5bc-save] The entry bindTedder makes, for a remainder a save restored into this work area
+--- (SGFieldToolBufferSave, from the vehicle's onPostLoad, before the restore barrier). It binds no
+--- carrier: SG-1's restore join resolves the saved binding through this entry and reattaches the
+--- saved stock, and a remainder whose stock was not saved binds at its next frame's refresh.
+function G.seedTedderBuffer(vehicle, workArea, fillTypeName)
+    if type(workArea) ~= "table" or type(workArea.index) ~= "number" or type(fillTypeName) ~= "string" then return false end
+    local binding = A.tedderBufferBinding(vehicle, workArea.index)
+    if binding == nil then return false end
+    A.tedderBuffers[SGRecords.carrierKeyString(binding.carrierKey)] = { vehicle = vehicle, workArea = workArea, index = workArea.index,
+        fillTypeName = fillTypeName, pending = 0 }
+    return true
+end
+
 --- After a Tedder pickup line: what it took from the cells joins the pass's pending pickups.
 --- Native folds them into litersToDrop only after the pass's last input (Tedder.lua:296-297).
 function G.tedderBalance(host, pre)
@@ -1140,7 +1153,8 @@ end
 -- THE BUFFER (condition 1). The drop area's material is the mowerBuffer carrier (SGNativeAdapters):
 -- litersToDrop exactly, as the area's fillType. Bound at the first positive cut, live across calls,
 -- withdrawn when a close finds it empty, destruction through a REMOVE when its vehicle goes (SG-2
--- :136), never enumerated or restored (its save is 5bc-save, :144, :247). Its retirements keep their
+-- :136), never enumerated. A save keeps it with the vehicle and a load restores it, with the entry's
+-- fresh litres (SGFieldToolBufferSave, SG-2 :144, :247; seedMowerBuffer). Its retirements keep their
 -- own class (main.lua).
 --
 -- THE MOWER FRAME, per processMowerArea call (the bracket on the captured pointer). Its witness is
@@ -1234,6 +1248,19 @@ function G.bindMowerBuffer(host, gf)
         A.mowerBuffers[m.carrierId] = nil
         return false, why
     end
+    return true
+end
+
+--- [SG2-5bc-save] The entry bindMowerBuffer makes, for a remainder a save restored into this drop
+--- area (SGFieldToolBufferSave, from the vehicle's onPostLoad, before the restore barrier), with the
+--- fresh litres and soilFramed saved with it: the original work's snapshot follows the buffer until
+--- actual deposition (SG-2 :144). It binds no carrier, as seedTedderBuffer.
+function G.seedMowerBuffer(vehicle, dropArea, fresh, soilFramed)
+    if type(dropArea) ~= "table" or type(dropArea.index) ~= "number" or not G.isFinite(fresh) or fresh < 0 then return false end
+    local binding = A.mowerBufferBinding(vehicle, dropArea.index)
+    if binding == nil then return false end
+    A.mowerBuffers[SGRecords.carrierKeyString(binding.carrierKey)] = { vehicle = vehicle, dropArea = dropArea, index = dropArea.index,
+        fresh = fresh, soilFramed = soilFramed == true }
     return true
 end
 

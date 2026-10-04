@@ -5,6 +5,7 @@
 > Engineering owed lives in the tracking repo's MAINTENANCE.md; this file carries the mod's own short list.
 
 ## Features
+- [x] 2026-10-04: SG2-5bc-save (SG-2 :144, :247): a tedder's and a mower's remainder are saved with the vehicle and restored after native setup, the stock reattaching with its record and the mower's fresh share; another configuration, layout or binding restores nothing. In-game check pending.
 - [x] 2026-10-03: SG-2 :243, plain sowing's Destruction profile around `processSowingMachineArea` (row 171's plain-sowing clause): emptied tracked cells retire as Destruction, unaccounted changes go unknown, no double retirement with direct sowing's clear. In-game check pending.
 
 ## Bugs

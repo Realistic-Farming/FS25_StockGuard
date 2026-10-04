@@ -41,7 +41,7 @@
 --   U  the fill-unit branch: a birth into the unit, no Soil
 --   O  the drop slot wrapped over or under a foreign wrapper
 --   D  destruction, and the mission's end
---   N  the kind: native-backed, never restored, never enumerated
+--   N  the kind: native-backed, never enumerated; a restore keeps its saved binding (SG2-5bc-save)
 --
 --!env: modenv
 --!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGSoilCondition.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
@@ -1213,8 +1213,9 @@ group("N", function()
     T.eq("N2 NAMED: bound, its native state is litersToDrop exactly, as the drop area's fillType, in a vehicle buffer",
         tostring(ns and ns.amount == w.drop.litersToDrop) .. "/" .. tostring(ns and ns.materialRef and ns.materialRef.fillTypeName) .. "/" .. tostring(ns and ns.storeKind),
         "true/GRASS_WINDROW/vehicle_buffer")
-    T.eq("N3 NAMED: it is never restored and never enumerated (its save is 5bc-save, SG-2 :144, :247)",
-        answer(spec.restoreBinding, binding, {}) .. "/" .. answer(function() return #spec.kinds[NA.KIND_MOWER_BUFFER].enumerateCarriers() end), "nil/NOT_RESTORABLE/0/nil")
+    -- SG2-5bc-save: the save is StockGuard's (SGFieldToolBufferSave), so a restore keeps the saved binding.
+    T.eq("N3 NAMED: it is never enumerated, and a restore keeps its saved binding (SG2-5bc-save, SG-2 :144, :247)",
+        tostring(binding ~= nil and spec.restoreBinding(binding, {}) == binding) .. "/" .. answer(function() return #spec.kinds[NA.KIND_MOWER_BUFFER].enumerateCarriers() end), "true/0/nil")
     -- A sub-unit residue native keeps is the buffer's, exactly: no epsilon of its own (condition 1).
     -- Only the cut pointer runs (WorkArea.lua:182-183, no drop yet): the MOWER frame's own close brings
     -- the buffer to what native holds.

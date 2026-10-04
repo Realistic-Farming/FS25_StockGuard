@@ -740,8 +740,10 @@ end
 -- that in the entry's `pending` and clears it once native has folded it (SGGroundObserver).
 -- Its material is the target type of what it holds: the buffer is target-typed (Q2). It is
 -- withdrawn when it empties at a frame's close, retired as destruction when its vehicle goes
--- (SG-2 :136), never enumerated, never restored and never saved: :144's save is a later slice,
--- and a reload retires it as native discards it (Tedder.lua:242).
+-- (SG-2 :136), and never enumerated. Native discards it at load (Tedder.lua:242), so its save is
+-- StockGuard's (SG2-5bc-save, :144): SGFieldToolBufferSave keeps the remainder with the vehicle,
+-- restores it after native's setup and seeds its entry, and restoreBinding below gives SG-1 the
+-- saved binding, so the saved stock reattaches at the barrier.
 
 A.tedderBuffers = A.tedderBuffers or {}
 
@@ -824,9 +826,9 @@ end
 -- and keeps the rest (:383-405). One carrier per drop area, keyed by the drop area's work-area index,
 -- bound at the first positive cut and live across calls. Its native amount is litersToDrop exactly,
 -- with no epsilon of its own; its material is the drop area's fillType. It is withdrawn when it
--- empties at a frame's close, retired as destruction when its vehicle goes (SG-2 :136), never
--- enumerated, never restored and never saved: :144's and :247's save is 5bc-save, and a reload
--- retires it as native discards it (Mower:loadWorkAreaFromXML sets litersToDrop to 0, :481-482).
+-- empties at a frame's close, retired as destruction when its vehicle goes (SG-2 :136), and never
+-- enumerated. Native discards it at load (Mower:loadWorkAreaFromXML sets litersToDrop to 0,
+-- :481-482), so its save is StockGuard's (SG2-5bc-save, :144, :247), as the Tedder buffer's above.
 
 A.mowerBuffers = A.mowerBuffers or {}
 
@@ -1213,11 +1215,10 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         if kind == A.KIND_GROUND then return savedBinding end
         -- A Windrower work area lives only inside one processing call: nothing to restore.
         if kind == A.KIND_WINDROWER_AREA then return nil, "NOT_RESTORABLE" end
-        -- A Tedder buffer is not saved yet (SG-2 :144 is a later slice): a reload retires it, as
-        -- native zeroes litersToDrop at load (Tedder.lua:242).
-        if kind == A.KIND_TEDDER_BUFFER then return nil, "NOT_RESTORABLE" end
-        -- A Mower buffer likewise: its save is 5bc-save (SG-2 :144, :247); native zeroes it at load.
-        if kind == A.KIND_MOWER_BUFFER then return nil, "NOT_RESTORABLE" end
+        -- A Tedder or Mower buffer keeps its own binding: its restoration with the native
+        -- remainder and its entry is the save extension's (SG2-5bc-save, SGFieldToolBufferSave);
+        -- without it the entry is absent and resolveCarrier answers NOT_BOUND.
+        if kind == A.KIND_TEDDER_BUFFER or kind == A.KIND_MOWER_BUFFER then return savedBinding end
         -- A Baler pickup lives only inside one work-area tick; the overflow's save is 5e's (SG-2
         -- :477): a reload retires it, as native discards it.
         if kind == A.KIND_BALER_PICKUP or kind == A.KIND_BALER_OVERFLOW then return nil, "NOT_RESTORABLE" end
@@ -1225,12 +1226,14 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
     end
     --- [MAINTENANCE row 206] The quantity as native saves it, for the kinds whose level the
     --- engine writes as an XMLValueType.FLOAT: a fill unit (FillUnit.lua:138, :438), a storage
-    --- (Storage.lua:26) and a Combine delay or straw slot (SGCombineBufferSave's own FLOAT path).
+    --- (Storage.lua:26), a Combine delay or straw slot (SGCombineBufferSave's own FLOAT path) and
+    --- a Tedder or Mower buffer (SGFieldToolBufferSave's own FLOAT path, SG2-5bc-save).
     --- SG-1's restore compares the saved and the reloaded level through it, so a level the
     --- writer rounded still reattaches, exactly. Other kinds give nil and compare as numbers.
     spec.restoredQuantityImage = function(binding, amount)
         local kind = kindOf(binding)
-        if kind == A.KIND_FILL_UNIT or kind == A.KIND_STORAGE or kind == A.KIND_DELAY_SLOT or kind == A.KIND_STRAW_SLOT then
+        if kind == A.KIND_FILL_UNIT or kind == A.KIND_STORAGE or kind == A.KIND_DELAY_SLOT or kind == A.KIND_STRAW_SLOT
+            or kind == A.KIND_TEDDER_BUFFER or kind == A.KIND_MOWER_BUFFER then
             return SGValues.nativeFloatImage(amount)
         end
         return nil
