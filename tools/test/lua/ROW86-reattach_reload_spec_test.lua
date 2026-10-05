@@ -18,12 +18,15 @@
 -- finish, reading the chamber's record. On 2f92a77 (before #37) E1 and E3 come back
 -- RESTORE_MISMATCH and the finish reads no restored account.
 --
+-- GROUP O (SG2-5e-a, SG-2 :477's overflow half): a square Baler's pending overflow through the
+-- same save and fresh mission, restored by StockGuard's buffer save and reattached.
+--
 -- NOT HERE: the bale's own value through Soil's real BalerCollection, which needs Soil's half of
 -- the readback fix (MAINTENANCE row 207, Soil #1081): the joined two-sided run is a throwaway, and
 -- the PR body carries its numbers.
 --
 --!env: modenv
---!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGSoilCondition.lua, src/native/SGCollectionSeal.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
+--!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGSoilCondition.lua, src/native/SGCollectionSeal.lua, src/native/SGFieldToolBufferSave.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
 local REAL = getmetatable(_G).__index
 local M, GR, GS, GO, NH, NA = SGNativeMaterialSave, SGGround, SGGroundSampler, SGGroundObserver, SGNativeHost, SGNativeAdapters
@@ -477,6 +480,12 @@ if g_server ~= nil and g_server.broadcastEvent == nil then g_server.broadcastEve
 -- `fillUnitIndex`; the loading-state animation and dirty flags abbreviated).
 local function newBalerClass()
     local B = { CLIENT_DM_UPDATE_RADIUS = 50 }
+    --- Baler.lua:621-656 ABBREVIATED: native saves its bales, platform, bale type and capacity,
+    --- never the overflow, and nothing in this bench reads them back. Present so the vehicle's
+    --- save loop (Vehicle.lua:1210-1213) reaches the class, as in the engine.
+    function B:saveToXMLFile(xmlFile, key, usedModNames) end
+    --- Baler.lua:532-569 ABBREVIATED: native reads its saved bale list back; nothing here does.
+    function B:onPostLoad(savegame) end
     function B:onFillUnitFillLevelChanged(fillUnitIndex, fillLevelDelta, fillTypeIndex, toolType, _, appliedDelta)
         local spec = self.spec_baler
         if fillUnitIndex == spec.fillUnitIndex then
@@ -650,6 +659,10 @@ local function newBaler(uid, opts)
     v.setFillUnitFillType = function(self, i, ft) local u = self.spec_fillUnit.fillUnits[i] if u and u.fillLevel <= 0 then u.fillType = ft end end
     v.processBalerArea, v.finishBale, v.createBale = Baler.processBalerArea, Baler.finishBale, Baler.createBale
     v.specClasses = { Baler }
+    -- vehicleTypes.xml: baseFillable's fillUnit precedes baler, so FillUnit's onPostLoad runs first.
+    v.specializations[#v.specializations + 1] = Baler
+    v.specializationNames[#v.specializationNames + 1] = "baler"
+    v.eventListeners.onPostLoad = { ENGINE_FILLUNIT, Baler }
     v.eventListeners.onFillUnitFillLevelChanged = { Baler }
     v.eventListeners.onStartWorkAreaProcessing = { Baler }
     v.eventListeners.onEndWorkAreaProcessing = { Baler }
@@ -1186,6 +1199,79 @@ group("C", function()
     local c3 = round(1.0037, "float32", "r86c3", 205, function(file, key) file[key .. ".fillUnit.unit(0)#fillType"] = "DRYGRASS_WINDROW" end, nil)
     T.eq("C3 the same level of another material at load is RESTORE_MISMATCH", tostring(c3.reattached) .. " " .. tostring(c3.line and c3.line:match("%d+ reattached, %d+ mismatched")),
         "false 0 reattached, 1 mismatched")
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- O. SG2-5e-a: A SQUARE BALER'S PENDING OVERFLOW THROUGH A SAVE AND A FRESH MISSION (SG-2 :477)
+-- ══════════════════════════════════════════════════════════════════════════
+--- 100 L of grass at fillScale 1.0037 (100.37 L) into a 60 L chamber in one tick: the chamber fills,
+--- the bale is made, and native keeps 40.37 L as fillUnitOverflowFillLevel (Baler.lua:1176), a level
+--- the engine's float writer rounds, so the reattach rests on the float image. Saved through the engine's own path;
+--- the mission quit; a fresh one loaded with the Baler rebuilt at `loadCapacity` and both
+--- post-loads raised in the type's order. Then `more` litres in the next tick.
+local function overflowRound(dir, index, loadCapacity, more)
+    READER = "float32"
+    resetWorld()
+    soilReset()
+    local m, sg, host, w = boot5db({ capacity = 60, fillScale = 1.0037, lay = { { GRASS, 100, "grass" } } }, dir, index)
+    tick(w.baler)
+    local o = stockAt(sg, overflowId(w.baler))
+    local r = { heldBefore = w.baler.spec_baler.fillUnitOverflowFillLevel, before = stockText(o), beforeId = o and o.stockId }
+    local key = keyOf(m, w.baler)
+    nativeSave(m, dir)
+    local file = vehiclesFile(dir)
+    local base = key .. ".baler." .. SGFieldToolBufferSave.ELEMENT
+    r.written = file ~= nil and (tostring(file[base .. "#overflow"]) .. ":" .. tostring(file[base .. "#producedAs"])) or "nofile"
+    local m2, sg2, host2, w2
+    local lines = printed(function()
+        m2, sg2, host2, w2 = reload(m, dir, function(mm, ww)
+            soilOn(mm) soil5dOn(mm)
+            ww.baler = vehicleIn(mm, newBaler("vehicle:baler", { capacity = loadCapacity or 60, fillScale = 1.0037 }))
+            local xml = REAL.XMLFile.load("vehiclesXML", dir .. "/vehicles.xml", REAL.Vehicle.xmlSchemaSavegame)
+            ENGINE_POST_LOAD_VEHICLE(ww.baler, { xmlFile = xml, key = key, resetVehicles = false })
+        end, { index = index })
+    end)
+    if g_server ~= nil and g_server.broadcastEvent == nil then g_server.broadcastEvent = function() end end
+    m2.stockGuard.registerProperty(PID, AOWNER)
+    local o2 = stockAt(sg2, overflowId(w2.baler))
+    r.heldAfter = w2.baler.spec_baler.fillUnitOverflowFillLevel
+    r.after = stockText(o2)
+    r.reattached = o2 ~= nil and r.beforeId ~= nil and o2.stockId == r.beforeId
+    r.line = lineWith(lines, "restored stocks:")
+    r.restoreLine = lineWith(lines, "FIRST BALER BUFFER RESTORED")
+    r.refuseLine = lineWith(lines, "could not be restored")
+    if more ~= nil then
+        relay(m2, w2, GRASS, more, "g2")
+        tick(w2.baler)
+        r.heldNext = w2.baler.spec_baler.fillUnitOverflowFillLevel
+        r.chamber = w2.baler:getFillUnitFillLevel(1)
+        r.chamberStock = chamberText(sg2, w2.baler)
+        r.overflowLeft = stockText(stockAt(sg2, overflowId(w2.baler)))
+        r.ops = opsText(host2)
+    end
+    FSBaseMission.delete(m2)
+    return r
+end
+
+group("O", function()
+    local a = overflowRound("r86o1", 211, nil, 10)
+    T.eq("O0 [reached] one 100 L tick into a 60 L chamber made the bale and left 40.37 L pending, bound as the overflow carrier with its 30 % record, and the save wrote it as the engine's float32 (40.369999) with the material it was produced as",
+        num(a.heldBefore) .. " " .. a.before .. " " .. a.written,
+        "40.37 NATIVE_BALER_OVERFLOW_V1|40.37|KNOWN|KNOWN:7:40.37/40.37/0/0/30 40.369999:GRASS_WINDROW")
+    T.eq("O1 NAMED [entry point]: after the fresh mission native holds the 40.37 L again (read back as a float32), the overflow's stock REATTACHES with its record, the load line counts it, and the restore says so once",
+        num(a.heldAfter) .. " " .. tostring(a.reattached) .. " " .. a.after .. " | " .. tostring(a.line and a.line:match("%d+ reattached, %d+ mismatched")) .. " | " .. tostring(a.restoreLine ~= nil) .. "/" .. tostring(a.refuseLine == nil),
+        "40.37 true NATIVE_BALER_OVERFLOW_V1|40.37|KNOWN|KNOWN:7:40.37/40.37/0/0/30 | 1 reattached, 0 mismatched | true/true")
+    T.eq("O2 NAMED: the next tick (10 L more, 10.037 L picked) pours the restored 40.37 L into the chamber through the re-add: 50.407 L in the chamber known at the pre-save 30 %, nothing pending, the overflow's stock gone into it",
+        num(a.heldNext) .. " " .. num(a.chamber) .. " " .. a.chamberStock .. " | " .. a.overflowLeft .. " | " .. a.ops,
+        "0 50.407 GRASS_WINDROW|50.407|KNOWN|KNOWN:7:50.407/50.407/0/0/30 | none | GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED GROUND_BALER_READD:COMMITTED")
+    local c = overflowRound("r86o2", 212, 80, nil)
+    T.eq("O3 another capacity at load (80 L, saved at 60 L) restores nothing, logged once with its reason; the overflow's stock does not reattach and is kept as history",
+        num(c.heldAfter) .. " " .. tostring(c.reattached) .. " " .. tostring(c.refuseLine and c.refuseLine:match("%((%u[%u_,]*)%)")) .. " " .. tostring(c.line and c.line:match("%d+ kept as history")),
+        "0 false CAPACITY 1 kept as history")
+    round(1, "float32", "r86o4", 213, nil, nil)
+    local f4, any = vehiclesFile("r86o4"), false
+    for k in pairs(f4 or {}) do if k:find(".baler." .. SGFieldToolBufferSave.ELEMENT, 1, true) then any = true end end
+    T.eq("O4 a chamber with nothing pending writes no overflow element", tostring(f4 ~= nil) .. "/" .. tostring(any), "true/false")
 end)
 end
 ROW86_BENCH()

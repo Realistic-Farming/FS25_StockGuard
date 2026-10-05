@@ -1007,6 +1007,18 @@ function G.seedTedderBuffer(vehicle, workArea, fillTypeName)
     return true
 end
 
+--- SG2-5e-a: the overflow entry a restored Baler overflow resolves through (A.balerOverflows), set
+--- by SGFieldToolBufferSave from the Baler's onPostLoad, before the restore barrier. It binds no
+--- carrier: SG-1's restore join resolves the saved binding through this entry and reattaches the
+--- saved stock. `producedAs` is the material the overflow was produced as, as at its bind.
+function G.seedBalerOverflow(vehicle, producedAs)
+    if type(vehicle) ~= "table" or type(producedAs) ~= "string" then return false end
+    local binding = A.balerOverflowBinding(vehicle)
+    if binding == nil then return false end
+    A.balerOverflows[SGRecords.carrierKeyString(binding.carrierKey)] = { vehicle = vehicle, producedAs = producedAs }
+    return true
+end
+
 --- After a Tedder pickup line: what it took from the cells joins the pass's pending pickups.
 --- Native folds them into litersToDrop only after the pass's last input (Tedder.lua:296-297).
 function G.tedderBalance(host, pre)

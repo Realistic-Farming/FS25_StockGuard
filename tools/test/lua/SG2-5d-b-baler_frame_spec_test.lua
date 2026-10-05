@@ -1514,9 +1514,12 @@ group("U", function()
     local function answer(fn, ...) local r = { pcall(fn, ...) } if not r[1] then return "RAISED" end return tostring(r[2]) .. "/" .. tostring(r[3]) end
     T.eq("U1 outside a tick the pickup resolves to nothing (NOT_LIVE), and an overflow never bound neither (NOT_BOUND)",
         answer(spec.resolveCarrier, pb) .. " " .. answer(spec.resolveCarrier, ob), "nil/NOT_LIVE nil/NOT_BOUND")
-    T.eq("U2 NAMED: neither is ever restored or enumerated (the overflow's save is 5e's, SG-2 :477)",
-        answer(spec.restoreBinding, pb, {}) .. " " .. answer(spec.restoreBinding, ob, {}) .. "/" .. #spec.kinds[NA.KIND_BALER_PICKUP].enumerateCarriers() .. "/" .. #spec.kinds[NA.KIND_BALER_OVERFLOW].enumerateCarriers(),
-        "nil/NOT_RESTORABLE nil/NOT_RESTORABLE/0/0")
+    -- SG2-5e-a (SG-2 :477) moved the overflow's half: its save extension puts the native scalar back
+    -- at the load, so a restore keeps its saved binding (ROW86's group O is that bar). The pickup
+    -- lives in one tick and is still never restored; neither is ever enumerated.
+    T.eq("U2 NAMED: the pickup is never restored, the overflow keeps its saved binding at a restore (SG2-5e-a), and neither is ever enumerated",
+        answer(spec.restoreBinding, pb, {}) .. " " .. tostring(spec.restoreBinding(ob, {}) == ob) .. "/" .. #spec.kinds[NA.KIND_BALER_PICKUP].enumerateCarriers() .. "/" .. #spec.kinds[NA.KIND_BALER_OVERFLOW].enumerateCarriers(),
+        "nil/NOT_RESTORABLE true/0/0")
     FSBaseMission.delete(m)
 end)
 

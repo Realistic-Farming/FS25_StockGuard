@@ -978,8 +978,9 @@ end
 -- actual scalar amount; its material is NATIVE_GROUP NATIVE_BALER_OVERFLOW_V1, because native
 -- keeps no type beside it. Bound when a full add assigns it, live across ticks while native holds
 -- it, withdrawn when it empties, retired as destruction when its vehicle goes (SG-2 :136). Never
--- enumerated and never restored: its save is 5e's (:477), so a reload retires it, as native
--- discards it. Inside the nested re-add native has zeroed the field before its add (:1180-1182);
+-- enumerated. Since SG2-5e-a (:477) it survives a save: SGFieldToolBufferSave writes the native
+-- scalar and puts it back at the load with this entry, and SG-1's restore join reattaches its
+-- stock; a load that cannot put it back retires it, as native discards it. Inside the nested re-add native has zeroed the field before its add (:1180-1182);
 -- the frame settles that transfer with the after-state it computes, never this read.
 
 A.balerOverflows = A.balerOverflows or {}
@@ -1219,21 +1220,25 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         -- remainder and its entry is the save extension's (SG2-5bc-save, SGFieldToolBufferSave);
         -- without it the entry is absent and resolveCarrier answers NOT_BOUND.
         if kind == A.KIND_TEDDER_BUFFER or kind == A.KIND_MOWER_BUFFER then return savedBinding end
-        -- A Baler pickup lives only inside one work-area tick; the overflow's save is 5e's (SG-2
-        -- :477): a reload retires it, as native discards it.
-        if kind == A.KIND_BALER_PICKUP or kind == A.KIND_BALER_OVERFLOW then return nil, "NOT_RESTORABLE" end
+        -- A Baler overflow keeps its own binding: its restoration with the native scalar and its
+        -- entry is the save extension's (SG2-5e-a, SGFieldToolBufferSave); without it the entry is
+        -- absent and resolveCarrier answers NOT_BOUND.
+        if kind == A.KIND_BALER_OVERFLOW then return savedBinding end
+        -- A Baler pickup lives only inside one work-area tick: nothing to restore.
+        if kind == A.KIND_BALER_PICKUP then return nil, "NOT_RESTORABLE" end
         return nil, "DESCRIPTOR"
     end
     --- [MAINTENANCE row 206] The quantity as native saves it, for the kinds whose level the
     --- engine writes as an XMLValueType.FLOAT: a fill unit (FillUnit.lua:138, :438), a storage
-    --- (Storage.lua:26), a Combine delay or straw slot (SGCombineBufferSave's own FLOAT path) and
-    --- a Tedder or Mower buffer (SGFieldToolBufferSave's own FLOAT path, SG2-5bc-save).
+    --- (Storage.lua:26), a Combine delay or straw slot (SGCombineBufferSave's own FLOAT path), a
+    --- Tedder or Mower buffer (SGFieldToolBufferSave's own FLOAT path, SG2-5bc-save) and a Baler
+    --- overflow (the same module's FLOAT path, SG2-5e-a).
     --- SG-1's restore compares the saved and the reloaded level through it, so a level the
     --- writer rounded still reattaches, exactly. Other kinds give nil and compare as numbers.
     spec.restoredQuantityImage = function(binding, amount)
         local kind = kindOf(binding)
         if kind == A.KIND_FILL_UNIT or kind == A.KIND_STORAGE or kind == A.KIND_DELAY_SLOT or kind == A.KIND_STRAW_SLOT
-            or kind == A.KIND_TEDDER_BUFFER or kind == A.KIND_MOWER_BUFFER then
+            or kind == A.KIND_TEDDER_BUFFER or kind == A.KIND_MOWER_BUFFER or kind == A.KIND_BALER_OVERFLOW then
             return SGValues.nativeFloatImage(amount)
         end
         return nil

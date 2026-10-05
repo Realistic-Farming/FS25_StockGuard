@@ -366,6 +366,94 @@ function MOWER.registerPaths(schema, base, T)
 end
 
 -- ---------------------------------------------------------
+-- The Baler: its pending overflow (SG2-5e-a, SG-2 :477's overflow half)
+-- ---------------------------------------------------------
+--- Baler:saveToXMLFile (Baler.lua:621-656) saves the bales, the platform, the bale type and the
+--- capacity, never spec.fillUnitOverflowFillLevel, and Baler:onLoad zeroes it (:407): native
+--- discards a pending overflow at every reload. It is real pending volume native pours into the
+--- chamber on its next positive fill (:1179-1182), so it is saved here with the layout native's own
+--- fill unit and bale type define, and put back after the original Baler.onPostLoad. FillUnit
+--- precedes Baler in the type's specialization order (vehicleTypes.xml: baseFillable's fillUnit,
+--- then baler), so that is after FillUnit re-added the chamber and before onLoadFinished's deferred
+--- finishBale (:570-575), as :477 asks. Only the overflow scalar is added: the chamber stays
+--- FillUnit's and the bales native's. The round mirror and partial ejection (:473, :475, and :477's
+--- partial-ejection half) are 5e-c and 5e-d.
+local BALER = { name = "baler", className = "Baler", specTable = "spec_baler" }
+F.KINDS[#F.KINDS + 1] = BALER
+
+--- The layout a saved overflow belongs to: the chamber's fill unit, its capacity, the bale type.
+local function balerLayout(vehicle)
+    local spec = vehicle.spec_baler
+    local idx = spec.fillUnitIndex
+    local cap = nil
+    if isNumber(idx) and type(vehicle.getFillUnitCapacity) == "function" then cap = vehicle:getFillUnitCapacity(idx) end
+    return idx, cap, spec.currentBaleTypeIndex
+end
+
+function BALER.collect(vehicle)
+    local spec = vehicle.spec_baler
+    local held = spec.fillUnitOverflowFillLevel
+    if not (isNumber(held) and held > 0) then return nil end
+    local A = SGNativeAdapters
+    local entry = nil
+    if A ~= nil then
+        local b = A.balerOverflowBinding(vehicle)
+        local e = b ~= nil and A.balerOverflows[SGRecords.carrierKeyString(b.carrierKey)] or nil
+        if e ~= nil and e.vehicle == vehicle then entry = e end
+    end
+    local idx, cap, bt = balerLayout(vehicle)
+    return { version = F.VERSION, configFileName = configOf(vehicle), areaCount = 1, fillUnitIndex = idx, capacity = cap,
+             baleTypeIndex = bt, overflow = held, producedAs = entry ~= nil and entry.producedAs or nil }
+end
+
+function BALER.write(xmlFile, base, data)
+    writeLayout(xmlFile, base, data)
+    if isNumber(data.fillUnitIndex) then xmlFile:setValue(base .. "#fillUnitIndex", data.fillUnitIndex) end
+    if isNumber(data.capacity) then xmlFile:setValue(base .. "#fillUnitCapacity", data.capacity) end
+    if isNumber(data.baleTypeIndex) then xmlFile:setValue(base .. "#baleTypeIndex", data.baleTypeIndex) end
+    xmlFile:setValue(base .. "#overflow", data.overflow)
+    if data.producedAs ~= nil then xmlFile:setValue(base .. "#producedAs", data.producedAs) end
+end
+
+function BALER.read(xmlFile, base)
+    local data = readLayout(xmlFile, base)
+    data.fillUnitIndex = xmlFile:getValue(base .. "#fillUnitIndex")
+    data.capacity = xmlFile:getValue(base .. "#fillUnitCapacity")
+    data.baleTypeIndex = xmlFile:getValue(base .. "#baleTypeIndex")
+    data.overflow = xmlFile:getValue(base .. "#overflow")
+    data.producedAs = xmlFile:getValue(base .. "#producedAs")
+    return data
+end
+
+--- Another controller, fill unit, capacity or bale type at the load restores nothing (:477: "Reject
+--- incompatible controller/type/capacity bindings instead of assigning old overflow to a new load").
+--- The capacity is written as a FLOAT, so it compares as images (SGValues.nativeFloatImage, both
+--- sides): a capacity read back as a float32 or as a double has the image of the one written.
+function BALER.restore(vehicle, data)
+    local spec = vehicle.spec_baler
+    local why = layoutRefusal(vehicle, data, 1)
+    if why ~= nil then return 0, { why }, 0 end
+    local idx, cap, bt = balerLayout(vehicle)
+    if data.fillUnitIndex ~= idx or data.baleTypeIndex ~= bt then return 0, { "BALER_LAYOUT" }, 0 end
+    if not isNumber(data.capacity) or not isNumber(cap) or SGValues.nativeFloatImage(cap) ~= SGValues.nativeFloatImage(data.capacity) then return 0, { "CAPACITY" }, 0 end
+    if data.producedAs ~= nil and fillTypeIndex(data.producedAs) == nil then return 0, { "FILL_TYPE" }, 0 end
+    if not isNumber(data.overflow) or data.overflow <= 0 then return 0, { "AREA_VALUES" }, 0 end
+    if spec.fillUnitOverflowFillLevel ~= 0 then return 0, { "AREA_OCCUPIED" }, 0 end
+    spec.fillUnitOverflowFillLevel = data.overflow
+    local seeded = 0
+    if data.producedAs ~= nil and SGGroundObserver ~= nil and SGGroundObserver.seedBalerOverflow(vehicle, data.producedAs) then seeded = 1 end
+    return 1, {}, seeded
+end
+
+function BALER.registerPaths(schema, base, T)
+    schema:register(T.INT, base .. "#fillUnitIndex", "Baler chamber fill unit index (the layout)")
+    schema:register(T.FLOAT, base .. "#fillUnitCapacity", "Baler chamber capacity (the layout)")
+    schema:register(T.INT, base .. "#baleTypeIndex", "Baler current bale type index (the layout)")
+    schema:register(T.FLOAT, base .. "#overflow", "Baler pending overflow (fillUnitOverflowFillLevel)")
+    schema:register(T.STRING, base .. "#producedAs", "StockGuard: the material the overflow was produced as")
+end
+
+-- ---------------------------------------------------------
 -- The hooks, generic over a kind
 -- ---------------------------------------------------------
 --- Appended to the kind's class saveToXMLFile (Vehicle.lua:1212 hands it "<vehicle>.<specName>").
