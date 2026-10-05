@@ -41,7 +41,7 @@
 --      record, the area withdrawn, the returns preserved, litersToDrop the engine's own
 --   R  a remainder the drop did not take is one REMOVE with a LOSS leg (picked, dropped, remainder)
 --   C  the area's retirements keep their own budget: many calls never evict a trailer's history
---   U  the live-only kind: nothing outside a frame, never restored, never enumerated
+--   U  the kind: nothing outside a frame, never enumerated; a restore keeps its saved binding (SG2-5bc-save)
 --   G  the unproved coalesce: a second pickup type in one call (the dual branch, :336-341, reached
 --      only by skipping the engine's reset) is refused and the drop sends no contributions
 --   S  Soil absent: StockGuard's own operations are unchanged
@@ -884,8 +884,9 @@ group("U", function()
     T.eq("U2 NAMED: bound, its native state is litersToDrop exactly, as the target's material, in a vehicle buffer",
         tostring(ns and ns.amount == w.area.litersToDrop) .. "/" .. tostring(ns and ns.materialRef and ns.materialRef.fillTypeName) .. "/" .. tostring(ns and ns.storeKind),
         "true/DRYGRASS_WINDROW/vehicle_buffer")
-    T.eq("U3 NAMED: it is never restored and never enumerated (SG-2 :144's save is a later slice)",
-        answer(spec.restoreBinding, binding, {}) .. "/" .. #spec.kinds[NA.KIND_TEDDER_BUFFER].enumerateCarriers(), "nil/NOT_RESTORABLE/0")
+    -- SG2-5bc-save: the save is StockGuard's (SGFieldToolBufferSave), so a restore keeps the saved binding.
+    T.eq("U3 NAMED: it is never enumerated, and a restore keeps its saved binding (SG2-5bc-save, SG-2 :144)",
+        tostring(spec.restoreBinding(binding, {}) == binding) .. "/" .. #spec.kinds[NA.KIND_TEDDER_BUFFER].enumerateCarriers(), "true/0")
     FSBaseMission.delete(m)
 end)
 

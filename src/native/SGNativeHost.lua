@@ -1083,6 +1083,9 @@ function H.installClassHooks(classes)
     -- SG2-3c: the combine's in-flight buffers survive a save (class-table saver and
     -- post-load event, Vehicle.lua:1212 and :903-906; its savegame paths through Combine.initSpecialization).
     if SGCombineBufferSave ~= nil then SGCombineBufferSave.installClassHooks({ Combine = classes.Combine }) end
+    -- SG2-5bc-save: so do the Tedder's and the Mower's remainders, on this map load's class tables
+    -- (their savegame paths through the module's Vehicle.init append, on every map load).
+    if SGFieldToolBufferSave ~= nil then SGFieldToolBufferSave.installClassHooks({ Tedder = classes.Tedder, Mower = classes.Mower }) end
     -- SG2-4a: the native save boundary (SavegameController's start and result, called by
     -- name through the class) and the Combine drain deferral, installed after the drain
     -- bracket above so the deferral is its outermost wrapper.
