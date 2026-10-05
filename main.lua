@@ -84,6 +84,18 @@ source(modDirectory .. "src/placeables/ChemicalStationAddress.lua")
 source(modDirectory .. "src/placeables/ChemicalStationWipRoute.lua")
 source(modDirectory .. "src/placeables/ChemicalStationSaleGate.lua")
 
+-- The Esc STOCK page's files. Development carries no Esc door for
+-- StockGuard, so these six are additions rather than a merge.
+source(modDirectory .. "src/gui/RfEscModules.lua")
+source(modDirectory .. "src/gui/RfPdaMenuPage.lua")
+source(modDirectory .. "src/gui/RfEscBootstrap.lua")
+source(modDirectory .. "src/presentation/SGEscClientAdapter.lua")
+-- The Stock field guide. Sourced before the guest so the class exists by the time the
+-- guest registers it at door-load time, which is the only moment a GUI can still be loaded from
+-- this mod directory.
+source(modDirectory .. "src/gui/SgGuideDialog.lua")
+source(modDirectory .. "src/gui/SgRfPdaGuest.lua")
+
 -- One controller for the process; the unload hook resets it per mission.
 StockGuardCapacity = StockGuardCapacity or SGCapacity.new()
 SGCapacity.installHooks(StockGuardCapacity)
@@ -213,3 +225,51 @@ if addConsoleCommand ~= nil then
 end
 
 print("[StockGuard] loaded (SG-1 foundation " .. tostring(StockGuard.VERSION) .. "; SG-6 capacity core; extender, Realistic Livestock, Montana and realSilo bound; ProductionControl, Pumps N' Hoses, UnlimitedFillTypes and Distribution Redux refused, see SGCapacity.ADAPTERS)")
+
+--- SG5 Esc guest: register with the shared RF door when present (suite hosts build the door).
+--- BOUNDED, and it says what happened exactly once. The previous version ran from the update tick on every
+--- frame forever inside a bare pcall, so neither success nor failure ever reached log.txt: the session log
+--- contains "SgRfPdaGuest" zero times while the Esc STOCK page sat on the host placeholder.
+local SG_ESC_MAX_TRIES = 600          -- about ten seconds of update ticks, then stop and say so
+local _sgEscTries, _sgEscSettled = 0, false
+
+local function tryRegisterSg5Esc()
+    if _sgEscSettled then return end
+    if g_dedicatedServer ~= nil then _sgEscSettled = true return end
+    if SgRfPdaGuest == nil or type(SgRfPdaGuest.tryRegister) ~= "function" then
+        _sgEscTries = _sgEscTries + 1
+        if _sgEscTries >= SG_ESC_MAX_TRIES then
+            _sgEscSettled = true
+            print("[StockGuard] Esc guest NOT registered: SgRfPdaGuest.tryRegister is unavailable")
+        end
+        return
+    end
+    _sgEscTries = _sgEscTries + 1
+    local ok, res = pcall(SgRfPdaGuest.tryRegister)
+    if ok and res == true then
+        _sgEscSettled = true
+        print("[StockGuard] SgRfPdaGuest: registered module stockGuard on rfEscModules")
+        return
+    end
+    if not ok then
+        _sgEscSettled = true
+        print("[StockGuard] Esc guest registration ERROR: " .. tostring(res))
+        return
+    end
+    if _sgEscTries >= SG_ESC_MAX_TRIES then
+        _sgEscSettled = true
+        print("[StockGuard] Esc guest NOT registered after " .. tostring(_sgEscTries)
+            .. " attempts: the shared RF door never became available")
+    end
+end
+
+-- The guest registers from the mission hooks, bounded by SG_ESC_MAX_TRIES above.
+if FSBaseMission ~= nil and not StockGuard_sg5EscHooked then
+    StockGuard_sg5EscHooked = true
+    if Mission00 ~= nil and Mission00.loadMission00Finished ~= nil then
+        Mission00.loadMission00Finished = Utils.appendedFunction(
+            Mission00.loadMission00Finished, function() pcall(tryRegisterSg5Esc) end)
+    end
+    FSBaseMission.update = Utils.appendedFunction(
+        FSBaseMission.update, function() pcall(tryRegisterSg5Esc) end)
+end
