@@ -773,3 +773,16 @@ function ENGINE_HARVEST_TICK(header, combine, dt)
         for _, class in ipairs(combine.specClasses) do class.onUpdateTick(combine, dt, false, false, false) end
     end
 end
+
+--- SpecializationManager:addSpecialization (:68-95, from loadMapData, MPLoadingScreen.lua:352)
+--- sources Combine.lua again on every map load: Combine.lua:1 makes a NEW class table with the
+--- native functions only, nothing a mod wrote on the old one. A mod is not sourced again
+--- (mods.lua:974-979). MODELED: a fresh table from the pristine class this file defined,
+--- captured here, before any mod is sourced (MAINTENANCE row 216).
+local PRISTINE_COMBINE = {}
+for k, v in pairs(Combine) do PRISTINE_COMBINE[k] = v end
+function ENGINE_RESOURCE_COMBINE()
+    local t = {}
+    for k, v in pairs(PRISTINE_COMBINE) do t[k] = v end
+    Combine = t
+end

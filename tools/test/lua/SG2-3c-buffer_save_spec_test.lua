@@ -22,6 +22,10 @@
 -- Groups:
 --   S  the entry-point bar: a slot with 60 ms of delay left and its straw survive the
 --      save, reattach at the barrier, and drain on time
+--   P  a session's second map load (MAINTENANCE row 216): Combine.lua sourced again into a
+--      new class table (SpecializationManager.lua:68-95 from loadMapData,
+--      MPLoadingScreen.lua:352) while StockGuard is not (mods.lua:976); that load's save
+--      still carries the element, and the next load restores it
 --   Z  a slot past its delay at save time is due on the first update after the load
 --   I  an incompatible layout, an unknown fill type, another straw layout, another
 --      version: unresolved, nothing reallocated, SG-1 retires as absent
@@ -225,7 +229,7 @@ group("S", function()
     end, "save1")
     T.ok("S1 [reached] main.lua's load path wrapped the Combine class's saver and its post-load event", host ~= nil and host.ready and rawget(Combine, B.MARKER) ~= nil)
     local schema1 = Vehicle.xmlSchemaSavegame
-    T.eq("S1b the savegame schema Vehicle.init built carries the element's paths beside native Combine's three, registered through Combine.initSpecialization when the mission loaded",
+    T.eq("S1b the savegame schema Vehicle.init built carries the element's paths beside native Combine's three, registered from the Vehicle.init hook when the mission loaded (MAINTENANCE row 216)",
         tostring(schemaHas(B.SAVEGAME_BASE .. "#version")) .. "/" .. tostring(schemaHas(B.SAVEGAME_BASE .. ".delaySlot(?)#remainingDelay")) .. "/" .. tostring(schemaHas(B.SAVEGAME_BASE .. ".straw.slot(?)#groundType")) .. "/" .. tostring(schemaHas("vehicles.vehicle(?).combine#workedHectars")),
         "true/true/true/true")
     ENGINE_XML_ERRORS, ENGINE_XML_ERROR_LOG = 0, {}
@@ -258,6 +262,38 @@ group("S", function()
     ENGINE_HARVEST_TICK(nil, w2.combine, 16)
     T.eq("S7 66 ms in, the drain is ONE TRANSFER of the 6 L from the reattached slot into the hopper",
         head(host2.lastDrain) .. "/" .. legsOf(host2.lastDrain, { [slot1] = "slot1", [hop] = "hopper" }) .. "/" .. num(w2.combine:getFillUnitFillLevel(1)), "COMBINE_DRAIN/COMMITTED/slot1>hopper:6:TRANSFERRED/6")
+    FSBaseMission.delete(m2)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- P. A SESSION'S SECOND MAP LOAD (MAINTENANCE row 216)
+-- ══════════════════════════════════════════════════════════════════════════════
+group("P", function()
+    -- One process: a first map load, then (quit to the menu) Combine.lua sourced again into
+    -- a new class table, and a second map load that harvests and saves. StockGuard is not
+    -- sourced again, so nothing it appended to the old Combine table reaches the new one.
+    local m0 = boot(function() end, "saveP0")
+    FSBaseMission.delete(m0)
+    local oldCombine = Combine
+    ENGINE_RESOURCE_COMBINE()
+    local m, sg, host, w = boot(function(m, w)
+        w.combine = combineIn(m, "vehicle:delay", OPTS)
+        w.header = headerIn(m, "vehicle:delayHeader", w.combine, HEADER)
+        ENGINE_PLANE.sow(FRUIT, 0, 0, 6, 1, 4)
+    end, "saveP")
+    T.ok("P0 [reached] the second map load ran on a new Combine class table with StockGuard's saver on it", Combine ~= oldCombine and rawget(Combine, B.MARKER) ~= nil)
+    ENGINE_XML_ERRORS, ENGINE_XML_ERROR_LOG = 0, {}
+    ENGINE_HARVEST_TICK(w.header, w.combine, 16)
+    ENGINE_HARVEST_TICK(nil, w.combine, 40)
+    local xml = saveWorld(m, sg, w.combine, "saveP")
+    T.eq("P1 NAMED: the second map load's schema carries the element's paths and its save writes the live slot, with no 'Path not registered' error",
+        tostring(schemaHas(B.SAVEGAME_BASE .. "#version")) .. "/" .. savedBuffer(xml, VKEY .. ".combine") .. "/" .. num(ENGINE_XML_ERRORS) .. (ENGINE_XML_ERRORS > 0 and (" [" .. table.concat(ENGINE_XML_ERROR_LOG, "; ") .. "]") or ""),
+        "true/v1/7:true/d1=6:WHEAT:60/s4:f1:d4:t99944:WHEAT/1=6:6:6:0.5:0.6/0")
+    local m2, sg2, host2, w2 = reload(m, "saveP", function(m2, w2)
+        w2.combine = loadCombine(m2, "vehicle:delay", { loadingDelay = 100, hopperCapacity = 50, lastValid = FillType.UNKNOWN }, "saveP")
+        w2.header = headerIn(m2, "vehicle:delayHeader", w2.combine, HEADER)
+    end)
+    T.eq("P2 NAMED: the next load restores both buffers it saved", unresolvedOf(w2.combine), "2:")
     FSBaseMission.delete(m2)
 end)
 

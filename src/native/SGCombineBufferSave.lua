@@ -26,12 +26,10 @@
 -- Vehicle.xmlSchemaSavegame (VehicleSystem.lua:293 and :324), and XMLFile:setValue on
 -- a path that schema does not know sets nothing and logs "Path not registered"
 -- (XMLFile.lua:181-186, :273-294; getValue answers nil). Vehicle.init rebuilds that
--- schema on every mission load (Vehicle.lua:249, MPLoadingScreen.lua:767), so the
--- element's paths are registered where native Combine registers its own three
--- (Combine.lua:81-84): Combine.initSpecialization, appended through the class table
--- when this file is sourced (MPLoadingScreen.lua:735) and called after Vehicle.init by
--- SpecializationManager:initSpecializations (SpecializationManager.lua:97-104,
--- MPLoadingScreen.lua:776) on every mission load.
+-- schema on every map load (Vehicle.lua:249, MPLoadingScreen.lua:767), so the element's
+-- paths are registered onto each new schema from an SGClassHook record on Vehicle.init
+-- (MAINTENANCE row 216; see installSchemaHook below for why not Combine's own
+-- initSpecialization, which reached a session's first map load only).
 --
 -- WHAT IS SAVED (:140, :148). Delay slots: only valid ones, each with its index, its
 -- actual fillLevelDelta, its canonical fill type name and its remaining delay,
@@ -422,30 +420,30 @@ function B.registerSavegamePaths(schema)
     return true
 end
 
---- Append Combine.initSpecialization through the class table, once per mission load:
---- SpecializationManager:loadMapData re-sources Combine.lua on every mission load
---- (MPLoadingScreen.lua:352), so each load's class table is new and takes the append
---- once. It hooks the call SpecializationManager:initSpecializations makes after
---- Vehicle.init on every mission load (SpecializationManager.lua:97-104;
---- MPLoadingScreen.lua:767 and :776),
---- where native Combine registers its own savegame paths (Combine.lua:81-84). The
---- schema is read from the Vehicle class when the call comes, so it is that load's.
-function B.installSchemaHook(combineClass, vehicleClass)
-    if type(combineClass) ~= "table" or type(combineClass.initSpecialization) ~= "function" then return false end
-    if rawget(combineClass, B.MARKER .. "Schema") ~= nil then return false end
-    local original = combineClass.initSpecialization
-    combineClass.initSpecialization = function(...)
-        local packn = function(...) return select("#", ...), { ... } end
-        local n, r = packn(original(...))
-        local ok, err = pcall(B.registerSavegamePaths, type(vehicleClass) == "table" and vehicleClass.xmlSchemaSavegame or nil)
+--- WHEN THE PATHS ARE REGISTERED (MAINTENANCE row 216). Not from Combine.initSpecialization:
+--- the engine sources Combine.lua again into a NEW class table on every map load
+--- (SpecializationManager:addSpecialization from loadMapData, SpecializationManager.lua:68-95;
+--- MPLoadingScreen.lua:352), while StockGuard is sourced once per game process (loadMod
+--- returns once g_modIsLoaded is set, mods.lua:974-979; only a mods reload clears it,
+--- :1173-1186). An append on Combine made when this file is sourced reached the first map
+--- load only: from a session's second map load every write of this element logged "Path not
+--- registered" and saved nothing. Vehicle is a base class, sourced once per process, and
+--- Vehicle.init builds a fresh savegame schema on every map load (Vehicle.lua:249;
+--- MPLoadingScreen.lua:767) before the vehicles file is created or loaded with it
+--- (VehicleSystem.lua:293, :324). So the paths are registered onto the schema the original
+--- Vehicle.init just made, after it returns, through one SGClassHook record (MAINTENANCE row
+--- 187): a mods reload rebinds the record and never stacks a second wrapper. The shape is
+--- SGFieldToolBufferSave's.
+B.HOOK_ID = "combineBufferSave"
+function B.installSchemaHook(vehicleClass)
+    if type(vehicleClass) ~= "table" or SGClassHook == nil then return false end
+    return SGClassHook.wrap(vehicleClass, "init", B.HOOK_ID, SGClassHook.around(nil, function()
+        local ok, err = pcall(B.registerSavegamePaths, vehicleClass.xmlSchemaSavegame)
         if not ok then log("schema registration failed (" .. tostring(err) .. ")") end
-        return unpack(r, 1, n)
-    end
-    rawset(combineClass, B.MARKER .. "Schema", original)
-    return true
+    end), B)
 end
 
 -- Installed when this file is sourced: MPLoadingScreen.lua:735 sources a mod before
--- Vehicle.init at :767 and initSpecializations at :776, so the first mission's schema
--- carries the paths too; the class-table marker keeps a re-source from wrapping twice.
-if type(Combine) == "table" and type(Vehicle) == "table" then B.installSchemaHook(Combine, Vehicle) end
+-- Vehicle.init at :767, so the first map load's schema carries the paths too, and every
+-- later one through the same record.
+if type(Vehicle) == "table" and type(Vehicle.init) == "function" then B.installSchemaHook(Vehicle) end
