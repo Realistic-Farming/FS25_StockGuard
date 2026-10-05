@@ -5,6 +5,7 @@
 > Engineering owed lives in the tracking repo's MAINTENANCE.md; this file carries the mod's own short list.
 
 ## Features
+- [x] 2026-10-05: SG2-5e-a (SG-2 :477, overflow half): a square baler's pending overflow is saved with the vehicle and put back after native setup, its stock reattaching; another capacity or bale type restores nothing. Rest of 5e: round, non-stop, partial ejection. In-game check pending.
 - [x] 2026-10-04: SG2-5bc-save (SG-2 :144, :247): a tedder's and a mower's remainder are saved with the vehicle and restored after native setup, the stock reattaching with its record and the mower's fresh share; another configuration, layout or binding restores nothing. In-game check pending.
 - [x] 2026-10-03: SG-2 :243, plain sowing's Destruction profile around `processSowingMachineArea` (row 171's plain-sowing clause): emptied tracked cells retire as Destruction, unaccounted changes go unknown, no double retirement with direct sowing's clear. In-game check pending.
 
