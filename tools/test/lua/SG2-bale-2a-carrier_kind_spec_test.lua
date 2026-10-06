@@ -12,6 +12,8 @@
 --     unbound for the session and a NEW stock, UNKNOWN with INITIAL_OBSERVATION, after the next
 --     enumeration (:894's "never match"; OBJECT_RECREATED_UNBOUND is WITHHELD for the hall adapter);
 --   * a world bale and a loader's bale keep their binding through a save and reload (same uniqueId);
+--   * a Bale subclass (PackedBale.lua:4) is a bale: bound UNKNOWN, and its delete, which reaches
+--     Bale's through superClass() (PackedBale.lua:14-17), one REMOVE;
 --   * two map loads in one process.
 --
 -- Runs in the MOD'S OWN ENVIRONMENT (--!env: modenv) on the SG2-4a world: the engine models, then
@@ -97,9 +99,9 @@ local function readFloat(text) return f32(tonumber(text)) end
 local MountableObject = engineClass({})
 local BaleModel, Bale_mt = engineClass({}, MountableObject)
 local NEXT_NODE = 70000
-function BaleModel.new(isServer, isClient)
+function BaleModel.new(isServer, isClient, customMt)
     NEXT_NODE = NEXT_NODE + 1
-    local self = setmetatable({ isServer = isServer, isClient = isClient, nodeId = NEXT_NODE, fillType = STRAW, fillLevel = 0, needsSaving = true }, Bale_mt)
+    local self = setmetatable({ isServer = isServer, isClient = isClient, nodeId = NEXT_NODE, fillType = STRAW, fillLevel = 0, needsSaving = true }, customMt or Bale_mt)
     REAL.registerObjectClassName(self, "Bale")
     return self
 end
@@ -132,6 +134,18 @@ function BaleModel:saveToXMLFile()
     return { uniqueId = self.uniqueId, filename = self.xmlFilename, fillType = self.fillType, fillLevel = writeFloat(self.fillLevel) }
 end
 engine("Bale", BaleModel)
+--- objects/PackedBale.lua at 1.24: a Bale subclass (:4), made through Bale.new with its own class
+--- (:6-8); its delete runs its own teardown, then Bale's through superClass() (:14-17, abbreviated).
+local PackedBaleModel, PackedBale_mt = engineClass({}, BaleModel)
+function PackedBaleModel.new(isServer, isClient)
+    local self = BaleModel.new(isServer, isClient, PackedBale_mt)
+    REAL.registerObjectClassName(self, "PackedBale")
+    return self
+end
+function PackedBaleModel:delete()
+    self.packedTornDown = true
+    PackedBaleModel:superClass().delete(self)
+end
 --- Another kind of item in the item system (a pallet's object, say): not a Bale.
 local OtherItem, Other_mt = engineClass({}, MountableObject)
 function OtherItem.new() local self = setmetatable({}, Other_mt) REAL.registerObjectClassName(self, "Other") return self end
@@ -521,6 +535,26 @@ group("X", function()
     local _, why = kind.resolveCarrier(forged)
     T.eq("X1 another kind of item in the item system is neither enumerated nor resolved as a bale (Class isa, shared/class.lua:30)",
         baleCarriers(sg) .. "/" .. tostring(why) .. "/" .. tostring(NA.isBale(w.other)) .. "/" .. tostring(NA.isBale(w.bale)), "1/NOT_A_BALE/false/true")
+    endMission(m)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- P. A BALE SUBCLASS IS A BALE (PackedBale.lua:4; InlineBaleSingle.lua:2 likewise)
+-- ══════════════════════════════════════════════════════════════════════════
+group("P", function()
+    resetEngine()
+    local m, sg, host, w = boot(function(mm, ww)
+        ww.packed = PackedBaleModel.new(true, false)
+        ww.packed:loadFromConfigXML("data/objects/bales/packedSquareBale120.xml", 0, 0, 0, 0, 0, 0)
+        ww.packed:setFillType(STRAW)
+        ww.packed:setFillLevel(1500)
+    end, "p_save", { index = 21 })
+    local id = cid(w.packed)
+    local bound = stockText(stockOf(sg, w.packed))
+    playerDelete(w.packed)
+    T.eq("P1 NAMED: a packed bale (a Bale subclass) is a carrier like any bale, UNKNOWN (no homogeneity claimed; :669's portioned form is not carried), and its delete, its own teardown and then Bale's through superClass(), is ONE REMOVE of its token",
+        bound .. "/" .. removeText(host) .. "/" .. retiredFor(sg, id) .. "/" .. tostring(sg.operations.carriers[id] == nil) .. "/" .. tostring(w.packed.packedTornDown),
+        "STRAW|1500|UNKNOWN|INITIAL_OBSERVATION/COMMITTED/BALE_DELETE/1500/REMOVED:BALE_DELETED/1/true/true")
     endMission(m)
 end)
 
