@@ -1048,6 +1048,132 @@ function A.balerOverflowKind(vehicles)
     return spec
 end
 
+-- ── World bales (SG2 bale family, part 2a) ──────────────────────────────────
+--
+-- ONE CARRIER PER WORLD BALE, KEYED BY ITS OWN NATIVE uniqueId (Bob's bale-family intake, Part 2a;
+-- SG-2 :400, :894). Bale:getUniqueId (objects/Bale.lua:802-805) is the nativeOwnerKey, with a fixed
+-- component key. The engine saves and loads that id (:417, :346, applied :320), and a store that
+-- keeps it (a bale loader, an auto loader, a hall) brings the same key back. resolveCarrier goes
+-- through ItemSystem:getItemByUniqueId (misc/ItemSystem.lua:156-158) and accepts only a Bale; the
+-- native state is the bale's own fill type and fill level (Bale.lua:481, :561).
+--
+-- NEVER A SECOND CARRIER FOR A MOUNTED ROUND BALE. A round Baler's mounted bale and its still-full
+-- chamber are one material amount (SG-2 :473): that mirror is Part 3's alias, so a bale in a round
+-- Baler's spec.bales is neither enumerated nor resolved here.
+--
+-- A BALE FIRST SEEN HAS UNKNOWN HISTORY (:656): no birth is known in 2a. Every bale the item system
+-- holds is enumerated at the restore barrier; one made later is bound by the operation that makes
+-- it (2b's births), not by a scan.
+--
+-- ITS END. Bale:delete is a REMOVE of the bound bale's token (:400), made by the native host before
+-- the original deletes it (SGNativeHost:onBaleDeleted), and the carrier is withdrawn: a retired token
+-- never reattaches. An external setFillLevel (:284) is SG-1's reconcile at the next read.
+A.KIND_BALE = "bale"
+A.BALE_PROFILE = "NATIVE_BALE_V1"
+A.BALE_STORE = "bale"
+
+--- Is this object a native Bale (Class's isa, shared/class.lua:30)?
+function A.isBale(object)
+    if type(object) ~= "table" or Bale == nil or type(object.isa) ~= "function" then return false end
+    local ok, yes = pcall(object.isa, object, Bale)
+    return ok and yes == true
+end
+
+--- Is this bale mounted in a round Baler, its chamber's mirror (spec.bales, Baler.lua:1455-1490)?
+function A.baleMountedInRoundBaler(bale, vehicles)
+    for _, v in ipairs(vehicles and vehicles() or {}) do
+        local spec = type(v) == "table" and v.spec_baler or nil
+        if type(spec) == "table" and spec.hasUnloadingAnimation == true and type(spec.bales) == "table" then
+            for _, b in ipairs(spec.bales) do
+                if type(b) == "table" and b.baleObject == bale then return true end
+            end
+        end
+    end
+    return false
+end
+
+function A.baleBinding(bale)
+    if not A.isBale(bale) then return nil end
+    local ownerKey = persistentIdOf(bale)
+    if ownerKey == nil then return nil end
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.KIND_BALE, A.BALE_PROFILE, { kind = A.KIND_BALE })
+end
+
+--- Is this carrier key a world bale of the native adapter?
+function A.isBaleKey(carrierKey)
+    return type(carrierKey) == "table" and carrierKey.adapterId == A.NATIVE_ADAPTER_ID and carrierKey.componentKey == A.KIND_BALE
+end
+
+--- The mission's item system: the injected source first, then the mission's own.
+local function itemSystemOf(items)
+    local system = type(items) == "function" and items() or nil
+    if system == nil and g_currentMission ~= nil then system = g_currentMission.itemSystem end
+    return system
+end
+
+--- The world bale KIND of the native adapter.
+---@param items function     () -> the mission's ItemSystem
+---@param vehicles function  () -> list of vehicles (for the round Baler's mounted bales)
+function A.baleKind(items, vehicles)
+    local spec = {}
+
+    spec.resolveCarrier = function(binding)
+        if not isServer() then return nil, "CLIENT" end
+        if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil, "BINDING" end
+        local d = binding.sourceDescriptor
+        if type(d) ~= "table" or d.kind ~= A.KIND_BALE or binding.carrierKey.componentKey ~= A.KIND_BALE then return nil, "DESCRIPTOR" end
+        local system = itemSystemOf(items)
+        if system == nil or type(system.getItemByUniqueId) ~= "function" then return nil, "NO_ITEM_SYSTEM" end
+        local ok, bale = pcall(system.getItemByUniqueId, system, binding.carrierKey.nativeOwnerKey)
+        if not ok or bale == nil then return nil, "BALE_ABSENT" end
+        if not A.isBale(bale) then return nil, "NOT_A_BALE" end
+        if A.baleMountedInRoundBaler(bale, vehicles) then return nil, "ROUND_BALER_MOUNTED" end
+        return { bale = bale }
+    end
+
+    spec.readNativeState = function(binding, native)
+        if not isServer() then return nil, "CLIENT" end
+        if type(native) ~= "table" or not A.isBale(native.bale) then return nil, "NATIVE" end
+        local okL, level = pcall(native.bale.getFillLevel, native.bale)
+        if not okL or type(level) ~= "number" or level ~= level or level < 0 then return nil, "LEVEL" end
+        local okT, fillType = pcall(native.bale.getFillType, native.bale)
+        local name = okT and fillTypeNameOf(fillType) or nil
+        if level > 0 and name == nil then return nil, "FILL_TYPE_UNNAMED" end
+        return {
+            materialRef = name ~= nil and { kind = "FILL_TYPE", fillTypeName = name } or nil,
+            amount = level,
+            unit = A.UNIT,
+            ownerFarmId = ownerFarmOf(native.bale),
+            storeKind = A.BALE_STORE,
+            nativeUniqueId = persistentIdOf(native.bale),
+        }
+    end
+
+    --- Every server bale in the item system, in its own save order, except a round Baler's
+    --- mounted bale (Part 3's alias).
+    spec.enumerateCarriers = function()
+        if not isServer() then return {} end
+        local system = itemSystemOf(items)
+        local out = {}
+        for _, entry in ipairs(system ~= nil and type(system.sortedItemsToSave) == "table" and system.sortedItemsToSave or {}) do
+            local bale = type(entry) == "table" and entry.item or nil
+            if A.isBale(bale) and not A.baleMountedInRoundBaler(bale, vehicles) then
+                local binding = A.baleBinding(bale)
+                if binding ~= nil then out[#out + 1] = { binding = binding } end
+            end
+        end
+        return out
+    end
+
+    spec.hasAccess = function(binding, actor)
+        local native = spec.resolveCarrier(binding)
+        if native == nil then return false end
+        return actorCanAccess(actor, native.bale)
+    end
+
+    return spec
+end
+
 -- ── Ground cells (SG2-4b) ───────────────────────────────────────────────────
 --
 -- ONE CARRIER PER NATIVE HEIGHT PIXEL (SG-2 :158-160; SG-1 :104, :220). The grain is the
@@ -1166,7 +1292,8 @@ end
 ---@param placeables function  () -> list of placeables
 ---@param vehicles function    () -> list of vehicles
 ---@param samplers function|nil () -> the current ground sampler (SG2-4b)
-function A.nativeAdapterSpec(placeables, vehicles, samplers)
+---@param items function|nil    () -> the mission's ItemSystem (the bale family, part 2a)
+function A.nativeAdapterSpec(placeables, vehicles, samplers, items)
     local kinds = {
         [A.KIND_STORAGE] = A.storageKind(placeables),
         [A.KIND_FILL_UNIT] = A.fillUnitKind(vehicles),
@@ -1178,11 +1305,12 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         [A.KIND_MOWER_BUFFER] = A.mowerBufferKind(vehicles),
         [A.KIND_BALER_PICKUP] = A.balerPickupKind(vehicles),
         [A.KIND_BALER_OVERFLOW] = A.balerOverflowKind(vehicles),
+        [A.KIND_BALE] = A.baleKind(items, vehicles),
     }
     local spec = {
         version        = A.ADAPTER_VERSION,
         carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT, A.KIND_GROUND, A.KIND_WINDROWER_AREA, A.KIND_TEDDER_BUFFER,
-                          A.KIND_MOWER_BUFFER, A.KIND_BALER_PICKUP, A.KIND_BALER_OVERFLOW },
+                          A.KIND_MOWER_BUFFER, A.KIND_BALER_PICKUP, A.KIND_BALER_OVERFLOW, A.KIND_BALE },
         materialGroups = { A.BALER_OVERFLOW_GROUP },
         kinds          = kinds,
     }
@@ -1226,6 +1354,8 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         if kind == A.KIND_BALER_OVERFLOW then return savedBinding end
         -- A Baler pickup lives only inside one work-area tick: nothing to restore.
         if kind == A.KIND_BALER_PICKUP then return nil, "NOT_RESTORABLE" end
+        -- A world bale keeps its own binding: the engine brings the same uniqueId back (Bale.lua:320).
+        if kind == A.KIND_BALE then return savedBinding end
         return nil, "DESCRIPTOR"
     end
     --- [MAINTENANCE row 206] The quantity as native saves it, for the kinds whose level the
@@ -1238,7 +1368,9 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
     spec.restoredQuantityImage = function(binding, amount)
         local kind = kindOf(binding)
         if kind == A.KIND_FILL_UNIT or kind == A.KIND_STORAGE or kind == A.KIND_DELAY_SLOT or kind == A.KIND_STRAW_SLOT
-            or kind == A.KIND_TEDDER_BUFFER or kind == A.KIND_MOWER_BUFFER or kind == A.KIND_BALER_OVERFLOW then
+            or kind == A.KIND_TEDDER_BUFFER or kind == A.KIND_MOWER_BUFFER or kind == A.KIND_BALER_OVERFLOW
+            -- A world bale's level is an XMLValueType.FLOAT in items.xml (Bale.lua:17, saved :417).
+            or kind == A.KIND_BALE then
             return SGValues.nativeFloatImage(amount)
         end
         return nil
@@ -1249,6 +1381,7 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers)
         for _, e in ipairs(kinds[A.KIND_FILL_UNIT].enumerateCarriers()) do out[#out + 1] = e end
         for _, e in ipairs(kinds[A.KIND_DELAY_SLOT].enumerateCarriers()) do out[#out + 1] = e end
         for _, e in ipairs(kinds[A.KIND_STRAW_SLOT].enumerateCarriers()) do out[#out + 1] = e end
+        for _, e in ipairs(kinds[A.KIND_BALE].enumerateCarriers()) do out[#out + 1] = e end
         return out
     end
     return spec

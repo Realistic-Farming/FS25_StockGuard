@@ -128,7 +128,7 @@ function H:install()
     if self.handle == nil or type(self.handle.registerCarrierAdapter) ~= "function" then return false, "NO_HANDLE" end
     local host = self
 
-    local spec = A.nativeAdapterSpec(self.sources.placeables, self.sources.vehicles, function() return host:groundSampler() end)
+    local spec = A.nativeAdapterSpec(self.sources.placeables, self.sources.vehicles, function() return host:groundSampler() end, self.sources.items)
     local enumerateNative = spec.enumerateCarriers
     spec.enumerateCarriers = function()
         host.ready = true
@@ -399,6 +399,35 @@ end
 --- A station of one kind is being removed from the storage system.
 function H:onStationUnregistered(station, kind)
     self:unbindStation(station, kind)
+end
+
+--- A world bale is being deleted (Bale.delete, before the original; the SG2 bale family, part 2a).
+--- A bound bale's delete is one REMOVE of its token (SG-2 :400): its whole level retired, then its
+--- carrier withdrawn, so a retired token never reattaches. A bale with no carrier is none of ours.
+--- Never at mission end: main.lua's FSBaseMission.delete prepend tears this host down before
+--- BaseMission:delete empties the item system (BaseMission.lua:144-145), so no host is current then.
+--- In 2a no caller is named (nativePath BALE_DELETE): every route is the same REMOVE until a route's
+--- own profile exists (a bale trigger, a mixer wagon, a hall).
+function H:onBaleDeleted(bale)
+    if not self.ready or self.nativeLease == nil then return end
+    local binding = A.baleBinding(bale)
+    if binding == nil then return end
+    local cid = SGRecords.carrierKeyString(binding.carrierKey)
+    local cap = self.handle.captureOperation(self.nativeLease, "REMOVE", { { carrierId = cid } })
+    if cap == nil then return end
+    local before = cap.before.carriers[cid]
+    local amount = before ~= nil and before.amount or 0
+    local allocations = {}
+    if amount > 0 then
+        allocations[1] = { source = { carrierId = cid }, sourceAmount = amount, sourceUnit = A.UNIT,
+                           destination = { retire = true }, result = "REMOVED", reason = "BALE_DELETED" }
+    end
+    local report = { participantsAfter = { [cid] = { amount = 0, unit = A.UNIT, storeKind = A.BALE_STORE } },
+                     allocations = allocations, outcomeEvidence = { nativePath = "BALE_DELETE", remainder = amount } }
+    local outcome, reason = self.handle.settleOperation(cap.handle, report)
+    self.lastSettlement = { callRef = "bale:delete:" .. cid, outcome = outcome, reason = reason, report = report }
+    self.dirty[cid] = nil
+    self.handle.withdrawCarrier(self.nativeLease, cid, "BALE_DELETED")
 end
 
 --- A vehicle was removed (VehicleSystem.removeVehicle, after its teardown,
@@ -1110,6 +1139,14 @@ function H.installClassHooks(classes)
     wrapClassMethod(classes.VehicleSystem, "removeVehicle", function(vehicle)
         dispatch("onVehicleRemoved", vehicle)
     end, nil)
+    -- SG2 bale family, part 2a: a world bale's delete (Bale.lua:61-77), before the original, while the
+    -- bale is still in the item system. The bale is the method's own self.
+    if type(classes.Bale) == "table" and type(classes.Bale.delete) == "function" then
+        SGClassHook.wrap(classes.Bale, "delete", H.HOOK_ID, function(original, self, ...)
+            dispatch("onBaleDeleted", self)
+            return original(self, ...)
+        end, H)
+    end
     -- SG2-2: stations are bound when the storage system registers them and unbound
     -- before it forgets them (StorageSystem.lua:67/:84, :162/:182). Registration is
     -- read from the system's own table after the call, not from a return value.
