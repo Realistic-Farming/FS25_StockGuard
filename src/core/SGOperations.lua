@@ -749,13 +749,17 @@ local function interpretDestination(self, context, kind, contributions, destinat
     if destinationBefore ~= nil then
         for pid in pairs(destinationBefore.properties or {}) do propertyIds[pid] = true end
     end
-    -- SG-3 Part 1 (Bob's SG-3 intake, U1; SG-1 :253-255, :285; SG-3 :98-100). A genuine birth, a BIRTH or
-    -- REPLACE candidate born from creation slots in anything but a REBIND, is interpreted by every STORED
-    -- producer that declared births (SGRegistry, birth = true), through its transform, once. A slot's
-    -- contribution carries no properties of its own, so before this no producer was ever asked about a birth.
-    -- An UPDATE, a REBIND and a restore never come here as a birth (SG-3 :99, :346).
+    -- SG-3 Part 1 (Bob's SG-3 intake, U1, and his R-15 note of 2026-10-07; SG-1 :253-255, :285; SG-3 :98-100).
+    -- New material born from creation slots, into any candidate holding stock (a BIRTH, a REPLACE, or an UPDATE
+    -- of material already there: a harvest fills one hopper over many ticks) in anything but a REBIND, is
+    -- interpreted by every STORED producer that declared births (SGRegistry, birth = true), through its
+    -- transform, once, with the existing record as outputs[1].destinationBefore (SG-3 :98, "existing material
+    -- requires its expected material and property revisions"). A slot's contribution carries no properties of
+    -- its own, so before this no producer was ever asked about new material. Only a candidate holding stock
+    -- reaches here (settle's step 7). A carrier-only move, a REBIND and a restore never come here as a birth
+    -- (SG-3 :99, :346).
     local birth = false
-    if kind ~= "REBIND" and (cand.mode == "BIRTH" or cand.mode == "REPLACE") then
+    if kind ~= "REBIND" then
         for _, c in ipairs(contributions) do
             if c.slotId ~= nil then birth = true break end
         end

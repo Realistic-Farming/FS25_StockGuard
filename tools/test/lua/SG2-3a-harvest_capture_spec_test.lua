@@ -427,7 +427,10 @@ group("Q", function()
     stored("sg3.q", { birth = true,
         transform = function(ctx, inputs, outputs)
             local ev = ctx.report and ctx.report.outcomeEvidence or {}
-            calls[#calls + 1] = { kind = ctx.operationKind, path = ev.nativePath, portions = #(ev.portions or {}), carrierId = outputs[1].carrierId, inputs = #inputs }
+            local db = outputs[1].destinationBefore
+            local held = db and db.properties and db.properties["sg3.q"] or nil
+            calls[#calls + 1] = { kind = ctx.operationKind, path = ev.nativePath, portions = #(ev.portions or {}), carrierId = outputs[1].carrierId, inputs = #inputs,
+                before = held and num(held.knownAmount) or "none" }
             return rec("sg3.q", outputs[1].amount, { portions = #(ev.portions or {}) })
         end,
         combine = function(ctx, contributions, before)
@@ -469,10 +472,10 @@ group("Q", function()
     ENGINE_PLANE.sow(FRUIT, 0, 0, 8, 1, 4)
     ENGINE_HARVEST_TICK(w.header, w.combine, 16)
     q = stockAt(sg, hop) and stockAt(sg, hop).properties["sg3.q"]
-    local hopperBirths = 0
-    for i = n + 1, #calls do if calls[i].carrierId == hop then hopperBirths = hopperBirths + 1 end end
-    T.eq("Q4 the next cut into the same hopper is an UPDATE: no birth call for the hopper; its record is combined",
-        head(host.lastHarvest) .. "|" .. hopperBirths .. "|" .. tostring(combines > 0) .. "|" .. tostring(q and q.payload.portions),
-        "COMBINE_CUT/COMMITTED|0|true|combined")
+    local hopperBirths, before = 0, "none"
+    for i = n + 1, #calls do if calls[i].carrierId == hop then hopperBirths, before = hopperBirths + 1, calls[i].before end end
+    T.eq("Q4 NAMED (Bob's R-15 note): the next cut into the same hopper is an UPDATE of the same material, and its new grain is interpreted too: ONE transform call for the hopper with the hopper's record (6 L) as destinationBefore, never its combine; the record follows the whole hopper",
+        head(host.lastHarvest) .. "|" .. hopperBirths .. "|" .. before .. "|" .. combines .. "|" .. (q and (q.knowledge .. ":" .. num(q.knownAmount) .. ":" .. tostring(q.payload.portions)) or "none"),
+        "COMBINE_CUT/COMMITTED|1|6|0|KNOWN:" .. num(w.combine:getFillUnitFillLevel(1)) .. ":2")
     FSBaseMission.delete(m)
 end)

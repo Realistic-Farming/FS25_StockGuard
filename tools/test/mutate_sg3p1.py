@@ -40,7 +40,7 @@ HOST = "SG-1-host_spec_test.lua"
 HARVEST = "SG2-3a-harvest_capture_spec_test.lua"
 TIMEOUT = 600
 
-BIRTH_IF = '    if kind ~= "REBIND" and (cand.mode == "BIRTH" or cand.mode == "REPLACE") then\n'
+BIRTH_IF = '    if kind ~= "REBIND" then\n'
 SLOT_IF = '            if c.slotId ~= nil then birth = true break end\n'
 ADD_IF = '            if lease.spec.birth == true then propertyIds[pid] = true end\n'
 VIA = '            local viaTransform = useTransform or (birth and reg.spec.birth == true)\n'
@@ -57,16 +57,16 @@ MUTATIONS = [
  # ── the birth interpretation ──
  ("O1-no-birth-producers", OP, [(ADD_IF, "", 1)], "no declared producer is asked about a birth (J6c)", CORE),
  ("O2-no-birth-producers-entry", OP, [(ADD_IF, "", 1)], "the same, through a real cut (Q1)", HARVEST),
- ("O3-rebind-is-a-birth", OP, [(BIRTH_IF, '    if (cand.mode == "BIRTH" or cand.mode == "REPLACE") then\n', 1)],
+ ("O3-rebind-is-a-birth", OP, [(BIRTH_IF, '    if true then\n', 1)],
   "a REBIND's slot candidate is interpreted as a birth (J6h)", CORE),
- ("O4-replace-not-a-birth", OP, [(BIRTH_IF, '    if kind ~= "REBIND" and cand.mode == "BIRTH" then\n', 1)],
+ ("O4-replace-not-a-birth", OP, [(BIRTH_IF, '    if kind ~= "REBIND" and cand.mode ~= "REPLACE" then\n', 1)],
   "a REPLACE born from a slot is not interpreted (J6f)", CORE),
- ("O5-update-is-a-birth", OP, [(BIRTH_IF, '    if kind ~= "REBIND" then\n', 1)],
-  "an UPDATE with a slot contribution is interpreted as a birth (J6e)", CORE),
- ("O6-update-is-a-birth-entry", OP, [(BIRTH_IF, '    if kind ~= "REBIND" then\n', 1)],
-  "the same, through a second real cut (Q4)", HARVEST),
+ ("O5-update-not-a-birth", OP, [(BIRTH_IF, '    if kind ~= "REBIND" and cand.mode ~= "UPDATE" then\n', 1)],
+  "new material born into an existing stock is not interpreted (J6e, J6e3)", CORE),
+ ("O6-update-not-a-birth-entry", OP, [(BIRTH_IF, '    if kind ~= "REBIND" and cand.mode ~= "UPDATE" then\n', 1)],
+  "the same, through a second real cut into the same hopper (Q4)", HARVEST),
  ("O7-carrier-source-is-a-birth", OP, [(SLOT_IF, "            birth = true break\n", 1)],
-  "material moved from a carrier into a new binding is interpreted as a birth (J6i)", CORE),
+  "material moved from a carrier (a carrier-only UPDATE, a move into a new binding) is interpreted as a birth (J6e2, J6i)", CORE),
  ("O8-every-producer", OP, [(ADD_IF, "            propertyIds[pid] = true\n", 1)],
   "a producer that did not declare births is asked (J6d)", CORE),
  ("O9-every-producer-entry", OP, [(ADD_IF, "            propertyIds[pid] = true\n", 1)],
