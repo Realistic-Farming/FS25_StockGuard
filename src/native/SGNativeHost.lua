@@ -141,6 +141,8 @@ function H:install()
     self.nativeLease, why = self.handle.registerCarrierAdapter(A.NATIVE_ADAPTER_ID, spec)
     if self.nativeLease == nil then return false, "NATIVE_ADAPTER:" .. tostring(why) end
     H.current = self
+    -- SG2 bale family 2b: the reload's bale restores are this mission's (filled while its vehicles load).
+    A.resetBaleRestores()
     -- SG2-4b: the line bracket on the engine global (process-wide, dispatching to this host).
     if SGGroundObserver ~= nil then
         local okLine, whyLine = SGGroundObserver.install()
@@ -187,6 +189,8 @@ function H:teardown()
     if SGGroundObserver ~= nil and type(SGGroundObserver.balerTicks) == "table" then
         for k in pairs(SGGroundObserver.balerTicks) do SGGroundObserver.balerTicks[k] = nil end
     end
+    -- SG2 bale family 2b: and the reload's bale restores.
+    if SGNativeAdapters ~= nil and type(SGNativeAdapters.resetBaleRestores) == "function" then SGNativeAdapters.resetBaleRestores() end
     self:unbindAllStations()
     if H.current == self then H.current = nil end
     self.ready = false
@@ -428,6 +432,44 @@ function H:onBaleDeleted(bale)
     self.lastSettlement = { callRef = "bale:delete:" .. cid, outcome = outcome, reason = reason, report = report }
     self.dirty[cid] = nil
     self.handle.withdrawCarrier(self.nativeLease, cid, "BALE_DELETED")
+end
+
+--- SG2 bale family 2b (SG-2 :656, NATIVE_BALE_FEED_V1): a bound bale's fermentation end
+--- (Bale.lua:702-711) retypes the same object through setFillType, so it is ONE CONVERT from the
+--- type before to the type after, on that basis. The property interpretation (the score kept
+--- through the supported change to SILAGE) is the owner's, as for every CONVERT. Captured before
+--- the original, so an owner-resolved property is read while its domain still holds the bale.
+function H:onFermentationOpen(bale)
+    if not self.ready or self.nativeLease == nil then return nil end
+    local binding = A.baleBinding(bale)
+    if binding == nil then return nil end
+    local cid = SGRecords.carrierKeyString(binding.carrierKey)
+    local cap = self.handle.captureOperation(self.nativeLease, "CONVERT", { { carrierId = cid } })
+    if cap == nil then return nil end
+    return { cap = cap, carrierId = cid, binding = binding }
+end
+
+--- Settled after the original: the CONVERT when the type changed, abandoned (a no-op) when not.
+function H:onFermentationClose(open)
+    local spec = self.nativeLease.spec
+    local native = spec.resolveCarrier(open.binding)
+    local ns = native ~= nil and spec.readNativeState(open.binding, native) or nil
+    local before = open.cap.before.carriers[open.carrierId]
+    if ns == nil or before == nil or not (before.amount > 0) then
+        self.handle.abandonOperation(open.cap.handle, "FERMENTATION_UNREAD", ns ~= nil and { [open.carrierId] = ns } or nil)
+        return
+    end
+    if SGValues.equal(ns.materialRef, before.materialRef) then
+        self.handle.abandonOperation(open.cap.handle, "NO_CONVERSION", { [open.carrierId] = ns })
+        return
+    end
+    local report = { participantsAfter = { [open.carrierId] = ns },
+        allocations = { { source = { carrierId = open.carrierId }, sourceAmount = before.amount, sourceUnit = A.UNIT,
+                          destination = { carrierId = open.carrierId }, destinationAmount = ns.amount, destinationUnit = ns.unit or A.UNIT,
+                          conversionBasisId = A.BALE_FEED_BASIS, result = "CONVERTED" } },
+        outcomeEvidence = { nativePath = "BALE_FERMENTATION_END", conversionBasisId = A.BALE_FEED_BASIS } }
+    local outcome, reason = self.handle.settleOperation(open.cap.handle, report)
+    self.lastSettlement = { callRef = "bale:fermentation:" .. open.carrierId, outcome = outcome, reason = reason, report = report }
 end
 
 --- A vehicle was removed (VehicleSystem.removeVehicle, after its teardown,
@@ -1145,6 +1187,25 @@ function H.installClassHooks(classes)
         SGClassHook.wrap(classes.Bale, "delete", H.HOOK_ID, function(original, self, ...)
             dispatch("onBaleDeleted", self)
             return original(self, ...)
+        end, H)
+    end
+    -- SG2 bale family 2b: a bale's fermentation end (Bale.lua:702-711), which BaleManager calls on the
+    -- bale (BaleManager.lua:208, through the metatable, mechanism 4), bracketed: open before, close after.
+    if type(classes.Bale) == "table" and type(classes.Bale.onFermentationEnd) == "function" then
+        SGClassHook.wrap(classes.Bale, "onFermentationEnd", H.HOOK_ID, function(original, self, ...)
+            local host = H.current
+            local open = nil
+            if host ~= nil then
+                local okOpen, result = pcall(host.onFermentationOpen, host, self)
+                if okOpen then open = result else log("onFermentationOpen failed (" .. tostring(result) .. ")") end
+            end
+            local n, r = packn(pcall(original, self, ...))
+            if open ~= nil then
+                local okClose, err = pcall(host.onFermentationClose, host, open)
+                if not okClose then log("onFermentationClose failed (" .. tostring(err) .. ")") end
+            end
+            if not r[1] then error(r[2], 0) end
+            return unpack(r, 2, n)
         end, H)
     end
     -- SG2-2: stations are bound when the storage system registers them and unbound

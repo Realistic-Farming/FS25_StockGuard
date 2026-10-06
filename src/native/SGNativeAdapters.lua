@@ -1071,6 +1071,8 @@ end
 A.KIND_BALE = "bale"
 A.BALE_PROFILE = "NATIVE_BALE_V1"
 A.BALE_STORE = "bale"
+-- 2b: a bound bale's fermentation end is a CONVERT on this basis (SG-2 :656).
+A.BALE_FEED_BASIS = "NATIVE_BALE_FEED_V1"
 
 --- Is this object a native Bale (Class's isa, shared/class.lua:30)?
 function A.isBale(object)
@@ -1103,6 +1105,42 @@ end
 function A.isBaleKey(carrierKey)
     return type(carrierKey) == "table" and carrierKey.adapterId == A.NATIVE_ADAPTER_ID and carrierKey.componentKey == A.KIND_BALE
 end
+
+-- ── Bale births and restores (SG2 bale family, part 2b) ─────────────────────
+--
+-- A SQUARE BALER'S NEW BALE (SG-2 :473, :483). The chamber's clear (Baler.lua:1438) and the bale
+-- createBale makes (:1443) are ONE TRANSFER, the chamber to a created binding for that bale
+-- (SGGroundObserver.aroundFinish). A world without the engine's live Bale class binds no bale.
+--
+-- WHAT A RELOAD BRINGS BACK UNDER ANOTHER uniqueId, mapped while the vehicle loads and read by
+-- restoreBinding at the barrier (SG-2 :477, "RESTORING persists through that reconstruction"):
+--   * baleRestores: a square Baler's listed bale, recreated with a fresh id (:576-581), named by
+--     its saved token (SGFieldToolBufferSave): the saved bale key to the object it became;
+--   * chamberRestores: a square chamber saved full whose deferred finish ran at this load
+--     (:572-575): the chamber key to the bale that finish made, noted inside that finishBale.
+-- Either restores by SG-1's own rule (equal material and float image) or stays history; a mapping
+-- never forces a reattach. Both are per mission: H:install and H:teardown empty them.
+A.baleRestores = A.baleRestores or {}
+A.chamberRestores = A.chamberRestores or {}
+
+--- Is the engine's Bale class live here (Class's isa on the class table, shared/class.lua:30)?
+function A.baleClassLive()
+    return type(Bale) == "table" and type(Bale.isa) == "function"
+end
+
+--- Empty both restore maps (a new mission, or its end).
+function A.resetBaleRestores()
+    for k in pairs(A.baleRestores) do A.baleRestores[k] = nil end
+    for k in pairs(A.chamberRestores) do A.chamberRestores[k] = nil end
+end
+
+--- The binding of the bale a reload made of this saved binding, or nil.
+local function restoredBaleBinding(map, savedBinding)
+    local key = type(savedBinding) == "table" and type(savedBinding.carrierKey) == "table" and SGRecords.carrierKeyString(savedBinding.carrierKey) or nil
+    local bale = key ~= nil and map[key] or nil
+    return bale ~= nil and A.baleBinding(bale) or nil
+end
+A.restoredBaleBinding = restoredBaleBinding
 
 --- The mission's item system: the injected source first, then the mission's own.
 local function itemSystemOf(items)
@@ -1336,7 +1374,9 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers, items)
     spec.restoreBinding = function(savedBinding, context)
         local kind = kindOf(savedBinding)
         if kind == A.KIND_STORAGE then return kinds[A.KIND_STORAGE].restoreBinding(savedBinding, context) end
-        if kind == A.KIND_FILL_UNIT then return savedBinding end
+        -- SG2 bale family 2b (SG-2 :477): a square chamber saved full became, at this load, the bale
+        -- its deferred finish made; its saved record restores onto that bale, by SG-1's rule.
+        if kind == A.KIND_FILL_UNIT then return restoredBaleBinding(A.chamberRestores, savedBinding) or savedBinding end
         -- A Combine buffer slot keeps its own binding: its restoration with the native
         -- slot is the save extension's (SG2-3c); without it the slot finds nothing.
         if kind == A.KIND_DELAY_SLOT or kind == A.KIND_STRAW_SLOT then return savedBinding end
@@ -1355,7 +1395,9 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers, items)
         -- A Baler pickup lives only inside one work-area tick: nothing to restore.
         if kind == A.KIND_BALER_PICKUP then return nil, "NOT_RESTORABLE" end
         -- A world bale keeps its own binding: the engine brings the same uniqueId back (Bale.lua:320).
-        if kind == A.KIND_BALE then return savedBinding end
+        -- 2b: a square Baler's listed bale comes back as a new object with a fresh id (Baler.lua:576-581);
+        -- its saved token names the object it became (:477's last sentences).
+        if kind == A.KIND_BALE then return restoredBaleBinding(A.baleRestores, savedBinding) or savedBinding end
         return nil, "DESCRIPTOR"
     end
     --- [MAINTENANCE row 206] The quantity as native saves it, for the kinds whose level the
