@@ -13,6 +13,7 @@
 - [x] 2026-10-03: SG-2 :243, plain sowing's Destruction profile around `processSowingMachineArea` (row 171's plain-sowing clause): emptied tracked cells retire as Destruction, unaccounted changes go unknown, no double retirement with direct sowing's clear. In-game check pending.
 
 ## Bugs
+- [x] 2026-10-06: The cut witness's Soil read (MAINTENANCE row 231): SGCutState reads g_currentMission.soilFertilityManager, not the per-mod global. The SG2-3b bench supplies Soil only through the mission handle, and row L4 shows a bare global reads nothing. In-game check pending.
 - [x] 2026-10-05: Combine buffer save on a session's second map load (MAINTENANCE row 216): the save paths register from Vehicle.init on every map load, not from Combine.initSpecialization on the first. In-game check pending.
 - [x] 2026-10-03: Restore across a game launch (MAINTENANCE row 214): an unchanged stock reattaches; no history twin forms; a pre-fix save with twins loads, its twinned stocks UNKNOWN until observed again. In-game check pending.
 

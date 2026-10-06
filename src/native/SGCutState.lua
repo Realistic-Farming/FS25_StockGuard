@@ -105,9 +105,14 @@ local function readPoint(g, x, z)
 end
 
 --- The Soil snapshot at a point, or nil with Soil absent or unavailable.
+--- MAINTENANCE row 231: Soil is read through the mission handle it publishes
+--- (SoilFertilizer main.lua:761), as SGSoilCondition.receiver does. Its
+--- g_SoilFertilityManager is written with getfenv(0), which FS25 answers with Soil's own
+--- mod environment (dataS mods.lua:482-505), so that name is nil here in a real game.
 local function soilAt(x, z)
-    local sfm = g_SoilFertilityManager
-    if sfm == nil or type(sfm.getSoilValueAtWorld) ~= "function" then return nil, nil end
+    local mission = g_currentMission
+    local sfm = mission ~= nil and mission.soilFertilityManager or nil
+    if type(sfm) ~= "table" or type(sfm.getSoilValueAtWorld) ~= "function" then return nil, nil end
     local snapshot, grain = {}, nil
     for _, key in ipairs(CS.SOIL_KEYS) do
         local ok, v, g = pcall(sfm.getSoilValueAtWorld, sfm, key, x, z)
