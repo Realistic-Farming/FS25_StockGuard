@@ -1,32 +1,28 @@
--- SG2-5d-b-baler_frame_spec_test.lua
+-- SG2-5e-b-round_framing_spec_test.lua
 --
--- SG2-5 slice 5d-b (Bob's 5d shape ruling with its addendum; conditions 1 and 3 of 09-30 and
--- condition 2 as rechecked 2026-10-02): a square Baler's work-area tick runs inside StockGuard's own
--- BALER frames, and switches Soil's admission on for its pickups.
---   * a tick per Baler from the inner onStartWorkAreaProcessing to the inner onEndWorkAreaProcessing,
---     its balerPickup carrier live only inside it; each processBalerArea call one BALER frame, each
---     pickup one TRANSFER from the cells to balerPickup at what native PRODUCED (Q1);
---   * the add in the inner fill-change listener, before the original: the seal of A over the tick's
---     batches by produced litres (F211 :76), Soil's published read of each share, ONE TRANSFER to the
---     chamber with the account named for its leg (Q2), the bale's finishBale reading that record;
---   * the overflow carried live (Q3): the second seal at O, the nested re-add, an overwrite's loss,
---     A = 0; C2's consumed reports, C3's replays, C4's machine filter, COALESCE_UNPROVED, the close's
---     loss, two map loads in one process (condition 2b) and the listener order (2c).
---
--- Runs in the MOD'S OWN ENVIRONMENT (--!env: modenv), on the SG2-4b world with the SG2-5b bench's
--- preamble verbatim (SG2-4c-1's recorder of Soil's published surface, the stand-in owner, the windrow
--- types as a model extension), plus Soil's 5d surface as a stand-in (the delivery's collection and the
--- published collected read, Soil's reader VERBATIM) and an owner carrying Soil's account by #1077's
--- rules.
+-- SG2-5e-b, the round half (Part 1 of Bob's 5e round core intake, BOB-INTAKE-SG2-5E-ROUND-CORE-2026-10-05;
+-- SG-2 v2.3 :471's round path): a round Baler, which mounts its bale without clearing the chamber, is
+-- framed as the square one is. Its pickup tick, add, seal, overflow and re-add are the same native code
+-- and the same StockGuard path. What differs, each barred here:
+--   (a) finishBale inside the add's event creates and mounts the bale and leaves the chamber whole (:1431);
+--   (b) no tick runs while a bale is mounted or the door is not closed (:1746, getIsWorkAreaActive);
+--   (c) the unload clear (:928, onUpdateTick, after dropBale) ends the chamber stock, once, outside any tick;
+--   (d) the partial-ejection pad (:1328-1347) never becomes known litres, logged once per baler;
+--   (e) a round overflow saves and restores through 5e-a's save participant.
+-- A non-stop Baler stays unframed; two map loads in one process.
 --
 -- THE ENTRY-POINT BAR IS GROUP E: main.lua's load path wraps the live Baler class's listeners and the
--- native host brackets the pickup's CAPTURED pointer (WorkArea.lua:266); WorkArea's own order then
--- runs a tick (the start event, the captured pointer, the end event, each raised by name at raise
--- time) over a grass windrow a tipper laid. The two-sided bale bar against Soil's own BalerCollection
--- is the joined run outside the repo (the PR body names it).
+-- native host brackets the pickup's CAPTURED pointer (WorkArea.lua:266); WorkArea's own order, with its
+-- getIsWorkAreaActive gate, then runs a ROUND Baler's tick over a grass windrow a tipper laid; the round
+-- Baler is the engine's (the round branch below transcribed in native order). No hand-placed bale,
+-- chamber level or catalogue: every level comes from a pickup, the pad or the save.
+--
+-- The preamble and the Baler model are ROW86's (SG2-5d-b's world, Soil's 5d surface as a stand-in with
+-- Soil's reader verbatim, the save-capable Baler, the engine's float writer), unchanged; the round
+-- branch is added to the model and the work-area gate to the tick.
 --
 --!env: modenv
---!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGSoilCondition.lua, src/native/SGCollectionSeal.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
+--!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGSoilCondition.lua, src/native/SGCollectionSeal.lua, src/native/SGFieldToolBufferSave.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
 local REAL = getmetatable(_G).__index
 local M, GR, GS, GO, NH, NA = SGNativeMaterialSave, SGGround, SGGroundSampler, SGGroundObserver, SGNativeHost, SGNativeAdapters
@@ -418,7 +414,7 @@ end
 -- ══════════════════════════════════════════════════════════════════════════
 -- Inside one function: the preamble's file-level locals with this part's would pass Lua's
 -- 200-local limit for a single function.
-local function SG25DB_BENCH()
+local function SG25EB_BENCH()
 
 -- ── FillUnit:addFillUnitFillLevel (vehicles/specializations/FillUnit.lua:1103-1203) ──
 -- The quantity path VERBATIM in effect: an unsupported type returns 0 before any event (:1121-1123);
@@ -463,9 +459,10 @@ function Bale:setFillLevel(l) self.fillLevel = l end
 function Bale:setVariationId(v) self.variationId = v end
 function Bale:setOwnerFarmId(f) self.ownerFarmId = f end
 function Bale:register() BALES.made[#BALES.made + 1] = self end
-function Bale:mountKinematic() end
-function Bale:setCanBeSold() end
-function Bale:setNeedsSaving() end
+function Bale:mountKinematic() self.mounted = true end
+function Bale:unmountKinematic() self.mounted = false end
+function Bale:setCanBeSold(v) self.canBeSold = v end
+function Bale:setNeedsSaving(v) self.needsSaving = v end
 REAL.BalerCreateBaleEvent = REAL.BalerCreateBaleEvent or { new = function(...) return { ... } end }
 REAL.NetworkUtil = REAL.NetworkUtil or { getObjectId = function(o) return o and o.nodeId end }
 if g_server ~= nil and g_server.broadcastEvent == nil then g_server.broadcastEvent = function() end end
@@ -480,6 +477,12 @@ if g_server ~= nil and g_server.broadcastEvent == nil then g_server.broadcastEve
 -- `fillUnitIndex`; the loading-state animation and dirty flags abbreviated).
 local function newBalerClass()
     local B = { CLIENT_DM_UPDATE_RADIUS = 50 }
+    --- Baler.lua:621-656 ABBREVIATED: native saves its bales, platform, bale type and capacity,
+    --- never the overflow, and nothing in this bench reads them back. Present so the vehicle's
+    --- save loop (Vehicle.lua:1210-1213) reaches the class, as in the engine.
+    function B:saveToXMLFile(xmlFile, key, usedModNames) end
+    --- Baler.lua:532-569 ABBREVIATED: native reads its saved bale list back; nothing here does.
+    function B:onPostLoad(savegame) end
     function B:onFillUnitFillLevelChanged(fillUnitIndex, fillLevelDelta, fillTypeIndex, toolType, _, appliedDelta)
         local spec = self.spec_baler
         if fillUnitIndex == spec.fillUnitIndex then
@@ -623,6 +626,101 @@ local function newBalerClass()
             end
         end
     end
+    -- ── SG2-5e-b: the round branch (vehicles/specializations/Baler.lua at 1.24) ──
+    B.UNLOADING_CLOSED, B.UNLOADING_OPENING, B.UNLOADING_OPEN, B.UNLOADING_CLOSING = 1, 2, 3, 4   -- :10-13
+    --- :1741-1750, the part that bears on a Baler's pickup: a full unit, then a round Baler (not
+    --- non-stop) with a mounted bale or its door not closed, picks up nothing (the slot and consumable
+    --- tests abbreviated: always passing here).
+    function B:getIsWorkAreaActive(superFunc, workArea)
+        local spec = self.spec_baler
+        if self:getFillUnitFreeCapacity(spec.buffer.fillUnitIndex or spec.fillUnitIndex) == 0 then
+            return false
+        end
+        if spec.hasUnloadingAnimation and (not spec.nonStopBaling and (#spec.bales > 0 or spec.unloadingState ~= Baler.UNLOADING_CLOSED)) then
+            return false
+        end
+        return superFunc(self, workArea)
+    end
+    --- :1322-1366, the server path (event, sound and animation abbreviated). With no bale mounted
+    --- and the unfinished-bale unload allowed over its threshold, the chamber is PADDED to capacity
+    --- (:1343 lastBaleFillLevel, :1345 the add), and that add's own event finishes the bale.
+    function B:setIsUnloadingBale(isUnloadingBale, noEventSend)
+        local spec = self.spec_baler
+        if spec.hasUnloadingAnimation then
+            if isUnloadingBale then
+                if spec.unloadingState ~= Baler.UNLOADING_OPENING then
+                    if #spec.bales == 0 and spec.canUnloadUnfinishedBale then
+                        local fillTypeIndex = self:getFillUnitFillType(spec.fillUnitIndex)
+                        local fillLevel = self:getFillUnitFillLevel(spec.fillUnitIndex)
+                        if spec.buffer.fillUnitIndex ~= nil then
+                            fillLevel = fillLevel + self:getFillUnitFillLevel(spec.buffer.fillUnitIndex)
+                            if fillTypeIndex == FillType.UNKNOWN then
+                                fillTypeIndex = self:getFillUnitFillType(spec.buffer.fillUnitIndex)
+                            end
+                        end
+                        if spec.unfinishedBaleThreshold < fillLevel then
+                            local delta = self:getFillUnitFreeCapacity(spec.fillUnitIndex)
+                            local mainFillLevel = math.min(fillLevel, self:getFillUnitCapacity(spec.fillUnitIndex))
+                            spec.lastBaleFillLevel = mainFillLevel
+                            self:addFillUnitFillLevel(self:getOwnerFarmId(), spec.fillUnitIndex, delta, fillTypeIndex, ToolType.UNDEFINED)
+                            spec.buffer.unloadingStarted = false
+                        end
+                    end
+                    spec.unloadingState = Baler.UNLOADING_OPENING
+                    return
+                end
+            elseif spec.unloadingState ~= Baler.UNLOADING_CLOSING and spec.unloadingState ~= Baler.UNLOADING_CLOSED then
+                spec.unloadingState = Baler.UNLOADING_CLOSING
+                return
+            end
+        end
+    end
+    --- :1571-1610, the server path: the bale unmounted, a partial bale given the real amount
+    --- (:1596-1598), then removed from the list.
+    function B:dropBale(baleIndex)
+        local spec = self.spec_baler
+        local bale = spec.bales[baleIndex]
+        if self.isServer then
+            local baleObject = bale.baleObject
+            baleObject:unmountKinematic()
+            if spec.lastBaleFillLevel ~= nil and #spec.bales == 1 then
+                baleObject:setFillLevel(spec.lastBaleFillLevel)
+                spec.lastBaleFillLevel = nil
+            end
+            baleObject:setCanBeSold(true)
+            baleObject:setNeedsSaving(true)
+        end
+        table.remove(spec.bales, baleIndex)
+    end
+    --- Baler:onUpdateTick's unload branch (:919-951), the server path, the unloading animation taken
+    --- to its drop time at once: OPENING drops the first bale and clears the chamber (:926-928), then
+    --- the door is OPEN; CLOSING ends CLOSED.
+    function B:onUpdateTick(_)
+        local spec = self.spec_baler
+        if spec.unloadingState == Baler.UNLOADING_OPENING then
+            if #spec.bales > 0 then
+                self:dropBale(1)
+                if self.isServer then
+                    self:addFillUnitFillLevel(self:getOwnerFarmId(), spec.fillUnitIndex, -math.huge, self:getFillUnitFillType(spec.fillUnitIndex), ToolType.UNDEFINED)
+                    spec.buffer.unloadingStarted = false
+                    for fillType, _ in pairs(spec.pickupFillTypes) do
+                        spec.pickupFillTypes[fillType] = 0
+                    end
+                end
+            end
+            spec.unloadingState = Baler.UNLOADING_OPEN
+        elseif spec.unloadingState == Baler.UNLOADING_CLOSING then
+            spec.unloadingState = Baler.UNLOADING_CLOSED
+        end
+    end
+    --- :570-575: a chamber that filled while the vehicle was not in physics (a load) finishes here.
+    function B:onLoadFinished(_)
+        local spec = self.spec_baler
+        if self.isServer and (spec.createBaleNextFrame ~= nil and spec.createBaleNextFrame) then
+            self:finishBale()
+            spec.createBaleNextFrame = nil
+        end
+    end
     -- A re-sourced Baler.lua makes new function values (Baler.lua:7, one chunk per map load). Lua 5.3
     -- reuses a closure with no upvalues, so each method is wrapped in a closure of its own here.
     local fresh = {}
@@ -649,19 +747,35 @@ local function newBaler(uid, opts)
     if opts.additives ~= nil then
         v.spec_fillUnit.fillUnits[2] = { fillLevel = opts.additives.level or 0, capacity = 100000, fillType = 99, lastValidFillType = 99, supportedFillTypes = { [99] = true } }
     end
+    -- SG2-5e-b: a non-stop Baler's buffer unit (buffer#fillUnitIndex, :434-435), so its pickup area is
+    -- active under :1741's free-capacity test and its tick really runs unframed.
+    if opts.nonStop == true then
+        v.spec_fillUnit.fillUnits[3] = { fillLevel = 0, capacity = opts.capacity or 1000, fillType = FillType.UNKNOWN, lastValidFillType = FillType.UNKNOWN,
+                                         supportedFillTypes = { [GRASS] = true, [DRY] = true, [STRAW_W] = true } }
+    end
     v.addFillUnitFillLevel = fillUnitAdd
     v.setFillUnitFillType = function(self, i, ft) local u = self.spec_fillUnit.fillUnits[i] if u and u.fillLevel <= 0 then u.fillType = ft end end
     v.processBalerArea, v.finishBale, v.createBale = Baler.processBalerArea, Baler.finishBale, Baler.createBale
+    v.setIsUnloadingBale, v.dropBale, v.getIsWorkAreaActive = Baler.setIsUnloadingBale, Baler.dropBale, Baler.getIsWorkAreaActive
+    v.getOwnerFarmId = v.getOwnerFarmId or function() return 1 end
     v.specClasses = { Baler }
+    -- vehicleTypes.xml: baseFillable's fillUnit precedes baler, so FillUnit's onPostLoad runs first.
+    v.specializations[#v.specializations + 1] = Baler
+    v.specializationNames[#v.specializationNames + 1] = "baler"
+    v.eventListeners.onPostLoad = { ENGINE_FILLUNIT, Baler }
     v.eventListeners.onFillUnitFillLevelChanged = { Baler }
     v.eventListeners.onStartWorkAreaProcessing = { Baler }
     v.eventListeners.onEndWorkAreaProcessing = { Baler }
+    v.eventListeners.onUpdateTick = { Baler }
+    v.eventListeners.onLoadFinished = { Baler }
     v.spec_baler = {
         fillUnitIndex = 1, fillScale = opts.fillScale or 1, hasUnloadingAnimation = opts.round == true, nonStopBaling = opts.nonStop == true,
         pickupFillTypes = { [GRASS] = 0, [DRY] = 0, [STRAW_W] = 0 }, pickupOrder = opts.order or { GRASS, DRY, STRAW_W },
         workAreaParameters = { lastPickedUpLiters = 0 },
         additives = { available = opts.additives ~= nil, fillTypes = { GRASS, DRY }, usage = opts.additives and opts.additives.usage or 0, fillUnitIndex = 2 },
-        fillUnitOverflowFillLevel = 0, buffer = { fillUnitIndex = 3, unloadingStarted = false },
+        fillUnitOverflowFillLevel = 0, buffer = { fillUnitIndex = opts.nonStop == true and 3 or nil, unloadingStarted = false },
+        -- SG2-5e-b: :374-375 (canUnloadUnfinishedBale, unfinishedBaleThreshold; 2000 by default), the door state.
+        unloadingState = 1, canUnloadUnfinishedBale = opts.canUnloadUnfinished == true, unfinishedBaleThreshold = opts.threshold or 2000,
         bales = {}, baleTypes = { { defaultBaleVariationId = 1 } }, currentBaleTypeIndex = 1, currentBaleXMLFilename = "bale.xml",
     }
     local areas = {}
@@ -680,9 +794,15 @@ end
 local function tick(v)
     local wa = v.spec_workArea.workAreas
     ENGINE_RAISE(v, "onStartWorkAreaProcessing", 16, wa)
-    for _, a in ipairs(wa) do a.processingFunction(v, a, 16) end
+    -- :1741's gate on each area (WorkArea.lua:177-196 calls the processing pointer only for an
+    -- active area); the superFunc is WorkArea's own test, always true here.
+    for _, a in ipairs(wa) do
+        if v:getIsWorkAreaActive(function() return true end, a) then a.processingFunction(v, a, 16) end
+    end
     ENGINE_RAISE(v, "onEndWorkAreaProcessing", 16, wa)
 end
+--- Baler:onUpdateTick, raised by name as the engine raises it.
+local function updateTick(v) ENGINE_RAISE(v, "onUpdateTick", 16) end
 --- A tipper of `ft` over the pickup line (area `at`), tipping `litres` there.
 local function lay(m, w, ft, litres, key, at)
     local t = vehicleIn(m, ENGINE_NEW_TIPPER("vehicle:" .. key, { level = litres, fillType = ft, at = at or { x = 0, z = 0 },
@@ -1033,7 +1153,7 @@ local function balerWorld(opts)
     return function(m, w)
         if not opts.noSoil then soilOn(m) soil5dOn(m) end
         for _, l in ipairs(opts.lay or { { GRASS, 100, "grass" } }) do lay(m, w, l[1], l[2], l[3], l[4]) end
-        w.baler = vehicleIn(m, newBaler("vehicle:baler", opts))
+        w.baler = vehicleIn(m, newBaler(opts.uid or "vehicle:baler", opts))
     end
 end
 local function boot5db(opts, key, index)
@@ -1053,580 +1173,380 @@ local function relay(m, w, ft, litres, key, at)
     ENGINE_TIP(w[key], litres)
 end
 
+
+-- ── THE ENGINE'S FLOAT WRITER AND ITS TWO POSSIBLE READERS, MODELLED (as MAINT-206's bench) ──
+-- Measured from the save files: an XMLValueType.FLOAT is written as its float32 to six decimals,
+-- ties to even (MAINT-206's bench pins the 52 engine-written pairs). Within this file the XML
+-- model's FLOAT paths are written that way and read back by either reader the C side might be.
+local function f32(x) return (string.unpack("<f", string.pack("<f", x))) end
+local function halfEvenInt(z)
+    local r = math.floor(z)
+    local f = z - r
+    if f > 0.5 or (f == 0.5 and r % 2 == 1) then r = r + 1 end
+    return r
+end
+local function writeFloat(x)
+    local y = f32(x)
+    local neg = y < 0
+    if neg then y = -y end
+    local s = string.format("%.0f", halfEvenInt(y * 1000000))
+    while #s < 7 do s = "0" .. s end
+    return (neg and "-" or "") .. s:sub(1, -7) .. "." .. s:sub(-6)
+end
+local READER = "float32"
+local function readFloat(text)
+    local d = tonumber(text)
+    if READER == "float32" then return f32(d) end
+    return d
+end
+local function isFloatPath(o, k)
+    local pd = o.schema ~= nil and o.schema.paths[(string.gsub(k, "%(%d*%)", "(?)"))] or nil
+    return pd ~= nil and pd.valueTypeId == "FLOAT"
+end
+local XML = REAL.XMLFile
+local createXml, loadXml = XML.create, XML.load
+local function faithful(o)
+    if o == nil then return nil end
+    local set, get = o.setValue, o.getValue
+    function o:setValue(k, v)
+        if type(v) == "number" and isFloatPath(self, k) then return set(self, k, writeFloat(v)) end
+        return set(self, k, v)
+    end
+    function o:getValue(k, d)
+        local v = get(self, k, d)
+        if type(v) == "string" and isFloatPath(self, k) then return readFloat(v) end
+        return v
+    end
+    return o
+end
+XML.create = function(...) return faithful(createXml(...)) end
+XML.load = function(...) return faithful(loadXml(...)) end
+XML.loadIfExists = XML.load
+
+-- ── one save and reload of a part-filled square chamber ──────────────────────────────────
+local function keyOf(m, v)
+    for i, x in ipairs(m._vehicles) do if x == v then return string.format("vehicles.vehicle(%d)", i - 1) end end
+    return nil
+end
+local function vehiclesFile(dir)
+    for k, d in pairs(ENGINE_DISK) do if k == dir .. "/vehicles.xml" then return d end end
+    return nil
+end
+local function lineWith(lines, pattern) for _, l in ipairs(lines) do if l:find(pattern, 1, true) then return l end end return nil end
+
+-- ── SG2-5e-b readers ─────────────────────────────────────────────────────────
+--- How many stocks SG-1 retired on this carrier.
+local function retiredFor(sg, carrierId)
+    local n = 0
+    for _, s in pairs(sg.operations.retiredStocks or {}) do if s.carrierId == carrierId then n = n + 1 end end
+    return n
+end
+--- The negative reports of the main unit an add frame recorded (a clear, :1446).
+local function clearsIn(t)
+    local n = 0
+    for _, o in ipairs(t and t.reports or {}) do if o.fillUnitIndex == 1 and type(o.accepted) == "number" and o.accepted < 0 then n = n + 1 end end
+    return n
+end
+local function count(lines, pattern) local n = 0 for _, l in ipairs(lines) do if l:find(pattern, 1, true) then n = n + 1 end end return n end
+--- The door opened and closed again by the engine's own steps: setIsUnloadingBale, then onUpdateTick.
+local function unloadAndClose(v)
+    v:setIsUnloadingBale(true)
+    updateTick(v)
+    v:setIsUnloadingBale(false)
+    updateTick(v)
+end
+
 -- ══════════════════════════════════════════════════════════════════════════
--- E. THE ENTRY-POINT BAR: ONE BALER TICK OVER A GRASS WINDROW
+-- E. THE ENTRY-POINT BAR: A ROUND BALER'S TICK OVER A GRASS WINDROW, AS THE SQUARE'S
 -- ══════════════════════════════════════════════════════════════════════════
 group("E", function()
-    resetWorld()
-    soilReset()
-    local m, sg, host, w = boot5db({}, "w5db_e", 101)
-    local v = w.baler
-    local wa = v.spec_workArea.workAreas[1]
-    local held = SGClassHook.record(Baler, "onStartWorkAreaProcessing", GO_.HOOK_ID) ~= nil and SGClassHook.record(Baler, "onEndWorkAreaProcessing", GO_.HOOK_ID) ~= nil
-        and SGClassHook.record(Baler, "onFillUnitFillLevelChanged", GO_.HOOK_ID) ~= nil
-    T.ok("E0 [reached] main.lua's install wrapped the Baler's three listeners (SGClassHook, the live class) and bracketed the pickup's CAPTURED pointer (WorkArea.lua:266)",
-        held and wa.processingFunction ~= Baler.processBalerArea and wa._sgBrackets ~= nil and wa._sgBrackets.processBalerArea ~= nil
-            and wa._sgBrackets.processBalerArea.original == Baler.processBalerArea)
-    soilReset()
-    tick(v)
-    T.eq("E1 NAMED [entry point]: Soil admitted the pickup line inside the BALER frame; StockGuard settled the pickup and the add, and the chamber's record carries the sealed account Soil's reader gave (100 L known at 30 %)",
-        admits() .. "/" .. opsText(host) .. "|" .. chamberText(sg, v),
-        "1/GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED|GRASS_WINDROW|100|KNOWN|KNOWN:7:100/100/0/0/30")
-    local add = opOf(host, "GROUND_BALER_ADD")
-    local leg = add and add.report.allocations[1]
-    T.eq("E2 NAMED: the add is one TRANSFER from balerPickup to the chamber, source P x A / W, destination A, its account named for that leg; Soil's reader resolved the seal through the mission handle",
-        tostring(leg and leg.source.carrierId == pickupId(v)) .. "/" .. tostring(leg and leg.destination.carrierId == unitId(v, 1)) .. "/" .. num(leg and leg.sourceAmount) .. "/" .. num(leg and leg.destinationAmount)
-            .. "/" .. tostring(add and add.evidence.seal and add.evidence.seal.read) .. "/" .. SOIL5D.reads,
-        "true/true/100/100/1/1")
-    T.eq("E3 the tick's carrier is gone after the close (withdrawn, nothing live), its remainder nothing, and the add's own report was consumed (none outstanding)",
-        tostring(sg.operations.carriers[pickupId(v)] == nil) .. "/" .. liveCount(NA.balerPickups) .. "/" .. tostring(opOf(host, "GROUND_BALER_REMAINDER")) .. "/" .. #host.lastBalerTick.expected,
-        "true/0/nil/0")
-    T.eq("E4 native ran unchanged: the chamber holds 100 L, lastPickedUpLiters 100, the windrow is gone", num(v:getFillUnitFillLevel(1)) .. "/" .. num(v.spec_baler.workAreaParameters.lastPickedUpLiters), "100/100")
-    FSBaseMission.delete(m)
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- P. THE PICKUP: WHAT NATIVE PRODUCED, DECLARED (Q1)
--- ══════════════════════════════════════════════════════════════════════════
-group("P", function()
-    resetWorld()
-    soilReset()
-    -- The silage additive: 0.1 L at usage 0.001 per litre covers the whole 100 L pickup: a 5 % boost.
-    local m, sg, host, w = boot5db({ additives = { level = 0.1, usage = 0.001 } }, "w5db_p", 102)
-    local v = w.baler
-    tick(v)
-    local pick = opOf(host, "GROUND_BALER")
-    local d, s, based = 0, 0, false
-    for _, a in ipairs(pick and pick.report.allocations or {}) do
-        if a.destination.carrierId == pickupId(v) then d = d + a.destinationAmount s = s + a.sourceAmount end
-        if a.conversionBasisId ~= nil then based = true end
-    end
-    T.eq("P1 NAMED: the pickup's legs take the cells' 100 L to 105 L on balerPickup (P_b, the boost, :1886-1910), with no conversion basis, and declare the gain",
-        num(s) .. "/" .. num(d) .. "/" .. tostring(based) .. "/" .. num(pick and pick.evidence.nativeGain and pick.evidence.nativeGain.boost) .. "/" .. num(pick and pick.evidence.nativeGain and pick.evidence.nativeGain.fillScale),
-        "100/105/false/5/1")
-    T.eq("P2 NAMED: the boosted 105 L reach the chamber KNOWN with the source's condition: no unexplained excess, the account 105 L known at 30 %",
-        chamberText(sg, v), "GRASS_WINDROW|105|KNOWN|KNOWN:7:105/105/0/0/30")
-    T.eq("P3 the additive's own debit (:1895) replayed at the pickup frame's close: its record follows native", num(stockAt(sg, unitId(v, 2)) and stockAt(sg, unitId(v, 2)).observedAmount or 0) .. "/" .. num(v:getFillUnitFillLevel(2)), "0/0")
-    FSBaseMission.delete(m)
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- A. THE ADD: THE SEAL BY PRODUCED LITRES, THE ACCOUNT ON THE LEG
--- ══════════════════════════════════════════════════════════════════════════
-group("A", function()
-    resetWorld()
-    soilReset()
-    -- fillScale 2 with the additive: W = 210 from 105 produced; A = 210.
-    local m, sg, host, w = boot5db({ fillScale = 2, additives = { level = 0.1, usage = 0.001 } }, "w5db_a1", 103)
-    local v = w.baler
-    tick(v)
-    local add = opOf(host, "GROUND_BALER_ADD")
-    local leg = add and add.report.allocations[1]
-    T.eq("A1 NAMED: at fillScale 2 the add's leg moves P x A / W = 105 of balerPickup into A = 210 in the chamber, KNOWN over the whole of A at the source's 30 %",
-        num(leg and leg.sourceAmount) .. "/" .. num(leg and leg.destinationAmount) .. "|" .. chamberText(sg, v), "105/210|GRASS_WINDROW|210|KNOWN|KNOWN:7:210/210/0/0/30")
-    FSBaseMission.delete(m)
-
-    -- Two pickup work areas in one tick with different gains and conditions: the additive covers
-    -- the first pickup only (0.1 L), so it produces 105 L and the second 100 L; Soil's sources read
-    -- 20 % and 80 %. F211 :76: the 205 L split by what each PRODUCED (105 / 100).
-    resetWorld()
-    soilReset()
-    local split = function(seq) return seq == 1 and { { id = "a", frac = 1, pct = 20 } } or { { id = "b", frac = 1, pct = 80 } } end
-    m, sg, host, w = boot5db({ areas = 2, additives = { level = 0.1, usage = 0.001 }, split = split,
-        lay = { { GRASS, 100, "g1", { x = 0, z = 0 } }, { GRASS, 100, "g2", { x = 0, z = 10 } } } }, "w5db_a2", 104)
-    v = w.baler
-    tick(v)
-    T.eq("A2 NAMED: two pickups (105 L at 20 %, 100 L at 80 %) seal by produced litres into one account of 205 L at (105 x 20 + 100 x 80) / 205",
-        chamberText(sg, v), "GRASS_WINDROW|205|KNOWN|KNOWN:7:205/205/0/0/" .. num((105 * 20 + 100 * 80) / 205))
-    -- A second tick adds to the chamber's record: the accounts add by carrier litres.
-    relay(m, w, GRASS, 100, "g3", { x = 0, z = 0 })
-    tick(v)
-    T.eq("A3 a later tick's add combines with what the chamber already held: 305 L, its account the sum",
-        chamberText(sg, v), "GRASS_WINDROW|305|KNOWN|KNOWN:7:305/305/0/0/" .. num((105 * 20 + 100 * 80 + 100 * 80) / 305))
-    FSBaseMission.delete(m)
-end)
-
---- The add frame's fill-unit reports: cause:accepted:consumed, in order.
-local function reportsText(host)
-    local t = host.lastBalerTick
-    local out = {}
-    for _, obs in ipairs(t and t.reports or {}) do
-        if obs.source == "FILL_UNIT" then out[#out + 1] = tostring(obs.cause) .. ":" .. num(obs.accepted) .. ":" .. tostring(obs.groundConsumed == true) end
-    end
-    return table.concat(out, " ")
-end
---- Each Soil pickup's sources by delivery order: 20 %, 80 %, then 50 %.
-local PCTS = function(seq) return { { id = "p", frac = 1, pct = seq == 1 and 20 or (seq == 2 and 80 or 50) } } end
-
--- ══════════════════════════════════════════════════════════════════════════
--- O. THE OVERFLOW, CARRIED LIVE (Q3), AND THE BALE THAT READS THE CHAMBER (F211 :94)
--- ══════════════════════════════════════════════════════════════════════════
-group("O", function()
-    resetWorld()
-    soilReset()
-    local m, sg, host, w = boot5db({ capacity = 150, split = PCTS }, "w5db_o", 105)
-    local v = w.baler
-    local seen = probeFinish(sg, v)
-    tick(v)                                                     -- 100 L at 20 %
-    relay(m, w, GRASS, 100, "g2")
-    tick(v)                                                     -- 100 L at 80 %: 50 fill the chamber, 50 overflow
-    T.eq("O1 NAMED: the add that fills the chamber settles BEFORE the original, so finishBale reads the chamber's record: 150 L known at (100 x 20 + 50 x 80) / 150",
-        #seen .. "/" .. tostring(seen[1]) .. "/" .. #BALES.made, "1/GRASS_WINDROW|150|KNOWN|KNOWN:7:150/150/0/0/" .. num((100 * 20 + 50 * 80) / 150) .. "/1")
-    T.eq("O2 NAMED: the full branch's overflow O = D - A = 50, read after the original, is a second seal: the overflow carrier holds 50 L of NATIVE_BALER_OVERFLOW_V1 known at 80 %, and nothing is lost",
-        opsText(host) .. "|" .. stockText(stockAt(sg, overflowId(v))),
-        "GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED GROUND_BALER_OVERFLOW:COMMITTED|NATIVE_BALER_OVERFLOW_V1|50|KNOWN|KNOWN:7:50/50/0/0/80")
-    T.eq("O3 the square clear in finishBale (:1438) replayed at the close: the chamber's record is gone with the native level; the add's own report was consumed, the retag's and the clear's replayed",
-        chamberText(sg, v) .. "/" .. num(v:getFillUnitFillLevel(1)) .. "|" .. reportsText(host), "none/0|SET_FILL_TYPE:0:false ADD_FILL_LEVEL:-150:false ADD_FILL_LEVEL:50:true")
-    relay(m, w, GRASS, 100, "g3")
-    tick(v)                                                     -- 100 L at 50 %; the 50 L overflow re-added inside the add
-    T.eq("O4 NAMED: the nested re-add (:1180-1182) is a TRANSFER from the overflow to the chamber before the nested original: the bale it finishes reads 100 L at 50 % and the 50 L at 80 %",
-        #seen .. "/" .. tostring(seen[2]) .. "|" .. opsText(host),
-        "2/GRASS_WINDROW|150|KNOWN|KNOWN:7:150/150/0/0/" .. num((100 * 50 + 50 * 80) / 150) .. "|GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED GROUND_BALER_READD:COMMITTED")
-    T.eq("O5 the emptied overflow is withdrawn at the close, and native's overflow is 0", tostring(sg.operations.carriers[overflowId(v)] == nil) .. "/" .. liveCount(NA.balerOverflows) .. "/" .. num(v.spec_baler.fillUnitOverflowFillLevel), "true/0/0")
-    FSBaseMission.delete(m)
-
-    -- An overflow the full branch overwrites is retired as the native loss it is (F211 :88, :96).
-    resetWorld()
-    soilReset()
-    m, sg, host, w = boot5db({ capacity = 150, split = PCTS }, "w5db_o2", 106)
-    v = w.baler
-    tick(v)
-    relay(m, w, GRASS, 100, "g2")
-    tick(v)                                                     -- the overflow holds 50 L at 80 %
-    relay(m, w, GRASS, 200, "g3")
-    tick(v)                                                     -- 200 L into the empty chamber: 150 accepted, a new 50 overflow
-    local ow = opOf(host, "GROUND_BALER_OVERFLOW")
-    T.eq("O6 NAMED: the old 50 L overflow the full branch overwrote is retired as LOSS first, then the new 50 L overflow is carried at its own 50 %",
-        opsText(host) .. "|" .. stockText(stockAt(sg, overflowId(v))),
-        "GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED GROUND_BALER_OVERFLOW:COMMITTED GROUND_BALER_OVERFLOW:COMMITTED|NATIVE_BALER_OVERFLOW_V1|50|KNOWN|KNOWN:7:50/50/0/0/50")
-    local first = host.lastBalerTick.operations[3]
-    local leg = first and first.report and first.report.allocations[1]
-    T.eq("O7 the overwritten overflow's leg is a LOSS of its whole 50 L", tostring(leg and leg.result) .. "/" .. tostring(leg and leg.reason) .. "/" .. num(leg and leg.sourceAmount), "LOSS/BALER_OVERFLOW_OVERWRITTEN/50")
-    FSBaseMission.delete(m)
-
-    -- A full main not yet in physics keeps its bale for the next frame (:1172-1175): the next add
-    -- raises the event with A = 0 and the full branch assigns O = D (Bob's addendum).
-    resetWorld()
-    soilReset()
-    m, sg, host, w = boot5db({ capacity = 100, notInPhysics = true, split = PCTS }, "w5db_o3", 107)
-    v = w.baler
-    tick(v)                                                     -- the chamber full at 100 L, no bale yet
-    relay(m, w, GRASS, 50, "g2")
-    tick(v)                                                     -- 50 L more: A = 0, O = 50
-    T.eq("O8 NAMED: an add with A = 0 makes no TRANSFER to the unit; the full branch's O = D is the second seal: the chamber keeps its 100 L, the overflow holds 50 L at 80 %",
-        opsText(host) .. "|" .. chamberText(sg, v) .. "|" .. stockText(stockAt(sg, overflowId(v))),
-        "GROUND_BALER:COMMITTED GROUND_BALER_OVERFLOW:COMMITTED|GRASS_WINDROW|100|KNOWN|KNOWN:7:100/100/0/0/20|NATIVE_BALER_OVERFLOW_V1|50|KNOWN|KNOWN:7:50/50/0/0/80")
-    FSBaseMission.delete(m)
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- G. COALESCE_UNPROVED (Bob's guard; SG-2 :181)
--- ══════════════════════════════════════════════════════════════════════════
-group("G", function()
-    resetWorld()
-    soilReset()
-    local m, sg, host, w = boot5db({ areas = 2, lay = { { GRASS, 100, "g1", { x = 0, z = 0 } }, { DRY, 100, "d1", { x = 0, z = 10 } } } }, "w5db_g", 108)
-    local v = w.baler
-    tick(v)
-    T.eq("G1 NAMED: a tick that picks grass on one area and dry grass on the other proves no mixture: the second line is reconciled unattributed, the add abandoned, the chamber's material qualified (UNKNOWN)",
-        opsText(host) .. "|" .. tostring(stockAt(sg, unitId(v, 1)) and stockAt(sg, unitId(v, 1)).knowledge),
-        "GROUND_BALER:COMMITTED GROUND_BALER_ADD:ABANDONED:COALESCE_UNPROVED|UNKNOWN")
-    FSBaseMission.delete(m)
-
-    -- A chamber holding dry grass receives grass: FillUnit empties it first (:1142-1146).
-    resetWorld()
-    soilReset()
-    m, sg, host, w = boot5db({ lay = { { DRY, 100, "d1" } } }, "w5db_g2", 109)
-    v = w.baler
-    tick(v)                                                     -- the chamber holds 100 L dry grass
-    relay(m, w, GRASS, 150, "g1")
-    tick(v)
-    T.eq("G2 an add into a chamber holding another type is abandoned, never carried as one mixture; the pickup is debited by what entered (the new level), so nothing is left as a false loss",
-        opsText(host) .. "|" .. tostring(stockAt(sg, unitId(v, 1)) and stockAt(sg, unitId(v, 1)).knowledge),
-        "GROUND_BALER:COMMITTED GROUND_BALER_ADD:ABANDONED:COALESCE_UNPROVED|UNKNOWN")
-    FSBaseMission.delete(m)
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- L. THE CLOSE: WHAT THE ADD DID NOT TAKE IS NATIVE LOSS (F211 :88)
--- ══════════════════════════════════════════════════════════════════════════
-group("L", function()
-    resetWorld()
-    soilReset()
-    local m, sg, host, w = boot5db({ massLimit = 60 }, "w5db_l", 110)
-    local v = w.baler
-    tick(v)
-    local rem = opOf(host, "GROUND_BALER_REMAINDER")
-    local leg = rem and rem.report.allocations[1]
-    T.eq("L1 NAMED: a mass-limited add takes D = 60 of the 100 L produced: the chamber 60 L known, and the 40 L balerPickup still holds is one LOSS at the close",
-        chamberText(sg, v) .. "|" .. opsText(host) .. "|" .. tostring(leg and leg.result) .. ":" .. num(leg and leg.sourceAmount),
-        "GRASS_WINDROW|60|KNOWN|KNOWN:7:60/60/0/0/30|GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED GROUND_BALER_REMAINDER:COMMITTED|LOSS:40")
-    T.eq("L2 the carrier is withdrawn after its loss", tostring(sg.operations.carriers[pickupId(v)] == nil) .. "/" .. liveCount(NA.balerPickups), "true/0")
-    FSBaseMission.delete(m)
-
-    resetWorld()
-    soilReset()
-    m, sg, host, w = boot5db({}, "w5db_l2", 111)
-    v = w.baler
-    v.spec_fillUnit.fillUnits[1].refuse = true
-    tick(v)
-    T.eq("L3 an early refusal (FillUnit returns 0 before any event, :1106-1124): no add, and the tick's 100 L retire as LOSS at the close",
-        opsText(host) .. "|" .. chamberText(sg, v), "GROUND_BALER:COMMITTED GROUND_BALER_REMAINDER:COMMITTED|none")
-    FSBaseMission.delete(m)
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- K. WHICH BALERS (Bob's C4)
--- ══════════════════════════════════════════════════════════════════════════
-group("K", function()
-    for i, opts in ipairs({ { round = true }, { nonStop = true } }) do
-        resetWorld()
-        soilReset()
-        local m, sg, host, w = boot5db(opts, "w5db_k" .. i, 111 + i)
-        soilReset()
-        tick(w.baler)
-        if i == 1 then
-            -- SG2-5e-b frames a round Baler too: its tick opens (SG2-5e-b-round_framing_spec_test.lua bars the round branch).
-            T.eq("K1 NAMED: a round Baler opens its tick since SG2-5e-b: the BALER frame and its admission, as a square one",
-                tostring(host.lastBalerTick ~= nil) .. "/" .. admits(), "true/1")
-        else
-            T.eq("K2 NAMED: a non-stop Baler opens no tick: no BALER frame, no admission, Soil's standalone path keeps it",
-                tostring(host.lastBalerTick) .. "/" .. admits(), "nil/0")
-        end
-        FSBaseMission.delete(m)
-    end
-    resetWorld()
-    soilReset()
-    local m, sg, host, w = boot5db({}, "w5db_k3", 114)
-    w.baler.isServer = false
-    soilReset()
-    tick(w.baler)
-    T.eq("K3 server only: a Baler that is not the server opens no tick", tostring(host.lastBalerTick) .. "/" .. admits(), "nil/0")
-    FSBaseMission.delete(m)
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- R. THE PICKUP CARRIES SOIL'S RECORD (SG-1 calls an owner only for a property present)
--- ══════════════════════════════════════════════════════════════════════════
-group("R", function()
-    for i, unresolved in ipairs({ false, true }) do
-        resetWorld()
-        soilReset()
-        local m, sg, host, w = boot5db({ unresolved = unresolved }, "w5db_r" .. i, 114 + i)
-        local v = w.baler
-        local before = nil
-        local PROBE = { onEndWorkAreaProcessing = function(self) before = stockText(stockAt(sg, pickupId(self))) end }
-        table.insert(v.eventListeners.onEndWorkAreaProcessing, 1, PROBE)
-        tick(v)
-        if not unresolved then
-            T.eq("R1 NAMED: before the add, balerPickup's stock carries Soil's record from the cells' resident capture; the chamber then carries the account",
-                tostring(before) .. "|" .. chamberText(sg, v), "GRASS_WINDROW|100|KNOWN|KNOWN:7:none|GRASS_WINDROW|100|KNOWN|KNOWN:7:100/100/0/0/30")
-        else
-            T.eq("R2 NAMED: over cells Soil cannot resolve (UNAVAILABLE) the pickup carries Soil's qualified record, and the chamber's material is qualified rather than reading the account as known: Soil's bale read falls back",
-                tostring(before) .. "|" .. chamberText(sg, v), "GRASS_WINDROW|100|UNAVAILABLE|UNAVAILABLE:nil:none|GRASS_WINDROW|100|UNAVAILABLE|UNAVAILABLE:nil:none")
-        end
-        FSBaseMission.delete(m)
-    end
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- X. SOIL ABSENT
--- ══════════════════════════════════════════════════════════════════════════
-group("X", function()
-    resetWorld()
-    soilReset()
-    local m, sg, host, w = boot5db({ noSoil = true }, "w5db_x", 117)
-    soilReset()
-    tick(w.baler)
-    T.eq("X1 without Soil nothing is admitted or read, and StockGuard's own operations are the same", admits() .. "/" .. SOIL5D.reads .. "/" .. opsText(host) .. "|" .. chamberText(sg, w.baler),
-        "0/0/GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED|GRASS_WINDROW|100|UNKNOWN|noRecord")
-    FSBaseMission.delete(m)
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- M. TWO MAP LOADS IN ONE PROCESS (Bob's condition 2b)
--- ══════════════════════════════════════════════════════════════════════════
-group("M", function()
-    resetWorld()
-    soilReset()
-    local m, sg, host, w = boot5db({}, "w5db_m1", 118)
-    tick(w.baler)
-    local first = opsText(host)
-    local oldTable = Baler
-    FSBaseMission.delete(m)
-    -- The next map load re-sources the specialization: a NEW Baler table (Baler.lua:7), StockGuard
-    -- not re-sourced.
-    REAL.Baler = newBalerClass()
-    resetWorld()
-    soilReset()
-    m, sg, host, w = boot5db({}, "w5db_m2", 119)
-    local rec = SGClassHook.record(Baler, "onFillUnitFillLevelChanged", GO_.HOOK_ID)
-    tick(w.baler)
-    local adds = 0
-    for _, op in ipairs(host.lastBalerTick and host.lastBalerTick.operations or {}) do if op.evidence and op.evidence.nativePath == "GROUND_BALER_ADD" then adds = adds + 1 end end
-    T.eq("M1 NAMED: on the second load's new Baler table StockGuard's listeners are live and run once per raise: one pickup, one add, the same as the first load",
-        first .. "|" .. opsText(host) .. "|" .. adds, "GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED|GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED|1")
-    T.eq("M2 the first table's record does not leak onto the second: its record wraps the second table's own listener",
-        tostring(Baler ~= oldTable) .. "/" .. tostring(rec ~= nil and rec.original ~= SGClassHook.record(oldTable, "onFillUnitFillLevelChanged", GO_.HOOK_ID).original), "true/true")
-    FSBaseMission.delete(m)
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- Z. THE LISTENER ORDER (Bob's condition 2c): SOIL'S WRAP OUTSIDE STOCKGUARD'S, AND THE REVERSE
--- ══════════════════════════════════════════════════════════════════════════
-group("Z", function()
-    local NAMES3 = { "onStartWorkAreaProcessing", "onEndWorkAreaProcessing", "onFillUnitFillLevelChanged" }
-    local function soilWrap(B, seen)
-        for _, name in ipairs(NAMES3) do
-            local inner = B[name]
-            B[name] = function(self, ...) seen[name] = (seen[name] or 0) + 1 return inner(self, ...) end
-        end
-    end
     local results = {}
-    for i, outside in ipairs({ true, false }) do
-        REAL.Baler = newBalerClass()
+    for i, round in ipairs({ true, false }) do
         resetWorld()
         soilReset()
-        local seen = {}
-        if not outside then soilWrap(Baler, seen) end              -- installed before StockGuard's: inside
-        local m, sg, host, w = boot5db({}, "w5db_z" .. i, 119 + i)
-        if outside then soilWrap(Baler, seen) end                  -- Soil installs at mission start, later: outside
-        tick(w.baler)
-        results[i] = opsText(host) .. "|" .. chamberText(sg, w.baler) .. "|" .. tostring(seen.onStartWorkAreaProcessing) .. "/" .. tostring(seen.onEndWorkAreaProcessing) .. "/" .. tostring(seen.onFillUnitFillLevelChanged)
+        local m, sg, host, w = boot5db({ round = round, capacity = 200 }, "w5eb_e" .. i, 300 + i)
+        local v = w.baler
+        if round then
+            local wa = v.spec_workArea.workAreas[1]
+            local held = SGClassHook.record(Baler, "onStartWorkAreaProcessing", GO_.HOOK_ID) ~= nil and SGClassHook.record(Baler, "onEndWorkAreaProcessing", GO_.HOOK_ID) ~= nil
+                and SGClassHook.record(Baler, "onFillUnitFillLevelChanged", GO_.HOOK_ID) ~= nil
+            T.ok("E0 [reached] main.lua's install wrapped the live Baler class's three listeners and bracketed a ROUND Baler's captured pickup pointer (WorkArea.lua:266)",
+                held and v.spec_baler.hasUnloadingAnimation == true and wa.processingFunction ~= Baler.processBalerArea and wa._sgBrackets ~= nil
+                    and wa._sgBrackets.processBalerArea ~= nil and wa._sgBrackets.processBalerArea.original == Baler.processBalerArea)
+        end
+        soilReset()
+        tick(v)
+        local add = opOf(host, "GROUND_BALER_ADD")
+        local leg = add and add.report.allocations[1]
+        results[i] = admits() .. "/" .. opsText(host) .. "|" .. chamberText(sg, v) .. "|" .. num(leg and leg.sourceAmount) .. "/" .. num(leg and leg.destinationAmount)
+            .. "/" .. tostring(add and add.evidence.seal and add.evidence.seal.read) .. "/" .. tostring(sg.operations.carriers[pickupId(v)] == nil)
         FSBaseMission.delete(m)
     end
-    T.eq("Z1 NAMED: with Soil's listener wraps outside StockGuard's (production's order), the tick settles as in E, each listener raised once",
-        results[1], "GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED|GRASS_WINDROW|100|KNOWN|KNOWN:7:100/100/0/0/30|1/1/1")
-    T.eq("Z2 and in the reverse order, the same", results[2], results[1])
+    T.eq("E1 NAMED [entry point]: a ROUND Baler's tick: Soil admitted the pickup inside the BALER frame, StockGuard settled the pickup and the add, the chamber's record carries the sealed account Soil's reader gave (100 L known at 30 %), and the tick's carrier is withdrawn",
+        results[1], "1/GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED|GRASS_WINDROW|100|KNOWN|KNOWN:7:100/100/0/0/30|100/100/1/true")
+    T.eq("E2 NAMED: the round tick is the square tick: the same admission, operations, legs, seal and record", results[1], results[2])
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
--- Q. A PICKUP THE BRACKET COULD NOT OBSERVE: THE ADD EXPLAINS ONLY THE OBSERVED SHARE
+-- S. THE FULL BRANCH: THE SEAL, THE FINISH AND THE OVERFLOW, ROUND AND SQUARE; (a) THE CHAMBER KEPT
 -- ══════════════════════════════════════════════════════════════════════════
-group("Q", function()
-    resetWorld()
-    soilReset()
-    local m, sg, host, w = boot5db({ areas = 2, lay = { { GRASS, 100, "g1", { x = 0, z = 0 } }, { GRASS, 100, "g2", { x = 0, z = 10 } } } }, "w5db_q", 130)
-    local v = w.baler
-    -- Area 2's line runs with no ground sampler: native picks it, StockGuard cannot observe it.
-    local wa2 = v.spec_workArea.workAreas[2]
-    local bracketed = wa2.processingFunction
-    wa2.processingFunction = function(...)
-        host.groundSampler = function() return nil, "BENCH_NO_SAMPLER" end
-        local r = { pcall(bracketed, ...) }
-        host.groundSampler = nil
-        if not r[1] then error(r[2], 0) end
-        return unpack(r, 2)
+group("S", function()
+    local r = {}
+    for i, round in ipairs({ true, false }) do
+        resetWorld()
+        soilReset()
+        local m, sg, host, w = boot5db({ round = round, capacity = 60 }, "w5eb_s" .. i, 310 + i)
+        local v = w.baler
+        local seen = probeFinish(sg, v)
+        soilReset()
+        tick(v)
+        local b = v.spec_baler.bales[1]
+        r[i] = { ops = opsText(host), finish = tostring(seen[1]), over = stockText(stockAt(sg, overflowId(v))), clears = clearsIn(host.lastBalerTick),
+                 retired = retiredFor(sg, unitId(v, 1)), level = num(v:getFillUnitFillLevel(1)), chamber = chamberText(sg, v), bales = #v.spec_baler.bales,
+                 mounted = tostring(b and b.baleObject and b.baleObject.mounted) }
+        FSBaseMission.delete(m)
     end
-    tick(v)
-    local add = opOf(host, "GROUND_BALER_ADD")
-    local leg = add and add.report.allocations[1]
-    local acc = add and add.evidence[PID] and add.evidence[PID].collectedAccounts[1].account
-    local s = stockAt(sg, unitId(v, 1))
-    local p = s and s.properties[PID]
-    T.eq("Q1 NAMED: of 200 L native produced StockGuard observed 100: the add explains 100 of A = 200 (source 100, destination 100, the account of 100); the chamber holds 200 with the other 100 unexplained (its record covers 100)",
-        num(leg and leg.sourceAmount) .. "/" .. num(leg and leg.destinationAmount) .. "/" .. accText(acc) .. "|" .. num(s and s.observedAmount) .. "/" .. tostring(s and s.reason) .. "/" .. num(p and p.knownAmount),
-        "100/100/100/100/0/0/30|200/UNEXPLAINED_DELTA/100")
-    -- MAINTENANCE row 197: the chamber was empty, so the add BORE its stock, and half of it is
-    -- unexplained. It reads PARTIAL, as an UPDATE would (SG-1 brief :90, :108).
-    T.eq("Q2 NAMED [entry point, MAINTENANCE row 197]: the chamber born with 100 of its 200 L unexplained reads PARTIAL with reason UNEXPLAINED_DELTA, not KNOWN",
-        tostring(s and s.knowledge) .. "/" .. tostring(s and s.reason), "PARTIAL/UNEXPLAINED_DELTA")
-    FSBaseMission.delete(m)
+    local function shared(x) return x.ops .. "|" .. x.finish .. "|" .. x.over end
+    T.eq("S1 NAMED: 100 L into a 60 L ROUND chamber: the add, the bale's finish reading the chamber's record inside the add (60 L known at 30 %), and the 40 L overflow's TRANSFER with its own account",
+        shared(r[1]), "GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED GROUND_BALER_OVERFLOW:COMMITTED|GRASS_WINDROW|60|KNOWN|KNOWN:7:60/60/0/0/30|NATIVE_BALER_OVERFLOW_V1|40|KNOWN|KNOWN:7:40/40/0/0/30")
+    T.eq("S2 NAMED: and the square Baler's full branch is the same", shared(r[2]), shared(r[1]))
+    T.eq("S3 NAMED (a): the round finish mounts the bale and leaves the chamber WHOLE (:1431): no clear in the add frame, the chamber's stock not retired, 60 L with its record",
+        r[1].clears .. "/" .. r[1].retired .. "/" .. r[1].level .. "/" .. r[1].bales .. "/" .. r[1].mounted .. "|" .. r[1].chamber,
+        "0/0/60/1/true|GRASS_WINDROW|60|KNOWN|KNOWN:7:60/60/0/0/30")
+    T.eq("S4 control: the square finish clears inside the add frame (:1446); its report replays at the close and ends the chamber's stock",
+        r[2].clears .. "/" .. r[2].retired .. "/" .. r[2].level .. "|" .. r[2].chamber, "1/1/0|none")
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
--- T. A THROW INSIDE THE TICK
+-- B. (b) NO TICK UNDER A MOUNTED BALE (:1746)
 -- ══════════════════════════════════════════════════════════════════════════
-group("T", function()
+group("B", function()
     resetWorld()
     soilReset()
-    local m, sg, host, w = boot5db({}, "w5db_t", 131)
-    local v = w.baler
-    -- processBalerArea throws after its pickup line (:1909 adds into a missing key); WorkArea has
-    -- no pcall (WorkArea.lua:183), so the end event never runs and the tick stays open.
-    local keep = v.spec_baler.pickupFillTypes
-    v.spec_baler.pickupFillTypes = { [DRY] = 0, [STRAW_W] = 0 }
-    local ok = pcall(tick, v)
-    local stale = GO_.balerTicks[v]
-    v.spec_baler.pickupFillTypes = keep
-    relay(m, w, GRASS, 100, "g2")
-    tick(v)
-    local staleOps = {}
-    for _, op in ipairs(stale and stale.operations or {}) do staleOps[#staleOps + 1] = tostring(op.evidence and op.evidence.nativePath) .. ":" .. tostring(op.outcome) .. ":" .. tostring(op.reason) end
-    T.eq("T1 NAMED: the throw re-raises with the tick left open and its line abandoned (NATIVE_ERROR); the Baler's next onStart closes it (its carrier withdrawn) and the next tick runs as normal",
-        tostring(ok) .. "/" .. tostring(stale ~= nil) .. "/" .. table.concat(staleOps, " ") .. "/" .. tostring(stale and stale.live == nil) .. "|" .. opsText(host) .. "|" .. liveCount(GO_.balerTicks),
-        "false/true/GROUND_BALER:ABANDONED:NATIVE_ERROR/true|GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED|0")
-    FSBaseMission.delete(m)
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- V. THE OVERFLOW'S OTHER WAYS OUT
--- ══════════════════════════════════════════════════════════════════════════
-group("V", function()
-    -- A re-add into another type than the overflow was produced as proves no mixture.
-    resetWorld()
-    soilReset()
-    local m, sg, host, w = boot5db({ capacity = 150, split = PCTS }, "w5db_v1", 132)
+    local m, sg, host, w = boot5db({ round = true, capacity = 60 }, "w5eb_b", 321)
     local v = w.baler
     tick(v)
-    relay(m, w, GRASS, 100, "g2")
-    tick(v)                                                     -- the overflow holds 50 L of grass
-    relay(m, w, DRY, 50, "d3")
-    tick(v)                                                     -- dry grass into the empty chamber, then the 50 L re-added as dry grass
-    T.eq("V1 NAMED: the re-add of a grass overflow into dry grass is abandoned (COALESCE_UNPROVED), never carried as one mixture",
-        opsText(host), "GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED GROUND_BALER_READD:ABANDONED:COALESCE_UNPROVED")
-    FSBaseMission.delete(m)
-
-    -- A Baler removed with a live overflow: the overflow is destruction (SG-2 :136).
-    resetWorld()
+    local first = host.lastBalerTick
+    relay(m, w, GRASS, 50, "g2")
+    local ground = G_.dump()
     soilReset()
-    m, sg, host, w = boot5db({ capacity = 150, split = PCTS }, "w5db_v2", 133)
-    v = w.baler
     tick(v)
-    relay(m, w, GRASS, 100, "g2")
-    tick(v)
-    local id = overflowId(v)
-    VehicleSystem.removeVehicle(m.vehicleSystem, v)
-    local ls = host.lastSettlement
-    local a = ls and ls.report and ls.report.allocations and ls.report.allocations[1] or {}
-    T.eq("V2 NAMED: removing the Baler retires its 50 L overflow through a REMOVE with a DESTRUCTION leg, then withdraws the carrier",
-        tostring(ls and ls.outcome) .. "/" .. tostring(a.result) .. "/" .. tostring(a.reason) .. "/" .. num(a.sourceAmount) .. "/" .. tostring(sg.operations.carriers[id] == nil) .. "/" .. liveCount(NA.balerOverflows),
-        "COMMITTED/DESTRUCTION/VEHICLE_REMOVED/50/true/0")
+    T.eq("B1 NAMED: with the bale mounted the pickup area is inactive (:1746): no pickup call (lastPickedUpLiters 0), no tick, no admission; the new windrow stays on the ground untouched, the chamber and the pending 40 L unchanged",
+        tostring(host.lastBalerTick == first) .. "/" .. tostring(GO_.balerTicks[v]) .. "/" .. admits() .. "/" .. num(v.spec_baler.workAreaParameters.lastPickedUpLiters)
+            .. "/" .. tostring(ground ~= "" and G_.dump() == ground) .. "/" .. num(v:getFillUnitFillLevel(1)) .. "/" .. num(v.spec_baler.fillUnitOverflowFillLevel),
+        "true/nil/0/0/true/60/40")
     FSBaseMission.delete(m)
-
-    -- The mission's end: no Baler entry outlives it or holds its vehicles.
-    resetWorld()
-    soilReset()
-    m, sg, host, w = boot5db({ capacity = 150, split = PCTS }, "w5db_v3", 134)
-    v = w.baler
-    tick(v)
-    relay(m, w, GRASS, 100, "g2")
-    tick(v)
-    local live = liveCount(NA.balerOverflows)
-    FSBaseMission.delete(m)
-    T.eq("V3 the mission's end empties the Baler's tables", live .. "/" .. liveCount(NA.balerOverflows) .. "/" .. liveCount(NA.balerPickups) .. "/" .. liveCount(GO_.balerTicks), "1/0/0/0")
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
--- U. THE TWO KINDS: LIVE ONLY, NEVER RESTORED, NEVER ENUMERATED
+-- U. (c) THE UNLOAD CLEAR, OUTSIDE ANY TICK, ENDS THE CHAMBER STOCK ONCE
 -- ══════════════════════════════════════════════════════════════════════════
 group("U", function()
     resetWorld()
     soilReset()
-    local m, sg, host, w = boot5db({}, "w5db_u", 135)
+    local m, sg, host, w = boot5db({ round = true, capacity = 60 }, "w5eb_u", 331)
     local v = w.baler
-    local spec = host.nativeLease.spec
-    local pb, ob = NA.balerPickupBinding(v), NA.balerOverflowBinding(v)
-    local function answer(fn, ...) local r = { pcall(fn, ...) } if not r[1] then return "RAISED" end return tostring(r[2]) .. "/" .. tostring(r[3]) end
-    T.eq("U1 outside a tick the pickup resolves to nothing (NOT_LIVE), and an overflow never bound neither (NOT_BOUND)",
-        answer(spec.resolveCarrier, pb) .. " " .. answer(spec.resolveCarrier, ob), "nil/NOT_LIVE nil/NOT_BOUND")
-    -- SG2-5e-a (SG-2 :477) moved the overflow's half: its save extension puts the native scalar back
-    -- at the load, so a restore keeps its saved binding (ROW86's group O is that bar). The pickup
-    -- lives in one tick and is still never restored; neither is ever enumerated.
-    T.eq("U2 NAMED: the pickup is never restored, the overflow keeps its saved binding at a restore (SG2-5e-a), and neither is ever enumerated",
-        answer(spec.restoreBinding, pb, {}) .. " " .. tostring(spec.restoreBinding(ob, {}) == ob) .. "/" .. #spec.kinds[NA.KIND_BALER_PICKUP].enumerateCarriers() .. "/" .. #spec.kinds[NA.KIND_BALER_OVERFLOW].enumerateCarriers(),
-        "nil/NOT_RESTORABLE true/0/0")
+    tick(v)
+    local chamber = unitId(v, 1)
+    local born = stockAt(sg, chamber)
+    local bale = v.spec_baler.bales[1].baleObject
+    v:setIsUnloadingBale(true)
+    local opening = num(v:getFillUnitFillLevel(1)) .. "/" .. tostring(v.spec_baler.unloadingState)
+    updateTick(v)
+    local once = retiredFor(sg, chamber)
+    local text = opening .. "|" .. num(v:getFillUnitFillLevel(1)) .. "/" .. #v.spec_baler.bales .. "/" .. tostring(bale.mounted) .. "/" .. tostring(bale.canBeSold) .. "|" .. once .. "/" .. tostring(stockAt(sg, chamber))
+        .. "/" .. tostring(born and born.retired) .. "/" .. tostring(GO_.balerTicks[v])
+    updateTick(v)
+    T.eq("U1 NAMED: the door opens with no pad (a bale is mounted); onUpdateTick drops the bale and the clear outside any tick (:926-928) ends the chamber's stock exactly ONCE; a second update clears nothing more",
+        text .. "|" .. retiredFor(sg, chamber), "60/2|0/0/false/true|1/nil/true/nil|1")
+    v:setIsUnloadingBale(false)
+    updateTick(v)
+    relay(m, w, GRASS, 10, "g3")
+    soilReset()
+    tick(v)
+    T.eq("U2 NAMED: the door closed, the next tick runs: 10 L picked, the pending 40 L re-added, the chamber a NEW stock of 50 L known at 30 %",
+        tostring(v.spec_baler.unloadingState) .. "/" .. admits() .. "|" .. opsText(host) .. "|" .. chamberText(sg, v) .. "|" .. tostring(stockAt(sg, chamber) ~= nil and stockAt(sg, chamber).stockId ~= (born and born.stockId)),
+        "1/1|GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED GROUND_BALER_READD:COMMITTED|GRASS_WINDROW|50|KNOWN|KNOWN:7:50/50/0/0/30|true")
     FSBaseMission.delete(m)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
--- C. THE PICKUP'S RETIREMENTS KEEP A BUDGET OF THEIR OWN (main.lua)
+-- D. (d) THE PARTIAL-EJECTION PAD IS NEVER KNOWN LITRES; SAID ONCE PER BALER
 -- ══════════════════════════════════════════════════════════════════════════
-group("C", function()
+group("D", function()
     resetWorld()
     soilReset()
-    local layList = {}
-    for k = 0, 7 do layList[#layList + 1] = { GRASS, 100, "g" .. k, { x = 9 * k, z = 0 } } end
-    local m, sg, host, w = boot5db({ lay = layList }, "w5db_c", 136)
+    local m, sg, host, w = boot5db({ round = true, capacity = 200, canUnloadUnfinished = true, threshold = 50 }, "w5eb_d", 341)
     local v = w.baler
-    local core0 = 0
-    for _, s in pairs(sg.operations.retiredStocks) do if not NA.isBalerPickupKey(s.carrierKey) then core0 = core0 + 1 end end
-    local limit = sg.operations.retiredLimit
-    sg.operations.retiredLimit = 4
-    local wa = v.spec_workArea.workAreas[1]
-    for k = 0, 7 do
-        wa.start.x, wa.width.x, wa.height.x = 9 * k - 1, 9 * k + 1, 9 * k - 1
-        tick(v)
-    end
-    local mine, core = 0, 0
-    for _, s in pairs(sg.operations.retiredStocks) do
-        if NA.isBalerPickupKey(s.carrierKey) then mine = mine + 1 else core = core + 1 end
-    end
-    sg.operations.retiredLimit = limit
-    T.eq("C1 NAMED: eight ticks retire their pickup stocks in their own class (held to its budget), and the tippers' retired history is never evicted",
-        tostring(core0 >= 8) .. "/" .. tostring(mine >= 1 and mine <= 4) .. "/" .. tostring(core == core0), "true/true/true")
+    tick(v)
+    local chamber = unitId(v, 1)
+    local before = chamberText(sg, v)
+    local lines = printed(function() v:setIsUnloadingBale(true) end)
+    host:flush()
+    local s = stockAt(sg, chamber)
+    local p = s and s.properties[PID]
+    T.eq("D1 NAMED: the pad (:1343-1345) adds 100 L outside any tick and its own event finishes the bale; SG-1 reconciles the increase as unexplained: the stock PARTIAL, Soil's record 100 L known of 200, the pad never known",
+        before .. "|" .. num(v:getFillUnitFillLevel(1)) .. "/" .. #v.spec_baler.bales .. "/" .. num(v.spec_baler.lastBaleFillLevel) .. "|" .. tostring(s and s.knowledge) .. "/" .. num(s and s.observedAmount)
+            .. "/" .. tostring(p and p.knowledge) .. "/" .. num(p and p.knownAmount) .. "/" .. num(p and p.basisAmount),
+        "GRASS_WINDROW|100|KNOWN|KNOWN:7:100/100/0/0/30|200/1/100|PARTIAL/200/PARTIAL/100/200")
+    T.eq("D2 NAMED: said once, naming the baler, the litres and :475", count(lines, "outside a pickup tick") .. "/" .. tostring(has(lines, "round baler vehicle:baler: 100 L added to the chamber outside a pickup tick")) .. "/" .. tostring(has(lines, "SG-2 :475")),
+        "1/true/true")
+    updateTick(v)
+    local bale = BALES.made[#BALES.made]
+    T.eq("D3 the unload: the bale carries the real 100 L (:1596), and the clear ends the chamber's stock", num(bale.fillLevel) .. "/" .. num(v:getFillUnitFillLevel(1)) .. "/" .. tostring(stockAt(sg, chamber)) .. "/" .. retiredFor(sg, chamber), "100/0/nil/1")
+    v:setIsUnloadingBale(false)
+    updateTick(v)
+    relay(m, w, GRASS, 80, "g2")
+    tick(v)
+    local again = printed(function() v:setIsUnloadingBale(true) end)
+    host:flush()
+    local s2 = stockAt(sg, chamber)
+    local p2 = s2 and s2.properties[PID]
+    T.eq("D4 a second partial bale on the same baler pads again, its pad unknown as before, and is not said again (once per baler)",
+        num(v:getFillUnitFillLevel(1)) .. "/" .. tostring(p2 and p2.knowledge) .. "/" .. num(p2 and p2.knownAmount) .. "/" .. count(again, "outside a pickup tick"), "200/PARTIAL/80/0")
     FSBaseMission.delete(m)
-end)
-
--- ══════════════════════════════════════════════════════════════════════════
--- W. AN UNREADABLE SHARE, AND THE MASS-LIMITED OVERFLOW
--- ══════════════════════════════════════════════════════════════════════════
-group("W", function()
+    -- Control: a square Baler has no pad (:1324 is round only), and a square chamber's add outside a tick says nothing.
     resetWorld()
     soilReset()
-    local m, sg, host, w = boot5db({}, "w5db_w1", 137)
-    SOIL5D.failRead = true
+    -- Its own uid: the log is once per baler, and the round Baler above already spent its key.
+    m, sg, host, w = boot5db({ capacity = 200, canUnloadUnfinished = true, threshold = 50, uid = "vehicle:square" }, "w5eb_d2", 342)
     tick(w.baler)
-    T.eq("W1 NAMED: a share Soil's reader answers UNAVAILABLE for enters the account as unknown carrier litres, never dropped and never known (the reader's own contract)",
-        chamberText(sg, w.baler), "GRASS_WINDROW|100|KNOWN|KNOWN:7:100/0/100/0/nil")
+    local sq = printed(function()
+        w.baler:setIsUnloadingBale(true)
+        w.baler:addFillUnitFillLevel(1, 1, 5, GRASS, ToolType.UNDEFINED)
+    end)
+    T.eq("D5 control: a square Baler's door pads nothing, and a square chamber's add outside a tick is not reported as a pad",
+        num(w.baler:getFillUnitFillLevel(1)) .. "/" .. count(sq, "outside a pickup tick"), "105/0")
     FSBaseMission.delete(m)
-
-    -- A mass limit of 80 L: native's D is 80 of the 100 produced; the second add fills the 150 L
-    -- chamber with 70 and keeps D - A = 10 as overflow, never W - A = 30; the other 20 are loss.
+    -- Another round Baler: before the barrier (a load: the host there, not ready) its out-of-tick add is
+    -- not reported; after it, its own pad is, once, though the first Baler's was said already.
     resetWorld()
     soilReset()
-    m, sg, host, w = boot5db({ capacity = 150, massLimit = 80, split = PCTS }, "w5db_w2", 138)
-    local v = w.baler
-    tick(v)
-    relay(m, w, GRASS, 100, "g2")
-    tick(v)
-    local rem = opOf(host, "GROUND_BALER_REMAINDER")
-    T.eq("W2 NAMED: the overflow is native's D - A = 10, read after the original, and the 20 L the mass limit refused are the close's loss",
-        num(v.spec_baler.fillUnitOverflowFillLevel) .. "|" .. stockText(stockAt(sg, overflowId(v))) .. "|" .. num(rem and rem.evidence.loss),
-        "10|NATIVE_BALER_OVERFLOW_V1|10|KNOWN|KNOWN:7:10/10/0/0/80|20")
-    FSBaseMission.delete(m)
-
-    -- A chamber change the host is still coalescing at the tick's start: a fill from empty is a
-    -- boundary and flushes at once; a mid-fill add waits for the next flush (SGNativeHost:markDirty).
-    resetWorld()
-    soilReset()
-    m, sg, host, w = boot5db({}, "w5db_w3", 139)
-    v = w.baler
-    v:addFillUnitFillLevel(1, 1, 20, GRASS, ToolType.UNDEFINED)
-    v:addFillUnitFillLevel(1, 1, 20, GRASS, ToolType.UNDEFINED)
-    local pending = #host.dirtyOrder
-    tick(v)
-    local s = stockAt(sg, unitId(v, 1))
-    T.eq("W3 NAMED: the chamber's record is brought to native at the tick's start, so a change still waiting in the host's coalescing is not taken for the add's: the add settles clean onto 40 L",
-        pending .. "/" .. num(s and s.observedAmount) .. "/" .. tostring(s and s.reason) .. "/" .. accText(s and s.properties[PID] and s.properties[PID].payload.account),
-        "1/140/nil/140/100/40/0/30")
+    m, sg, host, w = boot5db({ round = true, capacity = 200, canUnloadUnfinished = true, threshold = 50, uid = "vehicle:baler2" }, "w5eb_d3", 343)
+    tick(w.baler)
+    host.ready = false
+    local early = printed(function() w.baler:addFillUnitFillLevel(1, 1, 5, GRASS, ToolType.UNDEFINED) end)
+    host.ready = true
+    local second = printed(function() w.baler:setIsUnloadingBale(true) end)
+    T.eq("D6 NAMED: before the barrier an out-of-tick add says nothing (a saved chamber loading is not a pad); a SECOND round Baler's pad is said once for it (once per baler, not per process)",
+        count(early, "outside a pickup tick") .. "/" .. count(second, "outside a pickup tick") .. "/" .. tostring(has(second, "round baler vehicle:baler2: 95 L added")),
+        "0/1/true")
     FSBaseMission.delete(m)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
--- I. THE COST OF A TICK: WORKAREA RAISES ITS EVENTS EVERY UPDATE TICK (WorkArea.lua:124-126)
+-- V. (e) A ROUND BALER'S PENDING OVERFLOW THROUGH A SAVE AND A FRESH MISSION (5e-a)
 -- ══════════════════════════════════════════════════════════════════════════
-group("I", function()
+--- ROW86's group O on a ROUND Baler: 100 L at fillScale 1.0037 into a 60 L chamber; the bale made and
+--- mounted, 40.37 L pending. Saved through the engine's own path; a fresh mission with the round Baler
+--- rebuilt, its fill unit loaded while not in physics (FillUnit's onPostLoad), then onLoadFinished's
+--- deferred finishBale (:570-575) mounting the bale again. Then the door opened and closed, and 10 L more.
+local function roundOverflow(dir, index)
+    READER = "float32"
     resetWorld()
     soilReset()
-    local m, sg, host, w = boot5db({ lay = {} }, "w5db_i", 140)
-    local v = w.baler
-    local refreshes = 0
-    local realRefresh = host.handle.refreshCarrier
-    host.handle.refreshCarrier = function(...) refreshes = refreshes + 1 return realRefresh(...) end
-    host.lastBalerTick = nil
-    local wa = v.spec_workArea.workAreas
-    ENGINE_RAISE(v, "onStartWorkAreaProcessing", 16, wa)
-    ENGINE_RAISE(v, "onEndWorkAreaProcessing", 16, wa)
-    T.eq("I1 NAMED: an idle Baler (its events raised, no work area processed) opens no tick and refreshes nothing",
-        tostring(host.lastBalerTick) .. "/" .. liveCount(GO_.balerTicks) .. "/" .. refreshes, "nil/0/0")
-    tick(v)
-    T.eq("I2 NAMED: a working tick over empty ground opens and closes its tick with no operation, no carrier and no refresh",
-        tostring(host.lastBalerTick ~= nil) .. "/" .. #host.lastBalerTick.operations .. "/" .. liveCount(NA.balerPickups) .. "/" .. refreshes, "true/0/0/0")
-    host.handle.refreshCarrier = realRefresh
-    FSBaseMission.delete(m)
-end)
-
+    local opts = { round = true, capacity = 60, fillScale = 1.0037, lay = { { GRASS, 100, "grass" } } }
+    local m, sg, host, w = boot5db(opts, dir, index)
+    tick(w.baler)
+    local o = stockAt(sg, overflowId(w.baler))
+    local r = { heldBefore = w.baler.spec_baler.fillUnitOverflowFillLevel, before = stockText(o), beforeId = o and o.stockId, chamberBefore = chamberText(sg, w.baler) }
+    local key = keyOf(m, w.baler)
+    nativeSave(m, dir)
+    local file = vehiclesFile(dir)
+    local base = key .. ".baler." .. SGFieldToolBufferSave.ELEMENT
+    r.written = file ~= nil and (tostring(file[base .. "#overflow"]) .. ":" .. tostring(file[base .. "#producedAs"])) or "nofile"
+    local m2, sg2, host2, w2
+    local lines = printed(function()
+        m2, sg2, host2, w2 = reload(m, dir, function(mm, ww)
+            soilOn(mm) soil5dOn(mm)
+            ww.baler = vehicleIn(mm, newBaler("vehicle:baler", { round = true, capacity = 60, fillScale = 1.0037, notInPhysics = true }))
+            local xml = REAL.XMLFile.load("vehiclesXML", dir .. "/vehicles.xml", REAL.Vehicle.xmlSchemaSavegame)
+            ENGINE_POST_LOAD_VEHICLE(ww.baler, { xmlFile = xml, key = key, resetVehicles = false })
+            -- boot installed a fresh g_server; the deferred finish broadcasts its bale (Baler.lua:1433).
+            if g_server ~= nil and g_server.broadcastEvent == nil then g_server.broadcastEvent = function() end end
+            ww.baler.isAddedToPhysics = true
+            ENGINE_RAISE(ww.baler, "onLoadFinished", nil)
+        end, { index = index })
+    end)
+    if g_server ~= nil and g_server.broadcastEvent == nil then g_server.broadcastEvent = function() end end
+    m2.stockGuard.registerProperty(PID, AOWNER)
+    local o2 = stockAt(sg2, overflowId(w2.baler))
+    r.heldAfter = w2.baler.spec_baler.fillUnitOverflowFillLevel
+    r.after = stockText(o2)
+    r.reattached = o2 ~= nil and r.beforeId ~= nil and o2.stockId == r.beforeId
+    r.loaded = num(w2.baler:getFillUnitFillLevel(1)) .. "/" .. #w2.baler.spec_baler.bales
+    r.line = lineWith(lines, "restored stocks:")
+    r.restoreLine = lineWith(lines, "FIRST BALER BUFFER RESTORED")
+    unloadAndClose(w2.baler)
+    relay(m2, w2, GRASS, 10, "g2")
+    tick(w2.baler)
+    r.heldNext = w2.baler.spec_baler.fillUnitOverflowFillLevel
+    r.chamber = w2.baler:getFillUnitFillLevel(1)
+    r.chamberStock = chamberText(sg2, w2.baler)
+    r.overflowLeft = stockText(stockAt(sg2, overflowId(w2.baler)))
+    r.ops = opsText(host2)
+    FSBaseMission.delete(m2)
+    return r
 end
-SG25DB_BENCH()
+
+group("V", function()
+    local a = roundOverflow("w5eb_v1", 351)
+    T.eq("V0 [reached] one 100 L tick into a 60 L ROUND chamber mounted the bale and left 40.37 L pending, bound as the overflow carrier with its 30 % record; the save wrote it as the engine's float32 with the material it was produced as",
+        num(a.heldBefore) .. " " .. a.before .. " " .. a.written, "40.37 NATIVE_BALER_OVERFLOW_V1|40.37|KNOWN|KNOWN:7:40.37/40.37/0/0/30 40.369999:GRASS_WINDROW")
+    T.eq("V1 NAMED (e): after the fresh mission the full chamber's bale is mounted again (onLoadFinished), native holds the 40.37 L again, and the overflow's stock REATTACHES with its record",
+        a.loaded .. " " .. num(a.heldAfter) .. " " .. tostring(a.reattached) .. " " .. a.after .. " | " .. tostring(a.restoreLine ~= nil),
+        "60/1 40.37 true NATIVE_BALER_OVERFLOW_V1|40.37|KNOWN|KNOWN:7:40.37/40.37/0/0/30 | true")
+    T.eq("V2 NAMED: the door opened and closed, the next tick (10 L, 10.037 L picked) pours the restored 40.37 L in through the re-add: 50.407 L known at the pre-save 30 %, nothing pending",
+        num(a.heldNext) .. " " .. num(a.chamber) .. " " .. a.chamberStock .. " | " .. a.overflowLeft .. " | " .. a.ops,
+        "0 50.407 GRASS_WINDROW|50.407|KNOWN|KNOWN:7:50.407/50.407/0/0/30 | none | GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED GROUND_BALER_READD:COMMITTED")
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- N. A NON-STOP BALER STAYS UNFRAMED; A CLIENT NEVER FRAMES
+-- ══════════════════════════════════════════════════════════════════════════
+group("N", function()
+    for i, opts in ipairs({ { nonStop = true }, { round = true, nonStop = true } }) do
+        resetWorld()
+        soilReset()
+        local m, sg, host, w = boot5db(opts, "w5eb_n" .. i, 360 + i)
+        soilReset()
+        tick(w.baler)
+        T.eq(i == 1 and "N1 NAMED: a non-stop Baler opens no tick, though native picked up into its buffer (the area was active)" or "N2 NAMED: a round non-stop Baler, the same",
+            tostring(host.lastBalerTick) .. "/" .. admits() .. "/" .. tostring(GO_.balerFramed(w.baler)) .. "/" .. num(w.baler.spec_baler.workAreaParameters.lastPickedUpLiters) .. "/" .. num(w.baler:getFillUnitFillLevel(3)),
+            "nil/0/false/100/100")
+        FSBaseMission.delete(m)
+    end
+    resetWorld()
+    soilReset()
+    local m, sg, host, w = boot5db({ round = true }, "w5eb_n3", 363)
+    w.baler.isServer = false
+    soilReset()
+    tick(w.baler)
+    T.eq("N3 server only: a round Baler that is not the server opens no tick", tostring(host.lastBalerTick) .. "/" .. admits(), "nil/0")
+    FSBaseMission.delete(m)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- M. TWO MAP LOADS IN ONE PROCESS, A ROUND BALER (Bob's condition 2b)
+-- ══════════════════════════════════════════════════════════════════════════
+group("M", function()
+    resetWorld()
+    soilReset()
+    local m, sg, host, w = boot5db({ round = true, capacity = 200 }, "w5eb_m1", 371)
+    tick(w.baler)
+    local first = opsText(host)
+    FSBaseMission.delete(m)
+    REAL.Baler = newBalerClass()
+    resetWorld()
+    soilReset()
+    m, sg, host, w = boot5db({ round = true, capacity = 200 }, "w5eb_m2", 372)
+    tick(w.baler)
+    local adds = 0
+    for _, op in ipairs(host.lastBalerTick and host.lastBalerTick.operations or {}) do if op.evidence and op.evidence.nativePath == "GROUND_BALER_ADD" then adds = adds + 1 end end
+    T.eq("M1 NAMED: on the second load's new Baler table a round Baler's tick runs once per raise: one pickup, one add, as on the first load",
+        first .. "|" .. opsText(host) .. "|" .. adds, "GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED|GROUND_BALER:COMMITTED GROUND_BALER_ADD:COMMITTED|1")
+    FSBaseMission.delete(m)
+end)
+end
+SG25EB_BENCH()
 end

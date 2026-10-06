@@ -1727,10 +1727,24 @@ end
 -- by the inner onEnd around its original. A tick a throw left open is closed at the Baler's next
 -- onStart: what it still held is native loss.
 --
--- WHICH BALERS (Bob's C4): a square Baler that clears before it creates (hasUnloadingAnimation
--- false, :1431) and has no non-stop buffer (nonStopBaling false, :1979), on the server. A round or
--- non-stop Baler opens no tick, so none of its lines is admitted: Soil's standalone carries it
--- until 5e.
+-- WHICH BALERS (Bob's C4; SG2-5e-b, the round half): a Baler with no non-stop buffer (nonStopBaling
+-- false, :1979), on the server, square or round. A non-stop Baler opens no tick, so none of its
+-- lines is admitted: Soil's standalone carries it until its own slice.
+--
+-- A ROUND BALER (hasUnloadingAnimation true) runs the same pickup tick, add, seal, overflow and
+-- re-add through the same native code. What differs (Bob's 5e intake, Part 1):
+--   (a) finishBale inside the add's event creates and mounts the bale WITHOUT clearing the chamber
+--       (:1431-1436), so the tick has no clear to replay: the chamber stock stays whole;
+--   (b) no tick runs while a bale is mounted or the door is not closed: getIsWorkAreaActive is false
+--       (:1746), so no processBalerArea runs and nothing opens;
+--   (c) the unload clear (:928) runs in onUpdateTick, after dropBale and outside any tick: the
+--       observer's report reconciles the chamber to empty and ends its stock, as the square clear's
+--       replay does. The bale carries no StockGuard record until the round mirror (5e-c);
+--   (d) the partial-ejection pad (:1328-1347) is an add outside any tick: SG-1 reconciles it as an
+--       unexplained increase, so the stock reads PARTIAL with the pad unknown (SGOperations
+--       scaleCoverage keeps knownAmount), never known litres (SG-2 :475). Logged once per baler
+--       (G.balerPadOutsideTick) until 5e-d keeps the forming stock pending;
+--   (e) 5e-a's overflow save has no square gate, so a round overflow is saved and restored too.
 --
 -- THE PICKUP (Q1). Each pickup line is the ordinary capture, cells to balerPickup (bound at the
 -- first pickup that removed material, as the windrower area is). It settles when its
@@ -1773,11 +1787,21 @@ G.balerTicks = G.balerTicks or {}
 
 local function finite(n) return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge end
 
---- Does this Baler take the BALER frame? (Bob's C4)
+--- Does this Baler take the BALER frame? (Bob's C4; SG2-5e-b: square or round, never non-stop)
 function G.balerFramed(vehicle)
     local spec = type(vehicle) == "table" and vehicle.spec_baler or nil
-    return type(spec) == "table" and vehicle.isServer == true and spec.hasUnloadingAnimation ~= true and spec.nonStopBaling ~= true
+    return type(spec) == "table" and vehicle.isServer == true and spec.nonStopBaling ~= true
         and type(spec.fillUnitIndex) == "number" and type(spec.workAreaParameters) == "table"
+end
+
+--- (d) A framed round chamber took a positive add outside any pickup tick: the partial-ejection pad
+--- (:1328-1347). SG-1 already leaves it unknown; this only says so, once per baler.
+function G.balerPadOutsideTick(host, vehicle, fillLevelDelta)
+    if host == nil or not host.ready or not G.balerFramed(vehicle) or vehicle.spec_baler.hasUnloadingAnimation ~= true then return false end
+    local key = "balerPad:" .. tostring(vehicle.uniqueId or vehicle)
+    logOnce(key, "round baler " .. tostring(vehicle.uniqueId or vehicle) .. ": " .. string.format("%.6g", fillLevelDelta)
+        .. " L added to the chamber outside a pickup tick (as the partial-bale pad adds, SG-2 :475); unknown material until 5e-d")
+    return true
 end
 
 --- The main unit's binding and carrier id.
@@ -2258,6 +2282,8 @@ local function balerFill(original, self, fillUnitIndex, fillLevelDelta, fillType
             local ok, err = pcall(G.balerSettleReAdd, host, tick, fillTypeIndex, appliedDelta)
             if not ok then logOnce("balerReAdd", "baler re-add failed to settle (" .. tostring(err) .. ")") end
         end
+    elseif tick == nil and type(spec) == "table" and fillUnitIndex == spec.fillUnitIndex and type(fillLevelDelta) == "number" and fillLevelDelta > 0 then
+        pcall(G.balerPadOutsideTick, host, self, fillLevelDelta)
     end
     local n, r = packn(original(self, fillUnitIndex, fillLevelDelta, fillTypeIndex, toolType, fillPositionData, appliedDelta, ...))
     if add and wasFull then

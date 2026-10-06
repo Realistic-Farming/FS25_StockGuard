@@ -5,6 +5,7 @@
 > Engineering owed lives in the tracking repo's MAINTENANCE.md; this file carries the mod's own short list.
 
 ## Features
+- [x] 2026-10-06: SG2-5e-b, the round half (SG-2 :471's round path): a round Baler framed (not a non-stop one); the round finish keeps the chamber, no tick under a mounted bale, the unload clear ends the chamber stock once, the partial-ejection pad unknown and logged once per baler, a round overflow saved and restored through 5e-a. Bench `SG2-5e-b-round_framing_spec_test.lua`, battery `tools/test/mutate_sg25eb.py`. Next: the bale family's intake (Part 2), then the round mirror and REBIND (5e-c). In-game check pending.
 - [x] 2026-10-05: SG2-5e-a (SG-2 :477, overflow half): a square baler's pending overflow is saved with the vehicle and put back after native setup, its stock reattaching; another capacity or bale type restores nothing. Rest of 5e: round, non-stop, partial ejection. In-game check pending.
 - [x] 2026-10-04: SG2-5bc-save (SG-2 :144, :247): a tedder's and a mower's remainder are saved with the vehicle and restored after native setup, the stock reattaching with its record and the mower's fresh share; another configuration, layout or binding restores nothing. In-game check pending.
 - [x] 2026-10-03: SG-2 :243, plain sowing's Destruction profile around `processSowingMachineArea` (row 171's plain-sowing clause): emptied tracked cells retire as Destruction, unaccounted changes go unknown, no double retirement with direct sowing's clear. In-game check pending.
