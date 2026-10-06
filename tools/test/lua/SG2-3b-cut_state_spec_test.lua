@@ -17,7 +17,10 @@
 --   S  the entry-point bar: one call over two growth states is two KNOWN portions,
 --      split by pixels x yield scale
 --   L  Soil: present, the states split by Soil cell with a snapshot; absent or
---      unreadable, no Soil split and no invented snapshot
+--      unreadable, no Soil split and no invented snapshot. Soil is reached only as a real
+--      game reaches it, through the mission handle (MAINTENANCE row 231); a global of
+--      Soil's name lives in Soil's own environment, so with only that set there is no
+--      snapshot (L4)
 --   B  the native total disagrees with the pixels: one UNKNOWN portion, never a guess
 --   R  a harvest target that could be recut: one UNKNOWN portion
 --   Y  a source state with no yieldScales entry: one UNKNOWN portion, never a default
@@ -138,8 +141,10 @@ end)
 -- ══════════════════════════════════════════════════════════════════════════
 -- L. SOIL CELLS
 -- ══════════════════════════════════════════════════════════════════════════
--- Shaped on SoilFertilityManager:getSoilValueAtWorld (SF, :2556): a value and the Soil
--- grain in metres, nil when the value maps are unavailable.
+-- Shaped on SoilFertilityManager:getSoilValueAtWorld (SoilFertilizer development b7da77d3,
+-- SoilFertilityManager.lua:2747): a value and the Soil grain in metres, nil when the value
+-- maps are unavailable. Soil publishes the manager as g_currentMission.soilFertilityManager
+-- (SoilFertilizer main.lua:761), which is what the stub stands for.
 local function soilStub(grain, readable)
     return { getSoilValueAtWorld = function(_, key, x, z)
         if not readable then return nil end
@@ -151,18 +156,26 @@ end
 
 group("L", function()
     local m, host, combine, header = boot(function() ENGINE_PLANE.sow(WHEAT_FRUIT, 0, 0, 4, 1, 4) end)
-    g_SoilFertilityManager = soilStub(2, true)
+    m.soilFertilityManager = soilStub(2, true)
     ENGINE_HARVEST_TICK(header, combine, 16)
     T.eq("L1 with Soil present the state splits by Soil cell, each with its pre-cut snapshot",
         portions(host), "2:KNOWN:s4:2px:x1:64:64:N10,2:KNOWN:s4:2px:x1:65:64:N20")
-    g_SoilFertilityManager = nil
+    m.soilFertilityManager = nil
     ENGINE_PLANE.sow(WHEAT_FRUIT, 0, 0, 4, 1, 4)
     ENGINE_HARVEST_TICK(header, combine, 16)
     T.eq("L2 with Soil absent the same strip is one portion, and no snapshot is invented", portions(host), "4:KNOWN:s4:4px:x1")
-    g_SoilFertilityManager = soilStub(2, false)
+    m.soilFertilityManager = soilStub(2, false)
     ENGINE_PLANE.sow(WHEAT_FRUIT, 0, 0, 4, 1, 4)
     ENGINE_HARVEST_TICK(header, combine, 16)
     T.eq("L3 with Soil present but unreadable, likewise", portions(host), "4:KNOWN:s4:4px:x1")
+    m.soilFertilityManager = nil
+    -- In a real game Soil's getfenv(0) write lands in Soil's own environment
+    -- (dataS mods.lua:482-505). A global of that name here is not Soil's handle.
+    g_SoilFertilityManager = soilStub(2, true)
+    ENGINE_PLANE.sow(WHEAT_FRUIT, 0, 0, 4, 1, 4)
+    ENGINE_HARVEST_TICK(header, combine, 16)
+    T.eq("L4 with only a global of Soil's name and no mission handle, no snapshot is read",
+        portions(host), "4:KNOWN:s4:4px:x1")
     g_SoilFertilityManager = nil
     FSBaseMission.delete(m)
 end)
