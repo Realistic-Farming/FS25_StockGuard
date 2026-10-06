@@ -26,6 +26,8 @@
 #     without the live Bale class notes nothing either way;
 #   - the two calls of A.resetRoundMirrors (H:install, H:teardown): each covers the other on every
 #     in-process reload; A08 empties the table's reset itself;
+#   - the diagnostic record (host.rebindCount, host.lastRebind): it is the bench's reader of each
+#     handover, not behaviour, and every row that reads it would go red together;
 #   - logs and comments.
 #
 # Anchors are written with "\n"; in a CRLF file they are matched as "\r\n".

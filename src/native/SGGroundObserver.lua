@@ -2566,7 +2566,8 @@ G.balerLoadFinished = balerLoadFinished
 -- Baler's work: a non-stop Baler is never framed here.
 G.REBIND = "BALE_REBIND"
 G.unloadTicks = G.unloadTicks or setmetatable({}, { __mode = "k" })   -- vehicle -> the unload tick, inside onUpdateTick
-G.rebinds = G.rebinds or {}                                          -- diagnostic: the handovers, in order
+-- The diagnostic record is the host's, as its siblings' lastSettlement is: host.lastRebind (the last
+-- handover) and host.rebindCount, bounded and gone with the mission's host.
 
 --- (2) The REBIND's open, before dropBale's original: the frame and the capture, or nil.
 function G.rebindOpen(host, vehicle, bale, mirror)
@@ -2622,7 +2623,8 @@ function G.rebindClose(host, open)
         local _, why = host.handle.abandonOperation(open.cap.handle, "REBIND_UNPROVED", nil)
         outcome, reason = "ABANDONED", why
     end
-    G.rebinds[#G.rebinds + 1] = { callRef = open.callRef, outcome = outcome, reason = reason, report = report }
+    host.rebindCount = (host.rebindCount or 0) + 1
+    host.lastRebind = { callRef = open.callRef, outcome = outcome, reason = reason, report = report }
     host:closeFrame(open.frame, consumed)
 end
 

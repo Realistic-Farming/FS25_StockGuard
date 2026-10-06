@@ -1751,14 +1751,15 @@ end
 --- The door closed again (:1360-1365), then CLOSING ends CLOSED (:947-948).
 function X.close(v) v:setIsUnloadingBale(false) X.updateTick(v, 500) end
 function X.rebindText(r) return tostring(r.outcome) .. (r.reason and (":" .. tostring(r.reason)) or "") end
---- Every handover recorded since this world was built (X.mounted sets X.n0), in order, or "none": a
---- row never reads another world's record.
---- The handover record (absent before 5e-c, so a base run fails on its rows, not on a nil).
-function X.list() return GO_.rebinds or {} end
+--- The handovers the current host recorded (host.rebindCount, absent before 5e-c, so a base run fails
+--- on its rows, not on a nil).
+function X.count() local h = NH.current return h ~= nil and h.rebindCount or 0 end
+--- The handovers since this world was built (X.mounted sets X.n0) and the host's last one,
+--- "<n>:<outcome>[:<reason>]", or "none": a row never reads another world's record.
 function X.since()
-    local out = {}
-    for i = X.n0 + 1, #X.list() do out[#out + 1] = X.rebindText(X.list()[i]) end
-    return #out == 0 and "none" or table.concat(out, ",")
+    local n = X.count() - X.n0
+    if n == 0 then return "none" end
+    return n .. ":" .. X.rebindText(NH.current.lastRebind)
 end
 --- The reason a call returned second, nil included (a carrier alone is no reason).
 function X.why(...) local _, w = ... return tostring(w) end
@@ -1773,7 +1774,7 @@ function X.mounted(key, index, opts)
     for k, val in pairs(opts or {}) do o[k] = val end
     local m, sg, host, w = boot2b(o, key, index)
     tick(w.baler)
-    X.n0 = #X.list()
+    X.n0 = X.count()
     return m, sg, host, w, listed(w.baler)[1]
 end
 --- The handover's REBIND report, built as G.rebindClose builds it, for the mounted bale over the chamber.
@@ -1838,18 +1839,18 @@ group("E", function()
         ACC .. "|true|true/true/ROUND_BALER_FORMING_V1/true|nil|nil")
     local stockId, generation = before and before.stockId, before and before.contentsGeneration
     X.unload(v)
-    local n0 = #X.list()
+    local n0 = X.count()
     X.updateTick(v, 100)
     X.updateTick(v, 200)
     T.eq("E2 the door opening: two ticks before the unloading animation's drop time drop nothing, so nothing opens: no REBIND, the mirror stands, the bale still mounted, the chamber's stock whole",
-        (#X.list() - n0) .. "|" .. tostring(NA.roundMirrorOf(bale) ~= nil) .. "|" .. tostring(bale.mounted) .. "|" .. stockText(stockAt(sg, chamber)),
+        (X.count() - n0) .. "|" .. tostring(NA.roundMirrorOf(bale) ~= nil) .. "|" .. tostring(bale.mounted) .. "|" .. stockText(stockAt(sg, chamber)),
         "0|true|true|" .. ACC)
     X.updateTick(v, 200)
     local s = baleStock(sg, bale)
     T.eq("E3 NAMED [entry point]: the tick past the drop time dropped the bale and cleared the chamber (:926-928), ONE REBIND, committed: the chamber's carrier moved to the bale's own binding with the SAME stock and generation and its account (SG-1 :224); the stock's quantity is the bale's own; the clear's report was the REBIND's, so nothing rebound the empty chamber (5e-b's replay would have)",
         X.since() .. "|" .. stockText(s) .. "|" .. tostring(s ~= nil and s.stockId == stockId and s.contentsGeneration == generation)
             .. "|" .. tostring(s ~= nil and s.quantityBasisKey == baleId(bale)) .. "|" .. tostring(X.carrier(sg, chamber)),
-        "COMMITTED|" .. ACC .. "|true|true|nil")
+        "1:COMMITTED|" .. ACC .. "|true|true|nil")
     T.eq("E4 the alias retired with the handover: the mirror is gone, the alias names nothing now (resolveAlias refuses it: ALIAS_ERROR), and the bale is the world bale's carrier (2a)",
         X.mirrors() .. "|" .. X.why(m.stockGuard.refreshCarrier(host.nativeLease, a, "TEST")) .. "|" .. tostring(bale.mounted) .. "|" .. tostring(X.carrier(sg, baleId(bale)) ~= nil),
         "0|ALIAS_ERROR|false|true")
@@ -1862,7 +1863,7 @@ group("E", function()
     local s2 = bale2 ~= nil and baleStock(sg, bale2) or nil
     T.eq("E5 the next bale: with the door closed the pickup runs again, the empty chamber is bound afresh, and the second bale's handover is a second REBIND: it holds a NEW stock with its own account; the first bale's is unchanged",
         X.since() .. "|" .. stockText(s2) .. "|" .. tostring(s2 ~= nil and s2.stockId ~= stockId) .. "|" .. stockText(baleStock(sg, bale)),
-        "COMMITTED,COMMITTED|" .. ACC .. "|true|" .. ACC)
+        "2:COMMITTED|" .. ACC .. "|true|" .. ACC)
     FSBaseMission.delete(m)
 end)
 
@@ -1934,7 +1935,7 @@ group("F", function()
     local s = stockAt(sg, chamber)
     T.eq("F1 NAMED: a tick that throws before the clear leaves the chamber full under a dropped bale: abandoned (QUALIFIED), the error reaches the engine unchanged, the mirror retires, the bale gets no record, and the chamber's stock is qualified, never moved",
         X.since() .. "|" .. tostring(okTick) .. ":" .. tostring(err) .. "|" .. X.mirrors() .. "|" .. tostring(baleStock(sg, bale)) .. "|" .. tostring(s ~= nil and s.reason),
-        "ABANDONED:QUALIFIED|false:a listener failed in the clear|0|nil|ABANDONED:REBIND_UNPROVED")
+        "1:ABANDONED:QUALIFIED|false:a listener failed in the clear|0|nil|ABANDONED:REBIND_UNPROVED")
     FSBaseMission.delete(m)
     m, sg, host, w, bale = X.mounted("b3af1b", 414)
     v = w.baler
@@ -1953,7 +1954,7 @@ group("F", function()
     v.addFillUnitFillLevel = add
     T.eq("F1b a tick that throws AFTER the clear: native dropped the bale and cleared the chamber, so native's state decides, as 2b's finish: ONE REBIND, committed; the error still reaches the engine unchanged",
         X.since() .. "|" .. tostring(okTick) .. ":" .. tostring(err) .. "|" .. X.mirrors() .. "|" .. stockText(baleStock(sg, bale)) .. "|" .. tostring(X.carrier(sg, chamber)),
-        "COMMITTED|false:a listener failed after the clear|0|" .. ACC .. "|nil")
+        "1:COMMITTED|false:a listener failed after the clear|0|" .. ACC .. "|nil")
     FSBaseMission.delete(m)
     -- Another mod's overwritten dropBale (as BaleCounter.lua:21, :112 overwrites it) failing before the
     -- unmount; installed before StockGuard's install, so StockGuard's wrap sits over it.
@@ -1974,7 +1975,7 @@ group("F", function()
     s = stockAt(sg, chamber)
     T.eq("F3 a drop that throws before the unmount leaves the bale on: abandoned (QUALIFIED), the error unchanged, the mirror retired, the bale still mounted and no carrier, the chamber's stock qualified",
         X.since() .. "|" .. tostring(okTick) .. ":" .. tostring(err) .. "|" .. X.mirrors() .. "|" .. tostring(bale.mounted) .. "|" .. tostring(X.carrier(sg, baleId(bale))) .. "|" .. tostring(s ~= nil and s.reason),
-        "ABANDONED:QUALIFIED|false:an overwritten dropBale failed|0|true|nil|ABANDONED:REBIND_UNPROVED")
+        "1:ABANDONED:QUALIFIED|false:an overwritten dropBale failed|0|true|nil|ABANDONED:REBIND_UNPROVED")
     FSBaseMission.delete(m)
     -- An overwritten dropBale that never calls the original: the clear still runs under a bale left on.
     m, sg, host, w, bale = X.mounted("b3af4", 416, { build = function(_, wb) wb.baler.dropBale = function() end end })
@@ -1985,7 +1986,7 @@ group("F", function()
     X.updateTick(v, 200)
     T.eq("F4 a drop that never unmounts while the chamber is still cleared: no REBIND can be proved (the bale cannot be read while mounted), so it is abandoned, the clear's report replays and ends the chamber's stock as 5e-b's (c), and the mirror retires",
         X.since() .. "|" .. X.mirrors() .. "|" .. tostring(bale.mounted) .. "|" .. chamberText(sg, v) .. "|" .. tostring(X.carrier(sg, baleId(bale))),
-        "ABANDONED:QUALIFIED|0|true|none|nil")
+        "1:ABANDONED:QUALIFIED|0|true|none|nil")
     FSBaseMission.delete(m)
     m, sg, host, w, bale = X.mounted("b3af2", 406)
     v = w.baler
@@ -2000,7 +2001,7 @@ group("F", function()
     m.stockGuard.settleOperation = settle
     T.eq("F2 NAMED: a REBIND the core refuses consumes nothing: the clear's report replays and ends the chamber's stock as before 5e-c (the chamber bound empty), the bale gets no record, the mirror retires",
         X.since() .. "|" .. tostring(X.carrier(sg, chamber) ~= nil) .. "|" .. chamberText(sg, v) .. "|" .. tostring(baleStock(sg, bale)) .. "|" .. X.mirrors(),
-        "UNRESOLVED:REPLACEMENT_UNPROVED|true|none|nil|0")
+        "1:UNRESOLVED:REPLACEMENT_UNPROVED|true|none|nil|0")
     FSBaseMission.delete(m)
 end)
 
@@ -2010,7 +2011,7 @@ end)
 group("N", function()
     local m, sg, host, w = X.mounted("b3an", 407, { canUnloadUnfinished = true, threshold = 30, lay = { { GRASS, 50, "grass" } } })
     local v = w.baler
-    local n0 = #X.list()
+    local n0 = X.count()
     local held = num(level(v)) .. "/" .. #v.spec_baler.bales
     X.unload(v)
     local bale = listed(v)[1]
@@ -2019,16 +2020,16 @@ group("N", function()
     X.updateTick(v, 200)
     X.updateTick(v, 200)
     T.eq("N1 NAMED: 50 L, then the unload of an unfinished bale: the pad (:1343-1345) finished a bale inside its add, and that finish is 5e-d's, not mirrored; its drop is no REBIND: the bale takes its real 50 L (:1599-1601), the clear ends the chamber's stock as 5e-b's (c), and the bale has no record",
-        held .. "|" .. padded .. "|" .. (#X.list() - n0) .. "|" .. num(bale and bale:getFillLevel()) .. "|" .. chamberText(sg, v) .. "|" .. tostring(bale and baleStock(sg, bale)),
+        held .. "|" .. padded .. "|" .. (X.count() - n0) .. "|" .. num(bale and bale:getFillLevel()) .. "|" .. chamberText(sg, v) .. "|" .. tostring(bale and baleStock(sg, bale)),
         "50/0|100/true/0|0|50|none|nil")
     FSBaseMission.delete(m)
     local bale2
     m, sg, host, w, bale2 = X.mounted("b3an2", 408)
     v = w.baler
-    n0 = #X.list()
+    n0 = X.count()
     v:dropBale(1)
     T.eq("N2 a drop outside the unload tick (Baler:onDelete drops its bales so, :594) is no REBIND and only retires the mirror; the chamber, not cleared, keeps its stock; the bale has no record",
-        (#X.list() - n0) .. "|" .. X.mirrors() .. "|" .. chamberText(sg, v) .. "|" .. tostring(bale2.mounted) .. "|" .. tostring(baleStock(sg, bale2)),
+        (X.count() - n0) .. "|" .. X.mirrors() .. "|" .. chamberText(sg, v) .. "|" .. tostring(bale2.mounted) .. "|" .. tostring(baleStock(sg, bale2)),
         "0|0|" .. ACC .. "|false|nil")
     FSBaseMission.delete(m)
     m, sg, host, w = X.mounted("b3an3", 409)
@@ -2051,11 +2052,11 @@ group("R", function()
     local m2, sg2, host2, w2 = reload2b(m, w, "b3ar_save", 411, { capacity = 100, round = true })
     local v = w2.baler
     local bale = listed(v)[1]
-    local n0 = #X.list()
+    local n0 = X.count()
     local restored = chamberText(sg2, v) .. "|" .. tostring(bale ~= nil and bale.mounted) .. "|" .. X.mirrors()
     X.handover(v)
     T.eq("R1 NAMED: the chamber saved full reloads with its record and the reload's finish (:570-575, before the barrier) mounts a bale with NO mirror; its handover is no REBIND: the clear ends the chamber's stock as 5e-b's (c), and the bale has no record (Bob's 3a/3b split)",
-        restored .. "|" .. (#X.list() - n0) .. "|" .. chamberText(sg2, v) .. "|" .. tostring(bale and baleStock(sg2, bale)),
+        restored .. "|" .. (X.count() - n0) .. "|" .. chamberText(sg2, v) .. "|" .. tostring(bale and baleStock(sg2, bale)),
         ACC .. "|true|0|0|none|nil")
     FSBaseMission.delete(m2)
 end)
@@ -2070,7 +2071,7 @@ group("S", function()
     REAL.Baler = saved
     T.eq("S1 NAMED: Soil's tick scope installed before main.lua's install (under StockGuard's wrap) and after it (over): the same one REBIND, the same stock moved, the chamber unbound, Soil's scope run on each of the four ticks with the drop inside it",
         under .. "||" .. over,
-        "COMMITTED|" .. ACC .. "|true|nil|4|true||COMMITTED|" .. ACC .. "|true|nil|4|true")
+        "1:COMMITTED|" .. ACC .. "|true|nil|4|true||1:COMMITTED|" .. ACC .. "|true|nil|4|true")
 end)
 end
 SG25EC_BENCH()
