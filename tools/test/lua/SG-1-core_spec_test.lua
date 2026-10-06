@@ -587,6 +587,66 @@ do
     cap = o:captureOperation(ad, "REBIND", { { carrierId = newId } })
     T.eq("G11c an unproved replacement (no alias, other basis) refuses", select(2, o:settleOperation(cap.handle, { participantsAfter = { [newId] = { materialRef = wheat, amount = 80, unit = "l" } }, replacements = { { carrierId = newId, binding = b("cart", "9") } } })), "REPLACEMENT_UNPROVED")
 
+    -- G11d-m: the third proof (Bob's :959 ruling, 2026-10-06; SG-1 :253 "proved aliases"; SG2-5e-c).
+    -- A round chamber C over basis "ch/1"; the mounted bale's alias a (aliasOf C, C's basis); the
+    -- promoted binding r (the bale's own key, no alias, its own basis). The adapter's resolveAlias here
+    -- vouches C for ANY alias, echoing its basis, so each condition below fails ALONE; the native
+    -- adapter's own vouching is barred in SG2-5e-c-round_mirror_spec_test.lua.
+    do
+        local chBinding = b("ch", "1")
+        local ch = o:bindCarrier(ad, chBinding, { materialRef = wheat, amount = 80, unit = "l" })
+        local C = ch.carrierId
+        local chStock = stockOf(ch)
+        local vouch = true
+        ad.spec.resolveAlias = function(bnd)
+            if bnd.aliasOf == nil then return nil end
+            if not vouch then return nil end
+            return { carrierKey = chBinding.carrierKey, adapterVersion = 1, profileId = "silo", profileVersion = 1, quantityBasisKey = bnd.quantityBasisKey }
+        end
+        local function promoted() local r = b("bale", "7") r.quantityBasisKey = SGRecords.carrierKeyString(r.carrierKey) return r end
+        local function alias() return b("bale", "7", nil, C) end
+        local function aliasA() local a = alias() a.quantityBasisKey = chBinding.quantityBasisKey return a end
+        local function settle(kind, r, aliases)
+            local h = o:captureOperation(ad, kind, { { carrierId = C } })
+            -- An earlier row that wrongly committed has moved C: say so rather than raise.
+            if h == nil then return "NOT_CAPTURED", "C_MOVED" end
+            return o:settleOperation(h.handle, { participantsAfter = { [C] = { materialRef = wheat, amount = 80, unit = "l" } },
+                replacements = { { carrierId = C, binding = r } }, provedAliases = aliases })
+        end
+        local function try(kind, r, aliases) return select(2, settle(kind, r, aliases)) end
+        T.eq("G11e condition 1 alone: a non-REBIND operation carrying the whole proof gains nothing", try("TRANSFER", promoted(), { aliasA() }), "REPLACEMENT_UNPROVED")
+        local notBinding = aliasA()
+        notBinding.profileId = nil
+        T.eq("G11f condition 2 alone: a proved alias that is no carrier binding refuses", try("REBIND", promoted(), { notBinding }), "REPLACEMENT_UNPROVED")
+        local otherOf = aliasA()
+        otherOf.aliasOf = "another carrier"
+        T.eq("G11g condition 2 alone: an alias of another carrier refuses", try("REBIND", promoted(), { otherOf }), "REPLACEMENT_UNPROVED")
+        local otherBasis = aliasA()
+        otherBasis.quantityBasisKey = "elsewhere/9"
+        T.eq("G11h condition 2 alone: an alias over another quantity basis than C's refuses", try("REBIND", promoted(), { otherBasis }), "REPLACEMENT_UNPROVED")
+        local otherThing = aliasA()
+        otherThing.carrierKey = b("bale", "8").carrierKey
+        T.eq("G11i condition 3 alone: an alias naming another native carrier than the promoted binding refuses", try("REBIND", promoted(), { otherThing }), "REPLACEMENT_UNPROVED")
+        vouch = false
+        T.eq("G11j condition 4 alone: an alias the adapter no longer resolves to C at this settle refuses", try("REBIND", promoted(), { aliasA() }), "REPLACEMENT_UNPROVED")
+        vouch = true
+        local stillAlias = promoted()
+        stillAlias.aliasOf = "another carrier"
+        T.eq("G11k condition 5 alone: a promoted binding that is itself an alias refuses", try("REBIND", stillAlias, { aliasA() }), "REPLACEMENT_UNPROVED")
+        local notOwn = promoted()
+        notOwn.quantityBasisKey = "bale/7"
+        T.eq("G11l condition 5 alone: a promoted binding whose quantity is not its own refuses", try("REBIND", notOwn, { aliasA() }), "REPLACEMENT_UNPROVED")
+        T.eq("G11m with no proved alias the rule before the ruling stands: refused", try("REBIND", promoted(), nil), "REPLACEMENT_UNPROVED")
+        local out11 = settle("REBIND", promoted(), { aliasA() })
+        local newC = SGRecords.carrierKeyString(promoted().carrierKey)
+        local s = o.stocks[chStock.stockId]
+        T.eq("G11d NAMED: all five hold: COMMITTED; the chamber's carrier moved to the promoted binding with the same stock and generation (SG-1 :224), the stock's quantity now the promoted binding's own",
+            tostring(out11) .. "|" .. tostring(o.carriers[C]) .. "|" .. tostring(o.carriers[newC] ~= nil) .. "|" .. tostring(s ~= nil and s.carrierId == newC) .. "|" .. tostring(s and s.contentsGeneration == chStock.contentsGeneration)
+                .. "|" .. tostring(s and s.quantityBasisKey == newC),
+            "COMMITTED|nil|true|true|true|true")
+        ad.spec.resolveAlias = nil
+    end
+
     -- G12: adapters, handles, busy and knowledge rules.
     T.eq("G12 capturing another adapter's carrier is refused", select(2, o:captureOperation(otherAd, "REMOVE", { { carrierId = silo.carrierId } })), "ADAPTER_MISMATCH")
     local openCap = o:captureOperation(ad, "REMOVE", { { carrierId = silo.carrierId } })

@@ -143,6 +143,8 @@ function H:install()
     H.current = self
     -- SG2 bale family 2b: the reload's bale restores are this mission's (filled while its vehicles load).
     A.resetBaleRestores()
+    -- SG2-5e-c: and so are the round mirrors (noted at a live round finish).
+    A.resetRoundMirrors()
     -- SG2-4b: the line bracket on the engine global (process-wide, dispatching to this host).
     if SGGroundObserver ~= nil then
         local okLine, whyLine = SGGroundObserver.install()
@@ -191,6 +193,8 @@ function H:teardown()
     end
     -- SG2 bale family 2b: and the reload's bale restores.
     if SGNativeAdapters ~= nil and type(SGNativeAdapters.resetBaleRestores) == "function" then SGNativeAdapters.resetBaleRestores() end
+    -- SG2-5e-c: and the round mirrors.
+    if SGNativeAdapters ~= nil and type(SGNativeAdapters.resetRoundMirrors) == "function" then SGNativeAdapters.resetRoundMirrors() end
     self:unbindAllStations()
     if H.current == self then H.current = nil end
     self.ready = false
@@ -490,6 +494,9 @@ function H:onVehicleRemoved(vehicle)
     for index in ipairs(fu ~= nil and type(fu.fillUnits) == "table" and fu.fillUnits or {}) do
         withdraw(A.fillUnitBinding(vehicle, index))
     end
+    -- SG2-5e-c: a round chamber's mirror goes with its carrier (Baler:onDelete drops or deletes the
+    -- mounted bale, Baler.lua:585-602; the dropped bale is new contents, as before 5e-c).
+    A.retireRoundMirrorsOf(vehicle)
     -- SG2-5b: a live Tedder remainder is destruction too (SG-2 :136), retired through a REMOVE.
     if SGGroundObserver ~= nil and type(SGGroundObserver.retireTedderBuffers) == "function" then
         SGGroundObserver.retireTedderBuffers(self, vehicle)

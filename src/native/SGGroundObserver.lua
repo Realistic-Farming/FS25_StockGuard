@@ -1737,9 +1737,11 @@ end
 --       (:1431-1436), so the tick has no clear to replay: the chamber stock stays whole;
 --   (b) no tick runs while a bale is mounted or the door is not closed: getIsWorkAreaActive is false
 --       (:1746), so no processBalerArea runs and nothing opens;
---   (c) the unload clear (:928) runs in onUpdateTick, after dropBale and outside any tick: the
---       observer's report reconciles the chamber to empty and ends its stock, as the square clear's
---       replay does. The bale carries no StockGuard record until the round mirror (5e-c);
+--   (c) the unload clear (:928) runs in onUpdateTick, after dropBale and outside any tick. For a bale
+--       the live finish mirrored (5e-c, below) the drop and the clear are ONE REBIND: the chamber's
+--       carrier becomes the bale, with its stock. Without a mirror (a reload's mounted bale until Part
+--       3b, a partial bale until 5e-d) the observer's report reconciles the chamber to empty and ends
+--       its stock, as the square clear's replay does, and the bale carries no record;
 --   (d) the partial-ejection pad (:1328-1347) is an add outside any tick: SG-1 reconciles it as an
 --       unexplained increase, so the stock reads PARTIAL with the pad unknown (SGOperations
 --       scaleCoverage keeps knownAmount), never known litres (SG-2 :475). Logged once per baler
@@ -2339,6 +2341,11 @@ local function squareFinish(vehicle)
     return G.balerFramed(vehicle) and vehicle.spec_baler.hasUnloadingAnimation ~= true and A.baleClassLive()
 end
 
+--- Does this Baler's finish mount a bale 5e-c mirrors? Round, framed, and a live Bale class.
+local function roundFinish(vehicle)
+    return G.balerFramed(vehicle) and vehicle.spec_baler.hasUnloadingAnimation == true and A.baleClassLive()
+end
+
 local function levelOf(vehicle, index)
     if type(vehicle.getFillUnitFillLevel) ~= "function" then return nil end
     local ok, l = pcall(vehicle.getFillUnitFillLevel, vehicle, index)
@@ -2433,8 +2440,25 @@ local function noteLoadFinish(vehicle, binding, count)
     if bale ~= nil and A.isBale(bale) then A.chamberRestores[SGRecords.carrierKeyString(binding.carrierKey)] = bale end
 end
 
+--- SG2-5e-c: a live round finish (:1427-1436) mounts its bale and keeps the chamber whole; after the
+--- original, the bale it mounted is noted as the chamber's mirror (SGNativeAdapters.noteRoundMirror).
+--- A finish inside the partial pad's add (lastBaleFillLevel set first, :1343) is 5e-d's: not mirrored.
+local function aroundRoundFinish(original, vehicle, ...)
+    local spec = vehicle.spec_baler
+    local count = type(spec.bales) == "table" and #spec.bales or 0
+    local partial = spec.lastBaleFillLevel ~= nil
+    local n, r = packn(original(vehicle, ...))
+    local bale = not partial and newBaleAfter(spec, count) or nil
+    if bale ~= nil and A.isBale(bale) then
+        local ok, err = pcall(A.noteRoundMirror, vehicle, spec.fillUnitIndex, bale)
+        if not ok then logOnce("roundMirror", "round mirror not noted (" .. tostring(err) .. ")") end
+    end
+    return unpack(r, 1, n)
+end
+
 local function aroundFinish(original, vehicle, ...)
     local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+    if host ~= nil and host.ready and roundFinish(vehicle) then return aroundRoundFinish(original, vehicle, ...) end
     if host == nil or not squareFinish(vehicle) then return original(vehicle, ...) end
     if not host.ready then
         local binding = chamberOf(vehicle)
@@ -2472,17 +2496,24 @@ local function aroundCreate(original, vehicle, ...)
     return unpack(r, 1, n)
 end
 
---- Wrap one Baler's finishBale and createBale instance copies, once.
+--- Wrap one Baler's finishBale and createBale instance copies, once; and its dropBale (SG2-5e-c), a
+--- registered function too (Baler.lua:157), when the vehicle has one.
 function G.installBalerFinish(vehicle)
     if g_server == nil then return false, "CLIENT" end
     if type(vehicle) ~= "table" or vehicle.spec_baler == nil then return false, "NO_SPEC" end
     if rawget(vehicle, G.FINISH_MARKER) ~= nil then return true, "ALREADY" end
-    local finish, create = vehicle.finishBale, vehicle.createBale
+    local finish, create, drop = vehicle.finishBale, vehicle.createBale, vehicle.dropBale
     if type(finish) ~= "function" or type(create) ~= "function" then return false, "NO_FUNCTION" end
     local finishWrapper = function(self, ...) return aroundFinish(finish, self, ...) end
     local createWrapper = function(self, ...) return aroundCreate(create, self, ...) end
     vehicle.finishBale, vehicle.createBale = finishWrapper, createWrapper
-    rawset(vehicle, G.FINISH_MARKER, { finish = finish, create = create, finishWrapper = finishWrapper, createWrapper = createWrapper })
+    local dropWrapper = nil
+    if type(drop) == "function" then
+        dropWrapper = function(self, ...) return G.aroundDrop(drop, self, ...) end
+        vehicle.dropBale = dropWrapper
+    end
+    rawset(vehicle, G.FINISH_MARKER, { finish = finish, create = create, drop = drop, finishWrapper = finishWrapper, createWrapper = createWrapper,
+                                       dropWrapper = dropWrapper })
     return true
 end
 
@@ -2504,6 +2535,141 @@ local function balerLoadFinished(original, self, ...)
     return unpack(r, 2, n)
 end
 G.balerLoadFinished = balerLoadFinished
+
+-- ---------------------------------------------------------
+-- SG2-5e-c (Part 3a): the round mirror and the REBIND at the handover
+-- ---------------------------------------------------------
+-- Bob's 10-05 round-core intake (Part 3), his 10-06 split (Part 3a, the live half) and his :959 ruling
+-- (bale-family intake, section 6); SG-2 v2.3 :473: "At the actual handover, a REBIND operation ...
+-- promotes the final Bale binding and retires the alias".
+--
+-- THE MIRROR is noted at the live round finish (aroundRoundFinish above; SGNativeAdapters.roundMirrors).
+--
+-- THE HANDOVER is Baler:onUpdateTick's unload branch (Baler.lua:919-935): in UNLOADING_OPENING, once
+-- past the drop time, dropBale(1) (:926) unmounts the bale and, on the server, the chamber is cleared
+-- with -math.huge (:928). onUpdateTick is an event listener, read from the class slot at raise time,
+-- so its wrap reaches every Baler; dropBale is a registered function, copied into each vehicle, so its
+-- wrap is per instance (G.installBalerFinish). Between them the bracket opens only on a drop that
+-- actually happens, never by re-deriving the engine's drop-time test:
+--   (1) the class wrap marks the unload tick (G.unloadTicks) for a round Baler opening with a bale on;
+--   (2) inside it, dropBale's wrap, BEFORE the original, for a mirrored bale: the chamber read first if
+--       dirty, its own call frame (G.REBIND) and a REBIND capture of the chamber's carrier;
+--   (3) after the class original: a bale off the chamber that resolves as a world bale again (2a), over
+--       a chamber native cleared, settles ONE REBIND. Its one replacement moves the chamber's carrier
+--       to the bale's own binding, the bale's state is that carrier's after-state, and the alias is the
+--       report's provedAliases, its proof (SGOperations aliasProvesReplacement). The clear's report is
+--       this REBIND's, consumed once COMMITTED: clearing the alias does not consume the bale again.
+--       Anything else is abandoned, the held reports replay, and the clear ends the chamber's stock as
+--       before 5e-c. The mirror retires either way.
+-- A drop outside the unload tick (Baler:onDelete, :594) only retires the mirror. Soil's own
+-- Baler.onUpdateTick scope (BalerCollection.aroundTick, the non-stop buffer's transfer) is another
+-- Baler's work: a non-stop Baler is never framed here.
+G.REBIND = "BALE_REBIND"
+G.unloadTicks = G.unloadTicks or setmetatable({}, { __mode = "k" })   -- vehicle -> the unload tick, inside onUpdateTick
+-- The diagnostic record is the host's, as its siblings' lastSettlement is: host.lastRebind (the last
+-- handover) and host.rebindCount, bounded and gone with the mission's host.
+
+--- (2) The REBIND's open, before dropBale's original: the frame and the capture, or nil.
+function G.rebindOpen(host, vehicle, bale, mirror)
+    if not host.ready or host.nativeLease == nil then return nil end
+    local binding, cid = chamberOf(vehicle)
+    if binding == nil then return nil end
+    local spec = vehicle.spec_baler
+    local level = levelOf(vehicle, spec.fillUnitIndex)
+    if level == nil then return nil end
+    if host.dirty[cid] ~= nil then
+        host.dirty[cid] = nil
+        host.handle.observeCarrier(host.nativeLease, cid, nil)
+    end
+    local frame = SGOperationContext.open(host.context, vehicle, G.REBIND)
+    if frame == nil then return nil end
+    host.nextDischarge = host.nextDischarge + 1
+    local callRef = "ground:baleRebind:" .. tostring(host.epoch) .. ":" .. tostring(host.nextDischarge)
+    local cap = host.handle.captureOperation(host.nativeLease, "REBIND", { { carrierId = cid } })
+    if cap == nil then
+        host:closeFrame(frame, nil)
+        return nil
+    end
+    return { host = host, vehicle = vehicle, bale = bale, mirror = mirror, carrierId = cid, index = spec.fillUnitIndex, before = level,
+             cap = cap, frame = frame, callRef = callRef }
+end
+
+--- (3) The REBIND's close, after onUpdateTick's original, thrown or not: native's state decides, as 2b's finishClose. Then the frame closes.
+function G.rebindClose(host, open)
+    local vehicle, lease = open.vehicle, host.nativeLease
+    local after = levelOf(vehicle, open.index)
+    local baleBinding = A.baleBinding(open.bale)
+    local native = baleBinding ~= nil and lease.spec.resolveCarrier(baleBinding) or nil
+    local baleState = native ~= nil and lease.spec.readNativeState(baleBinding, native) or nil
+    local consumed, report, outcome, reason = {}, nil, nil, nil
+    if baleState ~= nil and after ~= nil and after <= G.EPSILON then
+        report = { participantsAfter = { [open.carrierId] = baleState },
+                   replacements = { { carrierId = open.carrierId, binding = baleBinding } },
+                   provedAliases = { open.mirror.alias },
+                   outcomeEvidence = { nativePath = "GROUND_BALER_ROUND_DROP", callRef = open.callRef, chamberBefore = open.before, chamberAfter = after,
+                                       baleLevel = baleState.amount } }
+        outcome, reason = host.handle.settleOperation(open.cap.handle, report)
+        if outcome == "COMMITTED" then
+            -- The clear's own report (:928) is this REBIND's: consumed, never replayed.
+            for _, obs in ipairs(open.frame.observations) do
+                if obs.source == "FILL_UNIT" and obs.vehicle == vehicle and obs.fillUnitIndex == open.index and type(obs.accepted) == "number"
+                    and obs.accepted < 0 and math.abs(-obs.accepted - open.before) <= 1e-6 * math.max(1, open.before) then
+                    consumed[obs] = true
+                    break
+                end
+            end
+        end
+    else
+        local _, why = host.handle.abandonOperation(open.cap.handle, "REBIND_UNPROVED", nil)
+        outcome, reason = "ABANDONED", why
+    end
+    host.rebindCount = (host.rebindCount or 0) + 1
+    host.lastRebind = { callRef = open.callRef, outcome = outcome, reason = reason, report = report }
+    host:closeFrame(open.frame, consumed)
+end
+
+--- dropBale (instance copy). Inside the unload tick a mirrored bale's drop opens the REBIND before the
+--- original unmounts it; a drop anywhere else, or one the REBIND could not open, retires the mirror.
+function G.aroundDrop(original, vehicle, baleIndex, ...)
+    local spec = type(vehicle) == "table" and vehicle.spec_baler or nil
+    local entry = type(spec) == "table" and type(spec.bales) == "table" and spec.bales[baleIndex] or nil
+    local bale = type(entry) == "table" and entry.baleObject or nil
+    local mirror = bale ~= nil and A.roundMirrorOf(bale) or nil
+    if mirror == nil then return original(vehicle, baleIndex, ...) end
+    local t = G.unloadTicks[vehicle]
+    local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+    if t ~= nil and t.open == nil and host ~= nil then
+        local okOpen, result = pcall(G.rebindOpen, host, vehicle, bale, mirror)
+        if okOpen then t.open = result else logOnce("rebindOpen", "round bale handover failed to open (" .. tostring(result) .. ")") end
+    end
+    if t == nil or t.open == nil then A.retireRoundMirror(bale) end
+    return original(vehicle, baleIndex, ...)
+end
+
+--- (1) Baler.onUpdateTick (class listener): the unload tick's scope, for a round Baler opening with a
+--- bale on (:919, :925); every other tick passes straight through.
+function G.balerUpdateTick(original, self, ...)
+    local spec = type(self) == "table" and self.spec_baler or nil
+    if g_server == nil or type(spec) ~= "table" or spec.hasUnloadingAnimation ~= true or G.unloadTicks[self] ~= nil
+        or type(spec.bales) ~= "table" or #spec.bales == 0 or Baler == nil or spec.unloadingState ~= Baler.UNLOADING_OPENING then
+        return original(self, ...)
+    end
+    local t = {}
+    G.unloadTicks[self] = t
+    local n, r = packn(pcall(original, self, ...))
+    G.unloadTicks[self] = nil
+    local open = t.open
+    if open ~= nil then
+        local okClose, err = pcall(G.rebindClose, open.host, open)
+        if not okClose then
+            logOnce("rebindClose", "round bale handover failed to close (" .. tostring(err) .. ")")
+            pcall(open.host.closeFrame, open.host, open.frame, nil)
+        end
+        A.retireRoundMirror(open.bale)
+    end
+    if not r[1] then error(r[2], 0) end
+    return unpack(r, 2, n)
+end
 
 -- ---------------------------------------------------------
 -- Installation: the tip slot, the work listeners, the Leveler callback
@@ -2663,6 +2829,8 @@ function G.installClassHooks(classes)
     installed = wrapClass(classes.Baler, "onFillUnitFillLevelChanged", balerFill) or installed
     -- SG2 bale family 2b: the instance finish wraps and the listed bales, from the load listener.
     installed = wrapClass(classes.Baler, "onLoadFinished", balerLoadFinished) or installed
+    -- SG2-5e-c: the round unload's scope, around the drop and the chamber's clear (:919-935).
+    installed = wrapClass(classes.Baler, "onUpdateTick", G.balerUpdateTick) or installed
     -- SG2-5c: the meadow preparation read the Mower's witness needs (SGCutState.installPrep).
     if SGCutState ~= nil and classes.FSDensityMapUtil ~= nil then
         installed = SGCutState.installPrep(classes.FSDensityMapUtil) or installed

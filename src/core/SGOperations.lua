@@ -905,6 +905,27 @@ function O:settleOperation(handle, report)
     return outcome, reason
 end
 
+--- The third proof of a replacement (Bob's :959 ruling, 2026-10-06; SG-1 :253, "Report includes
+--- complete observed owner states and proved aliases"; SG-2 :473). A round Baler's REBIND promotes the
+--- mounted bale to its own binding and retires the alias, so the promoted binding can carry neither the
+--- alias nor the chamber's quantity basis: the chamber's next contents rebind under that same key (SG-1
+--- :224). The proof travels in the report instead. On a REBIND only, a replacement r of carrier C is
+--- proved when the report's provedAliases hold a binding a that is an alias of C over C's old basis, names
+--- the same native carrier as r's binding, and still resolves to C through the adapter's resolveAlias at
+--- this settle, before the alias retires; and r's binding is no alias and is its own quantity.
+local function aliasProvesReplacement(self, handle, lease, r, old, aliases)
+    if handle.kind ~= "REBIND" then return false end
+    if r.binding.aliasOf ~= nil or r.binding.quantityBasisKey ~= self:carrierIdOf(r.binding) then return false end
+    for _, a in ipairs(aliases) do
+        if SGRecords.isCarrierBinding(a) and a.aliasOf == r.carrierId and a.quantityBasisKey == old.quantityBasisKey
+            and SGValues.equal(a.carrierKey, r.binding.carrierKey) then
+            local canonical = self:canonicalBinding(lease, a)
+            if canonical ~= nil and self:carrierIdOf(canonical) == r.carrierId then return true end
+        end
+    end
+    return false
+end
+
 --- Build the detached candidate set, validate it, then install once.
 function O:_settle(handle, st, report)
     local before = st.before
@@ -914,6 +935,7 @@ function O:_settle(handle, st, report)
     local allocations = type(report.allocations) == "table" and copy(report.allocations) or {}
     local created = type(report.createdBindings) == "table" and report.createdBindings or {}
     local replacements = type(report.replacements) == "table" and report.replacements or {}
+    local provedAliases = type(report.provedAliases) == "table" and report.provedAliases or {}
     local function fail(why)
         self:_qualifyCaptured(before, "UNRESOLVED_SETTLEMENT:" .. why, afterRaw)
         return O.OUTCOME_UNRESOLVED, why
@@ -956,7 +978,8 @@ function O:_settle(handle, st, report)
         if type(r) ~= "table" or before.carriers[r.carrierId] == nil or not SGRecords.isCarrierBinding(r.binding) then return fail("REPLACEMENT") end
         if r.binding.carrierKey.adapterId ~= handle.adapterId then return fail("REPLACEMENT_ADAPTER") end
         local old = before.carriers[r.carrierId].carrier.binding
-        if r.binding.aliasOf ~= r.carrierId and r.binding.quantityBasisKey ~= old.quantityBasisKey then return fail("REPLACEMENT_UNPROVED") end
+        if r.binding.aliasOf ~= r.carrierId and r.binding.quantityBasisKey ~= old.quantityBasisKey
+            and not aliasProvesReplacement(self, handle, st.lease, r, old, provedAliases) then return fail("REPLACEMENT_UNPROVED") end
         local newId = self:carrierIdOf(r.binding)
         if newId ~= r.carrierId and self.carriers[newId] ~= nil then return fail("REPLACEMENT_COLLISION") end
         if moves[r.carrierId] ~= nil then return fail("REPLACEMENT_DUPLICATE") end
@@ -1230,6 +1253,9 @@ function O:_settle(handle, st, report)
             if stock ~= nil then
                 stock.carrierId = mv.newId
                 stock.carrierKey = copy(mv.binding.carrierKey)
+                -- The quantity the moved carrier's binding names (the third proof's promoted
+                -- binding is its own); never the old basis, which the old key's next contents take.
+                stock.quantityBasisKey = mv.binding.quantityBasisKey
             end
             self.pending[mv.newId] = self.pending[oldId]
             self.pending[oldId] = nil
