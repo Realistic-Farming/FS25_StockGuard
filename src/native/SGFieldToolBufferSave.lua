@@ -378,6 +378,17 @@ end
 --- finishBale (:570-575), as :477 asks. Only the overflow scalar is added: the chamber stays
 --- FillUnit's and the bales native's. The round mirror and partial ejection (:473, :475, and :477's
 --- partial-ejection half) are 5e-c and 5e-d.
+---
+--- SG2 bale family 2b, THE BALE-LIST TOKEN (SG-2 :477's last sentences, "a native saved bale-list
+--- entry carries its exact token"). A square Baler saves its bale list itself (:621-640: filename,
+--- variant, owner, type, level and time, no uniqueId), and its onLoadFinished recreates each entry
+--- through createBale(..., true) (:576-581), so each comes back as a new object with a fresh id.
+--- Beside the list, per entry, this saves the bale's StockGuard carrier key and its type, by list
+--- index. At the load the tokens wait on the vehicle until onLoadFinished has made the new objects;
+--- SGGroundObserver's load listener collects them in call order and applyBaleTokens maps each
+--- saved key to the object it became (SGNativeAdapters.baleRestores), for SG-1's restore at the
+--- barrier. That bale is restored, not born (:483). A count mismatch rejects every token, a type
+--- mismatch or a failed create that one: never assigned by order alone.
 local BALER = { name = "baler", className = "Baler", specTable = "spec_baler" }
 F.KINDS[#F.KINDS + 1] = BALER
 
@@ -390,20 +401,43 @@ local function balerLayout(vehicle)
     return idx, cap, spec.currentBaleTypeIndex
 end
 
+--- 2b: per square bale-list entry, its StockGuard carrier key (when the bale is bindable) and its
+--- type, by list index; nil for a round Baler or an empty list.
+function F.collectBaleTokens(vehicle)
+    local spec = vehicle.spec_baler
+    if spec.hasUnloadingAnimation == true or type(spec.bales) ~= "table" or #spec.bales == 0 then return nil end
+    local A = SGNativeAdapters
+    local out = {}
+    for k, b in ipairs(spec.bales) do
+        local bale = type(b) == "table" and b.baleObject or nil
+        local binding = A ~= nil and bale ~= nil and A.baleBinding(bale) or nil
+        out[#out + 1] = { index = k, token = binding ~= nil and SGRecords.carrierKeyString(binding.carrierKey) or nil,
+                          fillType = type(b) == "table" and fillTypeName(b.fillType) or nil }
+    end
+    return out
+end
+
 function BALER.collect(vehicle)
     local spec = vehicle.spec_baler
     local held = spec.fillUnitOverflowFillLevel
-    if not (isNumber(held) and held > 0) then return nil end
-    local A = SGNativeAdapters
-    local entry = nil
-    if A ~= nil then
-        local b = A.balerOverflowBinding(vehicle)
-        local e = b ~= nil and A.balerOverflows[SGRecords.carrierKeyString(b.carrierKey)] or nil
-        if e ~= nil and e.vehicle == vehicle then entry = e end
-    end
+    local tokens = F.collectBaleTokens(vehicle)
+    local hasOverflow = isNumber(held) and held > 0
+    if not hasOverflow and tokens == nil then return nil end
     local idx, cap, bt = balerLayout(vehicle)
-    return { version = F.VERSION, configFileName = configOf(vehicle), areaCount = 1, fillUnitIndex = idx, capacity = cap,
-             baleTypeIndex = bt, overflow = held, producedAs = entry ~= nil and entry.producedAs or nil }
+    local data = { version = F.VERSION, configFileName = configOf(vehicle), areaCount = 1, fillUnitIndex = idx, capacity = cap,
+                   baleTypeIndex = bt, bales = tokens or {} }
+    if hasOverflow then
+        local A = SGNativeAdapters
+        local entry = nil
+        if A ~= nil then
+            local b = A.balerOverflowBinding(vehicle)
+            local e = b ~= nil and A.balerOverflows[SGRecords.carrierKeyString(b.carrierKey)] or nil
+            if e ~= nil and e.vehicle == vehicle then entry = e end
+        end
+        data.overflow = held
+        data.producedAs = entry ~= nil and entry.producedAs or nil
+    end
+    return data
 end
 
 function BALER.write(xmlFile, base, data)
@@ -411,8 +445,16 @@ function BALER.write(xmlFile, base, data)
     if isNumber(data.fillUnitIndex) then xmlFile:setValue(base .. "#fillUnitIndex", data.fillUnitIndex) end
     if isNumber(data.capacity) then xmlFile:setValue(base .. "#fillUnitCapacity", data.capacity) end
     if isNumber(data.baleTypeIndex) then xmlFile:setValue(base .. "#baleTypeIndex", data.baleTypeIndex) end
-    xmlFile:setValue(base .. "#overflow", data.overflow)
-    if data.producedAs ~= nil then xmlFile:setValue(base .. "#producedAs", data.producedAs) end
+    if data.overflow ~= nil then
+        xmlFile:setValue(base .. "#overflow", data.overflow)
+        if data.producedAs ~= nil then xmlFile:setValue(base .. "#producedAs", data.producedAs) end
+    end
+    for n, t in ipairs(data.bales or {}) do
+        local k = string.format("%s.bale(%d)", base, n - 1)
+        xmlFile:setValue(k .. "#index", t.index)
+        if t.token ~= nil then xmlFile:setValue(k .. "#token", t.token) end
+        if t.fillType ~= nil then xmlFile:setValue(k .. "#fillType", t.fillType) end
+    end
 end
 
 function BALER.read(xmlFile, base)
@@ -422,6 +464,14 @@ function BALER.read(xmlFile, base)
     data.baleTypeIndex = xmlFile:getValue(base .. "#baleTypeIndex")
     data.overflow = xmlFile:getValue(base .. "#overflow")
     data.producedAs = xmlFile:getValue(base .. "#producedAs")
+    data.bales = {}
+    local n = 0
+    while true do
+        local k = string.format("%s.bale(%d)", base, n)
+        if not xmlFile:hasProperty(k) then break end
+        data.bales[#data.bales + 1] = { index = xmlFile:getValue(k .. "#index"), token = xmlFile:getValue(k .. "#token"), fillType = xmlFile:getValue(k .. "#fillType") }
+        n = n + 1
+    end
     return data
 end
 
@@ -431,6 +481,9 @@ end
 --- sides): a capacity read back as a float32 or as a double has the image of the one written.
 function BALER.restore(vehicle, data)
     local spec = vehicle.spec_baler
+    -- 2b: the bale-list tokens wait for onLoadFinished's recreation (Baler.lua:576-581).
+    spec.sgBaleTokens = (data.version == F.VERSION and type(data.bales) == "table" and #data.bales > 0) and data.bales or nil
+    if data.overflow == nil then return 0, {}, 0 end
     local why = layoutRefusal(vehicle, data, 1)
     if why ~= nil then return 0, { why }, 0 end
     local idx, cap, bt = balerLayout(vehicle)
@@ -451,6 +504,56 @@ function BALER.registerPaths(schema, base, T)
     schema:register(T.INT, base .. "#baleTypeIndex", "Baler current bale type index (the layout)")
     schema:register(T.FLOAT, base .. "#overflow", "Baler pending overflow (fillUnitOverflowFillLevel)")
     schema:register(T.STRING, base .. "#producedAs", "StockGuard: the material the overflow was produced as")
+    schema:register(T.INT, base .. ".bale(?)#index", "Baler bale list index (StockGuard bale token)")
+    schema:register(T.STRING, base .. ".bale(?)#token", "StockGuard: the listed bale's carrier key")
+    schema:register(T.STRING, base .. ".bale(?)#fillType", "StockGuard: the listed bale's fill type name")
+end
+
+--- 2b: after Baler.onLoadFinished, map each saved token to the bale its createBale(..., true) call
+--- made, in call order (`created`, a failed call as false; never spec.bales indices). A count
+--- mismatch rejects every token; a type mismatch or a failed create rejects that one. A rejected
+--- bale stays unknown (enumerated fresh at the barrier). Returns the count mapped.
+function F.applyBaleTokens(vehicle, created)
+    local spec = type(vehicle) == "table" and vehicle.spec_baler or nil
+    if spec == nil then return 0 end
+    local tokens = spec.sgBaleTokens
+    spec.sgBaleTokens = nil
+    if type(tokens) ~= "table" or #tokens == 0 then return 0 end
+    local A = SGNativeAdapters
+    if A == nil then return 0 end
+    created = type(created) == "table" and created or {}
+    if #created ~= #tokens then
+        F.stats.unresolved = F.stats.unresolved + 1
+        logOnce("baleTokens:count:" .. configOf(vehicle), string.format("saved bale tokens not applied on %s: %d saved, %d recreated (BALE_TOKEN_COUNT); those bales are unknown. Logged once.",
+            configOf(vehicle), #tokens, #created))
+        return 0
+    end
+    local mapped, refused = 0, {}
+    for i, t in ipairs(tokens) do
+        local bale = created[i]
+        if t.token ~= nil then
+            local ft = nil
+            if bale ~= false and bale ~= nil and A.isBale(bale) and type(bale.getFillType) == "function" then
+                local ok, index = pcall(bale.getFillType, bale)
+                if ok then ft = fillTypeName(index) end
+            end
+            if bale == false or bale == nil or not A.isBale(bale) then
+                refused[#refused + 1] = "BALE_TOKEN_CREATE"
+            elseif ft == nil or ft ~= t.fillType then
+                refused[#refused + 1] = "BALE_TOKEN_TYPE"
+            else
+                A.baleRestores[t.token] = bale
+                mapped = mapped + 1
+            end
+        end
+    end
+    F.stats.tokens = (F.stats.tokens or 0) + mapped
+    if #refused > 0 then
+        F.stats.unresolved = F.stats.unresolved + #refused
+        logOnce("baleTokens:" .. table.concat(refused, ","), string.format("%d saved bale token(s) not applied on %s (%s); those bales are unknown. Logged once per reason set.",
+            #refused, configOf(vehicle), table.concat(refused, ",")))
+    end
+    return mapped
 end
 
 -- ---------------------------------------------------------

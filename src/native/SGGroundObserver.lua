@@ -2295,6 +2295,217 @@ end
 G.balerStart, G.balerEnd, G.balerFill = balerStart, balerEnd, balerFill
 
 -- ---------------------------------------------------------
+-- SG2 bale family 2b: the square bale's birth (SG-2 :473, :483) and the reload (:477)
+-- ---------------------------------------------------------
+-- finishBale and createBale are registered functions (Baler.lua:158-159), copied onto every Baler
+-- (mechanism 2), so they are wrapped per instance: from the class listener Baler.onLoadFinished,
+-- BEFORE its original runs, which the vehicle's own load raises (Vehicle.lua:1035), a purchase
+-- included, so the reload's deferred finish (:572-575) is seen; G.observeVehicle installs on any
+-- Baler the listener did not reach. Each wrap takes what the slot holds (Soil's instance wraps,
+-- RSF-F211, sit on the same slots), once per vehicle.
+--
+-- THE LIVE FINISH, square only (a round finish keeps its chamber, :1431; its mirror is Part 3), in
+-- the add's event (:1171-1173) or the deferred onUpdate finish (:815-817):
+--   (1) before the original, a capture of the chamber and of a created-binding slot for the bale,
+--       so an owner-resolved property is read while its domain still holds it (SG-2 :328); a dirty
+--       chamber is read first, so the capture is native's level;
+--   (2) its own call frame, which holds the clear's fill report (-level, :1438): SG-1 never
+--       reconciles the chamber to 0 before the settle, and the BALER frame no longer replays the
+--       clear at its close (C3);
+--   (3) after the original, a bale createBale made (spec.bales grew) is ONE TRANSFER, the chamber's
+--       moved litres to the slot at the bale's own level, the slot bound to the bale; a clear with no
+--       bale (:1443-1446) is the same operation with one LOSS leg (BALE_CREATE_FAILED); anything else
+--       is abandoned against the actual after-state and the held reports replay as before.
+-- Soil's instance finishBale reads the chamber's record before native clears it (#1077); the settle
+-- runs after the original, so that record is intact whichever wrap is outermost.
+--
+-- THE RELOAD FINISH (Bob's ruling, SG-2 :477: "RESTORING persists through that reconstruction").
+-- Before the barrier no operation can run, so the wrap notes the chamber binding and the bale that
+-- this very call made (SGNativeAdapters.chamberRestores); the saved chamber record restores onto
+-- that bale at the barrier by SG-1's own rule, or stays history. Nothing is matched by type,
+-- amount or order.
+--
+-- THE LISTED BALES. Inside onLoadFinished, the createBale(..., loadFromSavegame = true) calls
+-- (:576-581) are collected in call order, a failed call as false, and handed to the save extension's
+-- tokens (SGFieldToolBufferSave.applyBaleTokens). Never spec.bales indices: the deferred finish runs
+-- first, so its bale can be spec.bales[1] (Bob's 2b trap).
+G.FINISH = "BALE_FINISH"
+G.FINISH_MARKER = "_sgBalerFinish"
+G.loadCreated = G.loadCreated or setmetatable({}, { __mode = "k" })   -- vehicle -> listed bales, inside onLoadFinished
+G.finishes = G.finishes or {}                                         -- diagnostic: the live finishes, in order
+
+--- Does this Baler's finish make a world bale 2b binds? Square, framed, and a live Bale class.
+local function squareFinish(vehicle)
+    return G.balerFramed(vehicle) and vehicle.spec_baler.hasUnloadingAnimation ~= true and A.baleClassLive()
+end
+
+local function levelOf(vehicle, index)
+    if type(vehicle.getFillUnitFillLevel) ~= "function" then return nil end
+    local ok, l = pcall(vehicle.getFillUnitFillLevel, vehicle, index)
+    return ok and finite(l) and l or nil
+end
+
+--- The bale the last createBale appended, when spec.bales grew past `count`.
+local function newBaleAfter(spec, count)
+    if type(spec.bales) ~= "table" or #spec.bales <= count then return nil end
+    local b = spec.bales[#spec.bales]
+    return type(b) == "table" and b.baleObject or nil
+end
+
+--- The live finish's open: the frame and the capture, or nil to let the call pass as before.
+function G.finishOpen(host, vehicle)
+    if not host.ready or host.nativeLease == nil then return nil end
+    local binding, cid = chamberOf(vehicle)
+    if binding == nil then return nil end
+    local spec = vehicle.spec_baler
+    local level = levelOf(vehicle, spec.fillUnitIndex)
+    if level == nil then return nil end
+    if host.dirty[cid] ~= nil then
+        host.dirty[cid] = nil
+        host.handle.observeCarrier(host.nativeLease, cid, nil)
+    end
+    local frame = SGOperationContext.open(host.context, vehicle, G.FINISH)
+    if frame == nil then return nil end
+    host.nextDischarge = host.nextDischarge + 1
+    local callRef = "ground:balerFinish:" .. tostring(host.epoch) .. ":" .. tostring(host.nextDischarge)
+    local slotId, creator = callRef .. ":bale", "baler:" .. tostring(vehicle.uniqueId or vehicle) .. ":chamber"
+    local cap = host.handle.captureOperation(host.nativeLease, "TRANSFER", { { carrierId = cid }, { slotId = slotId, nativeCreatorKey = creator } })
+    if cap == nil then
+        host:closeFrame(frame, nil)
+        return nil
+    end
+    return { vehicle = vehicle, binding = binding, carrierId = cid, index = spec.fillUnitIndex, before = level,
+             bales = type(spec.bales) == "table" and #spec.bales or 0, cap = cap, frame = frame, slotId = slotId, creator = creator, callRef = callRef }
+end
+
+--- The live finish's close, after the original. Then the frame closes, its clear consumed when settled.
+function G.finishClose(host, open)
+    local vehicle = open.vehicle
+    local spec = vehicle.spec_baler
+    local lease = host.nativeLease
+    local after = levelOf(vehicle, open.index) or open.before
+    local moved = open.before - after
+    local native = lease.spec.resolveCarrier(open.binding)
+    local ns = native ~= nil and lease.spec.readNativeState(open.binding, native) or nil
+    local bale = newBaleAfter(spec, open.bales)
+    local report = nil
+    if ns ~= nil and moved > G.EPSILON then
+        local baleBinding = bale ~= nil and A.baleBinding(bale) or nil
+        local baleNative = baleBinding ~= nil and lease.spec.resolveCarrier(baleBinding) or nil
+        local baleState = baleNative ~= nil and lease.spec.readNativeState(baleBinding, baleNative) or nil
+        if baleState ~= nil then
+            local evidence = { nativePath = "GROUND_BALER_FINISH", callRef = open.callRef, chamberBefore = open.before, chamberAfter = after, baleLevel = baleState.amount }
+            if math.abs(baleState.amount - moved) > G.EPSILON then evidence.nativeGain = baleState.amount - moved end
+            report = { participantsAfter = { [open.carrierId] = ns },
+                allocations = { { source = { carrierId = open.carrierId }, sourceAmount = moved, sourceUnit = A.UNIT,
+                                  destination = { slotId = open.slotId }, destinationAmount = baleState.amount, destinationUnit = baleState.unit or A.UNIT, result = "TRANSFERRED" } },
+                createdBindings = { [open.slotId] = { binding = baleBinding, nativeCreatorKey = open.creator, nativeState = baleState } },
+                outcomeEvidence = evidence }
+        elseif bale == nil then
+            report = { participantsAfter = { [open.carrierId] = ns },
+                allocations = { { source = { carrierId = open.carrierId }, sourceAmount = moved, sourceUnit = A.UNIT,
+                                  destination = { retire = true }, result = "LOSS", reason = "BALE_CREATE_FAILED" } },
+                outcomeEvidence = { nativePath = "GROUND_BALER_FINISH", callRef = open.callRef, chamberBefore = open.before, chamberAfter = after, loss = moved } }
+        end
+    end
+    local consumed, outcome, reason = {}, nil, nil
+    if report ~= nil then
+        outcome, reason = host.handle.settleOperation(open.cap.handle, report)
+        -- The clear's own report (:1438) is this settle's: consumed, never replayed.
+        for _, obs in ipairs(open.frame.observations) do
+            if obs.source == "FILL_UNIT" and obs.vehicle == vehicle and obs.fillUnitIndex == open.index and type(obs.accepted) == "number"
+                and obs.accepted < 0 and math.abs(-obs.accepted - moved) <= 1e-6 * math.max(1, moved) then
+                consumed[obs] = true
+                break
+            end
+        end
+    else
+        local _, why = host.handle.abandonOperation(open.cap.handle, "FINISH_UNPROVED", ns ~= nil and { [open.carrierId] = ns } or nil)
+        outcome, reason = "ABANDONED", why
+    end
+    G.finishes[#G.finishes + 1] = { callRef = open.callRef, outcome = outcome, reason = reason, report = report }
+    host:closeFrame(open.frame, consumed)
+end
+
+--- The reload finish (before the barrier): the chamber binding and the bale this call made.
+local function noteLoadFinish(vehicle, binding, count)
+    local bale = newBaleAfter(vehicle.spec_baler, count)
+    if bale ~= nil and A.isBale(bale) then A.chamberRestores[SGRecords.carrierKeyString(binding.carrierKey)] = bale end
+end
+
+local function aroundFinish(original, vehicle, ...)
+    local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+    if host == nil or not squareFinish(vehicle) then return original(vehicle, ...) end
+    if not host.ready then
+        local binding = chamberOf(vehicle)
+        local count = type(vehicle.spec_baler.bales) == "table" and #vehicle.spec_baler.bales or 0
+        local n, r = packn(original(vehicle, ...))
+        if binding ~= nil then
+            local ok, err = pcall(noteLoadFinish, vehicle, binding, count)
+            if not ok then logOnce("finishNote", "reload bale finish not noted (" .. tostring(err) .. ")") end
+        end
+        return unpack(r, 1, n)
+    end
+    local open = nil
+    local okOpen, result = pcall(G.finishOpen, host, vehicle)
+    if okOpen then open = result else logOnce("finishOpen", "bale finish failed to open (" .. tostring(result) .. ")") end
+    local n, r = packn(pcall(original, vehicle, ...))
+    if open ~= nil then
+        local okClose, err = pcall(G.finishClose, host, open)
+        if not okClose then
+            logOnce("finishClose", "bale finish failed to close (" .. tostring(err) .. ")")
+            pcall(host.closeFrame, host, open.frame, nil)
+        end
+    end
+    if not r[1] then error(r[2], 0) end
+    return unpack(r, 2, n)
+end
+
+local function aroundCreate(original, vehicle, ...)
+    local list = G.loadCreated[vehicle]
+    -- createBale(baleFillType, fillLevel, baleServerId, baleTime, xmlFilename, ownerFarmId, variationId, loadFromSavegame)
+    if list == nil or select(8, ...) ~= true then return original(vehicle, ...) end
+    local spec = vehicle.spec_baler
+    local count = type(spec.bales) == "table" and #spec.bales or 0
+    local n, r = packn(original(vehicle, ...))
+    list[#list + 1] = (r[1] and newBaleAfter(spec, count)) or false
+    return unpack(r, 1, n)
+end
+
+--- Wrap one Baler's finishBale and createBale instance copies, once.
+function G.installBalerFinish(vehicle)
+    if g_server == nil then return false, "CLIENT" end
+    if type(vehicle) ~= "table" or vehicle.spec_baler == nil then return false, "NO_SPEC" end
+    if rawget(vehicle, G.FINISH_MARKER) ~= nil then return true, "ALREADY" end
+    local finish, create = vehicle.finishBale, vehicle.createBale
+    if type(finish) ~= "function" or type(create) ~= "function" then return false, "NO_FUNCTION" end
+    local finishWrapper = function(self, ...) return aroundFinish(finish, self, ...) end
+    local createWrapper = function(self, ...) return aroundCreate(create, self, ...) end
+    vehicle.finishBale, vehicle.createBale = finishWrapper, createWrapper
+    rawset(vehicle, G.FINISH_MARKER, { finish = finish, create = create, finishWrapper = finishWrapper, createWrapper = createWrapper })
+    return true
+end
+
+--- The class listener Baler.onLoadFinished: the instance wraps before the original, the listed
+--- bales collected through it, then handed to the save extension's tokens.
+local function balerLoadFinished(original, self, ...)
+    if g_server == nil or type(self) ~= "table" or self.spec_baler == nil then return original(self, ...) end
+    local okI, errI = pcall(G.installBalerFinish, self)
+    if not okI then logOnce("finishInstall", "bale finish not installed (" .. tostring(errI) .. ")") end
+    G.loadCreated[self] = {}
+    local n, r = packn(pcall(original, self, ...))
+    local created = G.loadCreated[self]
+    G.loadCreated[self] = nil
+    if SGFieldToolBufferSave ~= nil and type(SGFieldToolBufferSave.applyBaleTokens) == "function" then
+        local ok, err = pcall(SGFieldToolBufferSave.applyBaleTokens, self, created)
+        if not ok then logOnce("baleTokens", "bale tokens not applied (" .. tostring(err) .. ")") end
+    end
+    if not r[1] then error(r[2], 0) end
+    return unpack(r, 2, n)
+end
+G.balerLoadFinished = balerLoadFinished
+
+-- ---------------------------------------------------------
 -- Installation: the tip slot, the work listeners, the Leveler callback
 -- ---------------------------------------------------------
 --- Install the tip frame on one vehicle's dischargeToGround instance slot.
@@ -2450,6 +2661,8 @@ function G.installClassHooks(classes)
     installed = wrapClass(classes.Baler, "onStartWorkAreaProcessing", balerStart) or installed
     installed = wrapClass(classes.Baler, "onEndWorkAreaProcessing", balerEnd) or installed
     installed = wrapClass(classes.Baler, "onFillUnitFillLevelChanged", balerFill) or installed
+    -- SG2 bale family 2b: the instance finish wraps and the listed bales, from the load listener.
+    installed = wrapClass(classes.Baler, "onLoadFinished", balerLoadFinished) or installed
     -- SG2-5c: the meadow preparation read the Mower's witness needs (SGCutState.installPrep).
     if SGCutState ~= nil and classes.FSDensityMapUtil ~= nil then
         installed = SGCutState.installPrep(classes.FSDensityMapUtil) or installed
@@ -2471,6 +2684,8 @@ function G.observeVehicle(vehicle)
     if vehicle.spec_baler ~= nil and SGWorkAreaInstaller ~= nil then
         SGWorkAreaInstaller.install(vehicle, "spec_baler", "processBalerArea", G.balerBracket)
     end
+    -- SG2 bale family 2b: a Baler the load listener did not reach still gets its finish wraps.
+    if vehicle.spec_baler ~= nil then G.installBalerFinish(vehicle) end
     if vehicle.spec_mower ~= nil and SGWorkAreaInstaller ~= nil then
         SGWorkAreaInstaller.install(vehicle, "spec_mower", "processMowerArea", G.mowerBracket)
         G.installMowerDrop(vehicle)
