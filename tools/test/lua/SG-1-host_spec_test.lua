@@ -542,3 +542,73 @@ do
     g_messageCenter, MessageType = nil, nil
     SGFarmRestore.removeHooks()
 end
+
+do
+    -- (V) SG-3 Part 1, the player view's PROPERTY children (Bob's SG-3 intake U2; SG-3 :47, :507). An
+    -- OWNER_RESOLVED property is resolved live through its owner (purpose PLAYER_VIEW, at one stable owner
+    -- revision) where the material is resident, and off its domain the carried record shows, as readMaterial
+    -- reads it (:330). A disclosure answering nil, "DISCLOSURE_DENIED" omits the child entirely; any other
+    -- refusal keeps the NOT_DISCLOSED placeholder.
+    local reg = SGRegistry.new("v")
+    local o = SGOperations.new(reg, "v")
+    local vw = SGViews.new(reg, o, SGSiteBinding.new())
+    vw.ready = true
+    local ad = reg:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" }, resolveCarrier = function() end, readNativeState = function() end,
+        enumerateCarriers = function() return {} end, hasAccess = function(_, actor) return actor.farmId == 1 end })
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    local function bind(comp, storeKind)
+        return o:bindCarrier(ad, { carrierKey = { adapterId = "sg2", nativeOwnerKey = "bin", componentKey = comp }, adapterVersion = 1, profileId = "silo", profileVersion = 1,
+            quantityBasisKey = "bin/" .. comp }, { materialRef = wheat, amount = 100, unit = "l", label = "Bin " .. comp, storeKind = storeKind, ownerFarmId = 1 })
+    end
+    local function pass(_, r) return r end
+    local function stored(pid, disclosure)
+        return reg:registerProperty(pid, { schemaVersion = 1, producerId = "v", residency = "STORED", validate = function() return true end,
+            combine = function() return nil end, transform = function() return nil end, disclosure = disclosure })
+    end
+    stored("q.shown", pass)
+    stored("q.denied", function() return nil, "DISCLOSURE_DENIED" end)
+    stored("q.refused", function() return nil, "SOMETHING_ELSE" end)
+    local rev = { n = 3, drift = false }
+    reg:registerProperty("r.cond", { schemaVersion = 1, producerId = "v", residency = "OWNER_RESOLVED", applicability = { residentStoreKinds = { "yard" } },
+        validate = function() return true end, combine = function() return nil end, transform = function() return nil end, disclosure = pass,
+        resolveResident = function(ctx)
+            if rev.notResident then return nil, SGOperations.NOT_RESIDENT end
+            return { propertyId = "r.cond", schemaVersion = 1, producerId = "v", propertyRevision = rev.n, knowledge = "KNOWN", payload = { c = 7, purpose = ctx.purpose } }
+        end,
+        getResidentRevision = function() if rev.drift then rev.n = rev.n + 1 end return rev.n end })
+    local yard, silo = bind("y", "yard"), bind("s", "silo")
+    local function rec(pid, payload) return { propertyId = pid, schemaVersion = 1, producerId = "v", propertyRevision = 1, knowledge = "KNOWN", payload = payload } end
+    for _, c in ipairs({ yard, silo }) do
+        local s = o.stocks[c.stockId]
+        s.properties["q.shown"] = rec("q.shown", { v = 1 })
+        s.properties["q.denied"] = rec("q.denied", { secret = 1 })
+        s.properties["q.refused"] = rec("q.refused", { v = 2 })
+    end
+    o.stocks[silo.stockId].properties["r.cond"] = rec("r.cond", { c = 3 })
+    local function children(c)
+        local page = vw:getManagementView({ farmId = 1, userId = "u1", actorState = "RESOLVED", connectionId = "c1" }, { route = "STOCK", selectionKind = "FARM" })
+        for _, row in ipairs(page.view and page.view.rows or {}) do
+            if row.rowKind == "STOCK" and row.carrierId == c.carrierId then
+                local out = {}
+                for _, p in ipairs(row.properties or {}) do
+                    local v = p.reason or (p.payload and (p.payload.c or p.payload.v))
+                    if p.payload and p.payload.purpose then v = tostring(v) .. "@" .. tostring(p.payload.purpose) .. "#" .. tostring(p.propertyRevision) end
+                    out[#out + 1] = p.propertyId .. ":" .. tostring(p.knowledge) .. ":" .. tostring(v)
+                end
+                return table.concat(out, ",")
+            end
+        end
+        return "no row"
+    end
+    T.eq("V1 NAMED: on its resident domain an OWNER_RESOLVED property is resolved live for PLAYER_VIEW at the owner's stable revision; a DISCLOSURE_DENIED child is omitted entirely; another refusal keeps the NOT_DISCLOSED placeholder",
+        children(yard), "q.refused:UNAVAILABLE:NOT_DISCLOSED,q.shown:KNOWN:1,r.cond:KNOWN:7@PLAYER_VIEW#3")
+    T.eq("V2 off its resident domain the carried record shows, as readMaterial reads it (:330)",
+        children(silo), "q.refused:UNAVAILABLE:NOT_DISCLOSED,q.shown:KNOWN:1,r.cond:KNOWN:3")
+    rev.drift = true
+    T.eq("V3 an owner whose revision moves during the read gives RESIDENT_UNSTABLE, never a value",
+        children(yard), "q.refused:UNAVAILABLE:NOT_DISCLOSED,q.shown:KNOWN:1,r.cond:UNAVAILABLE:RESIDENT_UNSTABLE")
+    rev.drift, rev.notResident = false, true
+    o.stocks[yard.stockId].properties["r.cond"] = rec("r.cond", { c = 5 })
+    T.eq("V4 an owner answering NOT_RESIDENT leaves the carried record, as readMaterial does, never an unavailable child over it",
+        children(yard), "q.refused:UNAVAILABLE:NOT_DISCLOSED,q.shown:KNOWN:1,r.cond:KNOWN:5")
+end

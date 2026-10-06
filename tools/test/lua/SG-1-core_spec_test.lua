@@ -1247,3 +1247,111 @@ do
          ds.properties["bad.p"] and ds.properties["bad.p"].reason or nil, "CAUSAL_TRANSFORM_FAILED")
     T.eq("J5c and none of its keys were accepted", ds.acceptedCauses[1], nil)
 end
+
+do
+    -- ── J6: SG-3 Part 1, a genuine birth is interpreted (Bob's SG-3 intake U1; SG-1 :253-255, :285; SG-3 :98-100) ──
+    -- A STORED producer that declares births (birth = true) is called through its transform ONCE per BIRTH or
+    -- REPLACE candidate born from creation slots, with the detached context and the report's outcomeEvidence.
+    -- A producer that does not declare births, an UPDATE, a REBIND and material moved from a carrier into a new
+    -- binding (a bale from its chamber) never are.
+    local reg = SGRegistry.new("j6")
+    local o = SGOperations.new(reg, "j6")
+    local ad = reg:registerCarrierAdapter("sg2", { version = 1, carrierKinds = { "silo" },
+        resolveCarrier = function() end, readNativeState = function() end,
+        enumerateCarriers = function() return {} end, hasAccess = function() return true end })
+    local wheat = { kind = "FILL_TYPE", fillTypeName = "WHEAT" }
+    local barley = { kind = "FILL_TYPE", fillTypeName = "BARLEY" }
+    local function b(owner, comp) return { carrierKey = { adapterId = "sg2", nativeOwnerKey = owner, componentKey = comp }, adapterVersion = 1, profileId = "silo", profileVersion = 1, quantityBasisKey = owner .. "/" .. comp } end
+    local function rec(pid, amount, via) return { propertyId = pid, schemaVersion = 1, producerId = "sg3", propertyRevision = 0, knowledge = "KNOWN", knownAmount = amount, basisAmount = amount, amountUnit = "LITRE", payload = { via = via } } end
+    local calls = { births = {}, combines = 0, plain = 0 }
+    local function spec(over)
+        local s = { schemaVersion = 1, producerId = "sg3", residency = "STORED", validate = function() return true end,
+            combine = function() return nil end, transform = function() return nil end, disclosure = function(_, r) return r end }
+        for k, v in pairs(over) do s[k] = v end
+        return s
+    end
+    T.eq("J6a a birth flag that is not a boolean is refused", select(2, reg:registerProperty("x.flag", spec({ birth = "yes" }))), "BIRTH")
+    T.eq("J6b only a STORED property may interpret births", select(2, reg:registerProperty("x.resident", spec({ birth = true, residency = "OWNER_RESOLVED",
+        resolveResident = function() return nil end, getResidentRevision = function() return 1 end }))), "BIRTH_RESIDENCY")
+    reg:registerProperty("sg3.q", spec({ birth = true,
+        combine = function(ctx, contributions, before)
+            calls.combines = calls.combines + 1
+            local total = before and before.observedAmount or 0
+            for _, c in ipairs(contributions) do total = total + c.amount end
+            return rec("sg3.q", total, "combine")
+        end,
+        transform = function(ctx, inputs, outputs)
+            local out = outputs[1]
+            calls.births[#calls.births + 1] = { kind = ctx.operationKind, tag = ctx.report and ctx.report.outcomeEvidence and ctx.report.outcomeEvidence.tag,
+                carrierId = out.carrierId, slotId = out.slotId, stock = out.stockRef and out.stockRef.stockId, inputs = #inputs }
+            return rec("sg3.q", out.amount, "transform")
+        end }))
+    reg:registerProperty("x.plain", spec({ combine = function() calls.plain = calls.plain + 1 return nil end, transform = function() calls.plain = calls.plain + 1 return nil end }))
+    local function births() return #calls.births end
+    local function lastBirth() local c = calls.births[#calls.births] or {} return tostring(c.kind) .. "/" .. tostring(c.tag) .. "/" .. tostring(c.inputs) end
+    local function stockOf(id) local c = o.carriers[id] return c and c.stockId and o.stocks[c.stockId] or nil end
+    local function q(id) local s = stockOf(id) local p = s and s.properties["sg3.q"] return p and (p.knowledge .. ":" .. tostring(p.knownAmount) .. ":" .. tostring(p.payload and p.payload.via)) or "none" end
+    local function born(kind, carrierId, slot, amount, tag)
+        local cap = o:captureOperation(ad, kind, { { carrierId = carrierId }, { slotId = slot, nativeCreatorKey = "cut" } })
+        local before = cap.before.carriers[carrierId]
+        return o:settleOperation(cap.handle, {
+            participantsAfter = { [carrierId] = { materialRef = wheat, amount = (before and before.amount or 0) + amount, unit = "l" } },
+            allocations = { { source = { slotId = slot }, sourceAmount = amount, sourceUnit = "l", destination = { carrierId = carrierId }, destinationAmount = amount, destinationUnit = "l", result = "BORN" } },
+            outcomeEvidence = { tag = tag } })
+    end
+
+    local bin = o:bindCarrier(ad, b("bin", "1"), { amount = 0, unit = "l" }).carrierId
+    local out = born("BIRTH", bin, "w1", 100, "cut1")
+    T.eq("J6c NAMED: a birth from a creation slot calls the declared producer's transform ONCE, with the report's outcomeEvidence, and its record is the new stock's",
+        tostring(out) .. "|" .. births() .. "|" .. lastBirth() .. "|" .. q(bin), "COMMITTED|1|BIRTH/cut1/1|KNOWN:100:transform")
+    T.eq("J6d a producer that does not declare births is never called on one", calls.plain, 0)
+    born("BIRTH", bin, "w2", 50, "cut2")
+    T.eq("J6e a second birth into a stock of the same material is an UPDATE: no birth call; the stock's own record is combined",
+        births() .. "|" .. calls.combines .. "|" .. q(bin), "1|1|KNOWN:150:combine")
+
+    -- REPLACE: a barley bin emptied as loss and filled with wheat born from a slot.
+    local bin2 = o:bindCarrier(ad, b("bin", "2"), { materialRef = barley, amount = 50, unit = "l" }).carrierId
+    local cap = o:captureOperation(ad, "TRANSFER", { { carrierId = bin2 }, { slotId = "w3", nativeCreatorKey = "cut" } })
+    out = o:settleOperation(cap.handle, {
+        participantsAfter = { [bin2] = { materialRef = wheat, amount = 80, unit = "l" } },
+        allocations = { { source = { carrierId = bin2 }, sourceAmount = 50, sourceUnit = "l", destination = { retire = true }, result = "LOSS" },
+                        { source = { slotId = "w3" }, sourceAmount = 80, sourceUnit = "l", destination = { carrierId = bin2 }, destinationAmount = 80, destinationUnit = "l", result = "BORN" } },
+        outcomeEvidence = { tag = "cut3" } })
+    T.eq("J6f a REPLACE (another material's stock ended, the new one born from a slot) is a birth: one call",
+        tostring(out) .. "|" .. births() .. "|" .. lastBirth() .. "|" .. q(bin2), "COMMITTED|2|TRANSFER/cut3/1|KNOWN:80:transform")
+
+    -- A slot into a created binding (destination slot): the candidate has no carrier yet.
+    cap = o:captureOperation(ad, "BIRTH", { { slotId = "w4", nativeCreatorKey = "cut" }, { slotId = "bale4", nativeCreatorKey = "baler" } })
+    out = o:settleOperation(cap.handle, {
+        participantsAfter = {},
+        allocations = { { source = { slotId = "w4" }, sourceAmount = 40, sourceUnit = "l", destination = { slotId = "bale4" }, destinationAmount = 40, destinationUnit = "l", result = "BORN" } },
+        createdBindings = { bale4 = { binding = b("bale", "4"), nativeCreatorKey = "baler", nativeState = { materialRef = wheat, amount = 40, unit = "l" } } },
+        outcomeEvidence = { tag = "cut4" } })
+    local c4 = calls.births[#calls.births] or {}
+    T.eq("J6g a birth into a created binding is called once too, naming the slot, with no carrier yet",
+        tostring(out) .. "|" .. births() .. "|" .. tostring(c4.slotId) .. "/" .. tostring(c4.carrierId) .. "|" .. q(o:carrierIdOf(b("bale", "4"))), "COMMITTED|3|bale4/nil|KNOWN:40:transform")
+
+    -- A REBIND whose candidate is otherwise a slot birth: never interpreted as a birth (SG-3 :99).
+    local bin5 = o:bindCarrier(ad, b("bin", "5"), { amount = 0, unit = "l" }).carrierId
+    out = born("REBIND", bin5, "w5", 70, "rebind5")
+    T.eq("J6h a REBIND never calls a birth producer, even where its candidate would be a slot birth",
+        tostring(out) .. "|" .. births() .. "|" .. q(bin5), "COMMITTED|3|none")
+
+    -- Material moved from a carrier into a new binding (2b's square bale from its chamber): not a birth.
+    local chamber = o:bindCarrier(ad, b("chamber", "6"), { materialRef = wheat, amount = 60, unit = "l" }).carrierId
+    cap = o:captureOperation(ad, "TRANSFER", { { carrierId = chamber }, { slotId = "bale6", nativeCreatorKey = "baler" } })
+    out = o:settleOperation(cap.handle, {
+        participantsAfter = { [chamber] = { amount = 0, unit = "l" } },
+        allocations = { { source = { carrierId = chamber }, sourceAmount = 60, sourceUnit = "l", destination = { slotId = "bale6" }, destinationAmount = 60, destinationUnit = "l", result = "TRANSFERRED" } },
+        createdBindings = { bale6 = { binding = b("bale", "6"), nativeCreatorKey = "baler", nativeState = { materialRef = wheat, amount = 60, unit = "l" } } } })
+    T.eq("J6i material moved from a carrier into a new binding is not a birth: no call",
+        tostring(out) .. "|" .. births() .. "|" .. q(o:carrierIdOf(b("bale", "6"))), "COMMITTED|3|none")
+
+    -- A declared birth producer that throws is unavailable as a failed TRANSFORM, contained to itself.
+    reg:registerProperty("x.boom", spec({ birth = true, transform = function() error("boom") end }))
+    local bin7 = o:bindCarrier(ad, b("bin", "7"), { amount = 0, unit = "l" }).carrierId
+    born("BIRTH", bin7, "w7", 30, "cut7")
+    local s7 = stockOf(bin7)
+    T.eq("J6j a birth producer that throws is unavailable as TRANSFORM_ERROR, and the other birth producer still records",
+        tostring(s7 and s7.properties["x.boom"] and s7.properties["x.boom"].reason) .. "|" .. q(bin7), "TRANSFORM_ERROR|KNOWN:30:transform")
+end
