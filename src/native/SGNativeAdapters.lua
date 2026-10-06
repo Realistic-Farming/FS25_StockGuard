@@ -10,6 +10,7 @@
 --   readNativeState(binding, native)   -> SG-1 NativeState or nil, reason
 --   hasAccess(binding, actor)          -> boolean                        (defect 4)
 --   restoreBinding(savedBinding, ctx)  -> binding or nil, reason         (storage only)
+--   resolveAlias(binding)              -> canonical binding or nil       (SG2-5e-c, the round mirror)
 --
 -- The core reads every carrier through resolveCarrier and readNativeState (the
 -- SG2-1 join), so an enumeration entry carries a binding and nothing else.
@@ -1142,6 +1143,86 @@ local function restoredBaleBinding(map, savedBinding)
 end
 A.restoredBaleBinding = restoredBaleBinding
 
+-- ── The round mirror (SG2-5e-c, Part 3a) ────────────────────────────────────
+--
+-- A ROUND BALER'S MOUNTED BALE AND ITS STILL-FULL CHAMBER ARE ONE MATERIAL AMOUNT (SG-2 :473; Bob's
+-- 10-05 round-core intake, Part 3, and his 10-06 split, Part 3a). The round finish (Baler.lua:1427-1436)
+-- creates and mounts the bale without clearing the chamber, so the mirror is noted there
+-- (SGGroundObserver.aroundFinish): the bale's alias binding is its own key with aliasOf the chamber's
+-- carrier id, the chamber's quantityBasisKey, and ROUND_BALER_FORMING_V1 in its sourceDescriptor. The
+-- alias is never bound: the chamber stays the one carrier, and the mounted bale is neither enumerated
+-- nor resolved (2a). resolveAlias names the chamber's binding for the alias while the mirror stands.
+--
+-- AT THE HANDOVER the drop and the chamber's clear (onUpdateTick, :926-928) are ONE REBIND: the
+-- chamber's carrier becomes the bale's own binding with its stock and generation (SG-1 :224), the alias
+-- travels in the report as its proof (SGOperations aliasProvesReplacement), and the mirror retires.
+--
+-- LIVE ONLY. A mirror is noted once the host is ready, so a reload's mounted bale (:570-575) has none
+-- until Part 3b (after TESTING row 478): its drop clears the chamber as before. A partial bale (the pad,
+-- :1328-1347, its final level set at the drop, :1599-1601) is 5e-d's and is not mirrored. Per mission:
+-- H:install and H:teardown empty the table, and a removed vehicle's mirrors go with it.
+A.ROUND_FORMING_PROFILE = "ROUND_BALER_FORMING_V1"
+A.roundMirrors = A.roundMirrors or {}   -- the bale's carrier id -> { bale, vehicle, index, chamberId, alias }
+
+--- The alias binding of a bale mounted in the round chamber whose binding is `chamber`.
+function A.roundAliasBinding(bale, chamber)
+    local alias = A.baleBinding(bale)
+    if alias == nil or type(chamber) ~= "table" then return nil end
+    alias.aliasOf = SGRecords.carrierKeyString(chamber.carrierKey)
+    alias.quantityBasisKey = chamber.quantityBasisKey
+    alias.sourceDescriptor = { kind = A.KIND_BALE, profile = A.ROUND_FORMING_PROFILE }
+    return alias
+end
+
+--- Note a round finish's mirror: `bale`, mounted over fill unit `index` of `vehicle`.
+function A.noteRoundMirror(vehicle, index, bale)
+    local chamber = A.fillUnitBindingFor(vehicle, index)
+    local alias = chamber ~= nil and A.roundAliasBinding(bale, chamber) or nil
+    if alias == nil then return nil end
+    local mirror = { bale = bale, vehicle = vehicle, index = index, chamberId = alias.aliasOf, alias = alias }
+    A.roundMirrors[SGRecords.carrierKeyString(alias.carrierKey)] = mirror
+    return mirror
+end
+
+--- The mirror this bale stands in, or nil.
+function A.roundMirrorOf(bale)
+    local own = A.baleBinding(bale)
+    local mirror = own ~= nil and A.roundMirrors[SGRecords.carrierKeyString(own.carrierKey)] or nil
+    if mirror ~= nil and mirror.bale == bale then return mirror end
+    return nil
+end
+
+function A.retireRoundMirror(bale)
+    local own = A.baleBinding(bale)
+    if own ~= nil then A.roundMirrors[SGRecords.carrierKeyString(own.carrierKey)] = nil end
+end
+
+--- A removed vehicle's mirrors (VehicleSystem.removeVehicle).
+function A.retireRoundMirrorsOf(vehicle)
+    for key, mirror in pairs(A.roundMirrors) do
+        if mirror.vehicle == vehicle then A.roundMirrors[key] = nil end
+    end
+end
+
+function A.resetRoundMirrors()
+    for key in pairs(A.roundMirrors) do A.roundMirrors[key] = nil end
+end
+
+--- resolveAlias (SG-1 :238; SGOperations canonicalBinding). A binding that is no alias is its own
+--- canonical binding (nil). A round mirror's alias is the chamber's binding while the mirror stands and
+--- the chamber is still that carrier. Any other alias is refused (ALIAS_ERROR), never bound as itself.
+function A.resolveAlias(binding)
+    if type(binding) ~= "table" or binding.aliasOf == nil then return nil end
+    local mirror = A.roundMirrors[SGRecords.carrierKeyString(binding.carrierKey)]
+    if mirror == nil or mirror.chamberId ~= binding.aliasOf or mirror.alias.quantityBasisKey ~= binding.quantityBasisKey then
+        error("ALIAS_UNPROVED", 0)
+    end
+    -- Which carrier this names is the core's check (SGOperations aliasProvesReplacement, condition 4).
+    local chamber = A.fillUnitBindingFor(mirror.vehicle, mirror.index)
+    if chamber == nil then error("ALIAS_UNPROVED", 0) end
+    return chamber
+end
+
 --- The mission's item system: the injected source first, then the mission's own.
 local function itemSystemOf(items)
     local system = type(items) == "function" and items() or nil
@@ -1351,6 +1432,8 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers, items)
                           A.KIND_MOWER_BUFFER, A.KIND_BALER_PICKUP, A.KIND_BALER_OVERFLOW, A.KIND_BALE },
         materialGroups = { A.BALER_OVERFLOW_GROUP },
         kinds          = kinds,
+        -- SG2-5e-c: a round Baler's mounted bale is an alias of its chamber (SG-2 :473).
+        resolveAlias   = A.resolveAlias,
     }
     local function route(binding)
         return kinds[kindOf(binding)]
