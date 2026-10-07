@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard bu oturum için malzeme kapasitesini düzenleyemedi: %s. Hiçbir malın yanlış okunmaması için yükleme durduruldu. Mod seçimini ve günlüğü kontrol edin."/>
         <text name="sg6_profile_mismatch" text="StockGuard: malzeme ve harita kapasite profili sunucudan farklı. Eşleşen kurulumu edinin ve sunucu sahibinin günlüğüne bakın."/>
         <text name="sg_site_purpose_yard" text="StockGuard avlusu"/>
+        <text name="sg3_reason_no_material" text="Malzeme yok"/>
+        <text name="sg3_reason_unsupported_material" text="Bu malzeme derecelendirilmez"/>
+        <text name="sg3_reason_unsupported_profile" text="Derecelendirme profili desteklenmiyor"/>
+        <text name="sg3_reason_origin_unproven" text="Köken kaydedilmedi"/>
+        <text name="sg3_reason_soil_unavailable" text="Hasatta toprak verisi yoktu"/>
+        <text name="sg3_reason_source_partial" text="Hasat kaynağı yalnızca kısmen kaydedildi"/>
+        <text name="sg3_reason_maturity_unavailable" text="Hasatta ürün olgunluğu bilinmiyor"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Köken insan tüketimine uygun değil"/>
+        <text name="sg3_reason_quality_partial" text="Kalite yalnızca kısmen biliniyor"/>
+        <text name="sg3_reason_quality_historical" text="Yalnızca geçmiş kalite kaydı"/>
+        <text name="sg3_reason_condition_unavailable" text="Depolama durumu yok"/>
+        <text name="sg3_reason_condition_pending" text="Depolama durumu bekleniyor"/>
+        <text name="sg3_reason_condition_condemned" text="Depolama durumu nedeniyle reddedildi"/>
+        <text name="sg3_reason_condition_gap" text="Depolama durumunda boşluklar var"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Başka bir moddan gelen durum kapsanmıyor"/>
+        <text name="sg3_reason_process_pending" text="İşleme bekleniyor"/>
+        <text name="sg3_reason_recipe_not_ready" text="Tarif hazır değil"/>
+        <text name="sg3_reason_grouped_portions" text="Porsiyonlara göre derecelendirildi"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Porsiyonların dereceleri farklı"/>
+        <text name="sg3_reason_source_changed" text="Stok okunduktan sonra değişti"/>
+        <text name="sg3_reason_disclosure_denied" text="Sizin için kullanılamaz"/>
+        <text name="sg3_reason_profile_mismatch" text="Kalite profilleri eşleşmiyor"/>
+        <text name="sg3_reason_composition_unknown" text="Bileşim bilinmiyor"/>
     </texts>
 </l10n>

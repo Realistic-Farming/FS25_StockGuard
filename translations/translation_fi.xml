@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard ei voinut järjestää materiaalikapasiteettia tälle istunnolle: %s. Lataus pysähtyy, jotta mitään tavaraa ei lueta väärin. Tarkista modivalinta ja loki."/>
         <text name="sg6_profile_mismatch" text="StockGuard: materiaali- ja karttakapasiteettiprofiili poikkeaa palvelimen profiilista. Hanki vastaava kokoonpano ja tarkista isännän loki."/>
         <text name="sg_site_purpose_yard" text="StockGuard-piha"/>
+        <text name="sg3_reason_no_material" text="Ei materiaalia"/>
+        <text name="sg3_reason_unsupported_material" text="Tätä materiaalia ei luokitella"/>
+        <text name="sg3_reason_unsupported_profile" text="Luokitusprofiilia ei tueta"/>
+        <text name="sg3_reason_origin_unproven" text="Alkuperää ei ole kirjattu"/>
+        <text name="sg3_reason_soil_unavailable" text="Maaperätietoja ei ollut saatavilla korjuussa"/>
+        <text name="sg3_reason_source_partial" text="Sadon lähde kirjattu vain osittain"/>
+        <text name="sg3_reason_maturity_unavailable" text="Kasvin kypsyys korjuussa tuntematon"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Alkuperä ei kelpaa elintarvikkeeksi"/>
+        <text name="sg3_reason_quality_partial" text="Laatu tunnetaan vain osittain"/>
+        <text name="sg3_reason_quality_historical" text="Vain aiempi laatukirjaus"/>
+        <text name="sg3_reason_condition_unavailable" text="Varastointikunto ei saatavilla"/>
+        <text name="sg3_reason_condition_pending" text="Varastointikunto odottaa"/>
+        <text name="sg3_reason_condition_condemned" text="Hylätty varastointikunnon vuoksi"/>
+        <text name="sg3_reason_condition_gap" text="Varastointikunnossa on aukkoja"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Toisen modin kuntoa ei kateta"/>
+        <text name="sg3_reason_process_pending" text="Käsittely odottaa"/>
+        <text name="sg3_reason_recipe_not_ready" text="Resepti ei valmis"/>
+        <text name="sg3_reason_grouped_portions" text="Luokiteltu erissä"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Erillä on eri arvosanat"/>
+        <text name="sg3_reason_source_changed" text="Varasto muuttui lukemisen jälkeen"/>
+        <text name="sg3_reason_disclosure_denied" text="Ei saatavilla sinulle"/>
+        <text name="sg3_reason_profile_mismatch" text="Laatuprofiilit eivät täsmää"/>
+        <text name="sg3_reason_composition_unknown" text="Koostumus tuntematon"/>
     </texts>
 </l10n>

@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard nu a putut pregăti capacitatea de materiale pentru această sesiune: %s. Încărcarea se oprește ca nicio marfă să nu fie citită greșit. Verifică selecția de moduri și jurnalul."/>
         <text name="sg6_profile_mismatch" text="StockGuard: profilul de capacitate al materialelor și hărții diferă de cel al serverului. Procură configurația potrivită și consultă jurnalul gazdei."/>
         <text name="sg_site_purpose_yard" text="Curte StockGuard"/>
+        <text name="sg3_reason_no_material" text="Niciun material"/>
+        <text name="sg3_reason_unsupported_material" text="Acest material nu este evaluat"/>
+        <text name="sg3_reason_unsupported_profile" text="Profil de evaluare neacceptat"/>
+        <text name="sg3_reason_origin_unproven" text="Origine neînregistrată"/>
+        <text name="sg3_reason_soil_unavailable" text="Datele solului nu erau disponibile la recoltare"/>
+        <text name="sg3_reason_source_partial" text="Sursa recoltei înregistrată doar parțial"/>
+        <text name="sg3_reason_maturity_unavailable" text="Maturitatea culturii necunoscută la recoltare"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Origine neeligibilă pentru consum uman"/>
+        <text name="sg3_reason_quality_partial" text="Calitate cunoscută doar parțial"/>
+        <text name="sg3_reason_quality_historical" text="Doar o înregistrare de calitate anterioară"/>
+        <text name="sg3_reason_condition_unavailable" text="Starea de depozitare indisponibilă"/>
+        <text name="sg3_reason_condition_pending" text="Starea de depozitare în așteptare"/>
+        <text name="sg3_reason_condition_condemned" text="Respins din cauza stării de depozitare"/>
+        <text name="sg3_reason_condition_gap" text="Starea de depozitare are lacune"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Starea din alt mod nu este acoperită"/>
+        <text name="sg3_reason_process_pending" text="Procesare în așteptare"/>
+        <text name="sg3_reason_recipe_not_ready" text="Rețeta nu este gata"/>
+        <text name="sg3_reason_grouped_portions" text="Evaluat pe porții"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Porțiile au note diferite"/>
+        <text name="sg3_reason_source_changed" text="Stocul s-a schimbat de la citire"/>
+        <text name="sg3_reason_disclosure_denied" text="Indisponibil pentru tine"/>
+        <text name="sg3_reason_profile_mismatch" text="Profilurile de calitate nu se potrivesc"/>
+        <text name="sg3_reason_composition_unknown" text="Compoziție necunoscută"/>
     </texts>
 </l10n>

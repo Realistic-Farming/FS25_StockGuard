@@ -227,7 +227,9 @@ function HC.cutOpen(host, combine, area, liters, inputFruitType, outputFillType)
                     portions[#portions + 1] = { slotId = callRef .. ":w" .. i .. ":p" .. k, nativeCreatorKey = creator,
                         weight = e.weight * grp.weight / cs.weightSum, fruitTypeIndex = cs.fruitIndex, knowledge = "KNOWN", reason = nil,
                         profile = SGCutState ~= nil and SGCutState.PROFILE or nil, growthState = grp.state, pixels = grp.pixels,
-                        yieldScale = grp.yieldScale, soilCell = grp.cell, soil = grp.soil }
+                        yieldScale = grp.yieldScale, soilCell = grp.cell, soil = grp.soil,
+                        -- SG-3 U4: the frozen RAW_MATURITY_V1 inputs and the fruit's own output
+                        maturity = grp.maturity, fruitName = cs.fruitName, primaryFillTypeName = cs.primaryFillTypeName }
                 end
             else
                 local reason = "CUT_STATE_NOT_OBSERVED"
@@ -314,7 +316,8 @@ function HC.cutClose(host, frame, ok, returned)
             for _, portion in ipairs(t.portions) do
                 evidencePortions[#evidencePortions + 1] = { slotId = portion.slotId, weight = portion.weight, fruitTypeIndex = portion.fruitTypeIndex,
                     knowledge = portion.knowledge, reason = portion.reason, profile = portion.profile, growthState = portion.growthState,
-                    pixels = portion.pixels, yieldScale = portion.yieldScale, soilCell = portion.soilCell, soil = portion.soil }
+                    pixels = portion.pixels, yieldScale = portion.yieldScale, soilCell = portion.soilCell, soil = portion.soil,
+                    maturity = portion.maturity, fruitName = portion.fruitName, primaryFillTypeName = portion.primaryFillTypeName }
             end
             local report = {
                 participantsAfter = after,

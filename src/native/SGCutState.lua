@@ -44,6 +44,14 @@
 -- cut (not limitToField, :1913), the pixels are read before it, and a pixel the preparation
 -- changed is counted at its prepared state into the weighted sum (native harvests it so) but
 -- grouped apart as prepared, with no origin.
+--
+-- THE MATURITY INPUTS (SG-3 U4, brief :194). RAW_MATURITY_V1 classifies each observed raw state from
+-- the source descriptor's harvestTransitions, harvestReadyTransitions, cutStates, witheredState and
+-- forage interval, frozen BEFORE the cut (FruitTypeDesc.lua:125-143, :213-241, :496-497). CS.before
+-- freezes, per captured state, those facts and the state's own name; CS.after hands them on with each
+-- group. A descriptor missing one of those tables freezes nothing, so SG-3 reads the portion's
+-- maturity as unknown rather than a guessed class. The capture also names the fruit and its primary
+-- output (FruitTypeManager.lua:248-251), so SG-3 can tell a crop's own output from a by-product.
 
 SGCutState = SGCutState or {}
 local CS = SGCutState
@@ -123,6 +131,30 @@ local function soilAt(x, z)
     return snapshot, grain
 end
 
+--- [SG-3 U4] The descriptor's frozen maturity tables, or nil when one is missing or malformed.
+local function maturityTables(desc)
+    local names, ready, cut, harvest = desc.growthStateToName, desc.harvestReadyTransitions, desc.cutStates, desc.harvestTransitions
+    if type(names) ~= "table" or type(ready) ~= "table" or type(cut) ~= "table" or type(harvest) ~= "table" then return nil end
+    local minF, maxF, withered = desc.minForageGrowthState, desc.maxForageGrowthState, desc.witheredState
+    if type(minF) ~= "number" or type(maxF) ~= "number" then return nil end
+    if withered ~= nil and type(withered) ~= "number" then return nil end
+    return { names = names, ready = ready, cut = cut, harvest = harvest, minF = minF, maxF = maxF, withered = withered }
+end
+
+--- [SG-3 U4] One raw state's RAW_MATURITY_V1 inputs, read now from the frozen tables. An invalid,
+--- zero or unmapped state is marked so (brief :194: UNSUPPORTED).
+local function maturityOf(t, state)
+    if t == nil then return nil end
+    local valid = type(state) == "number" and state >= 1 and state % 1 == 0 and t.names[state] ~= nil
+    return {
+        state = state, stateName = t.names[state], valid = valid,
+        harvestReady = t.ready[state] ~= nil, withered = t.withered ~= nil and t.withered == state, cut = t.cut[state] ~= nil,
+        -- a valid nonnegative inclusive forage interval (a zero state is already invalid above)
+        forage = t.minF >= 0 and t.maxF >= t.minF and state >= t.minF and state <= t.maxF,
+        harvestable = t.harvest[state] ~= nil,
+    }
+end
+
 --- The pixel box of a parallelogram on the grid: its corners' bounding box plus a margin,
 --- in pixel indices. nil when the box passes MAX_PIXELS.
 local function pixelBox(g, sx, sz, wx, wz, hx, hz)
@@ -178,6 +210,8 @@ function CS.before(fruitIndex, sx, sz, wx, wz, hx, hz, useMinForageState, profil
     end
     local i0, i1, j0, j1 = pixelBox(g, sx, sz, wx, wz, hx, hz)
     if i0 == nil then return refuse("ENVELOPE_TOO_LARGE", nil, profile) end
+    local tables = maturityTables(desc)   -- SG-3 U4: frozen before the cut
+    local maturity = {}
     local pixels, scales = {}, {}
     for i = i0, i1 do
         for j = j0, j1 do
@@ -190,6 +224,7 @@ function CS.before(fruitIndex, sx, sz, wx, wz, hx, hz, useMinForageState, profil
                     return refuse("YIELD_SCALE_UNAVAILABLE", string.format(", growth state %d of fruit %d has no yieldScales entry", state, fruitIndex), profile)
                 end
                 scales[state] = scale
+                if maturity[state] == nil then maturity[state] = maturityOf(tables, state) or false end
                 local soil, grain = soilAt(cx, cz)
                 -- A pixel the preparation changed has no origin of its own (:515).
                 local prepared = nil
@@ -198,7 +233,10 @@ function CS.before(fruitIndex, sx, sz, wx, wz, hx, hz, useMinForageState, profil
             end
         end
     end
-    return { admitted = nil, fruitIndex = fruitIndex, grid = g, pixels = pixels, scales = scales, profile = profile }
+    local ftm = g_fruitTypeManager
+    local primary = type(ftm.getFillTypeNameByFruitTypeIndex) == "function" and ftm:getFillTypeNameByFruitTypeIndex(fruitIndex) or nil
+    return { admitted = nil, fruitIndex = fruitIndex, grid = g, pixels = pixels, scales = scales, profile = profile,
+             maturity = maturity, fruitName = desc.name, primaryFillTypeName = primary }
 end
 
 --- After the native cut: keep the pixels that made their harvest transition, group
@@ -220,7 +258,9 @@ function CS.after(cap, returnedArea)
             local key = tostring(p.state) .. "|" .. cell .. (p.prepared and "|prepared" or "")
             local grp = groups[key]
             if grp == nil then
-                grp = { state = p.state, cell = cell, pixels = 0, yieldScale = cap.scales[p.state], soil = p.soil, prepared = p.prepared }
+                grp = { state = p.state, cell = cell, pixels = 0, yieldScale = cap.scales[p.state], soil = p.soil, prepared = p.prepared,
+                        maturity = cap.maturity ~= nil and cap.maturity[p.state] or nil }
+                if grp.maturity == false then grp.maturity = nil end
                 groups[key] = grp
                 order[#order + 1] = key
             end
@@ -241,7 +281,8 @@ function CS.after(cap, returnedArea)
     logOnce(profile == CS.PROFILE and "admitted" or (profile .. ":admitted"),
         "FIRST %s CUT ADMITTED: %d state/Soil portion(s) matched the native's own area %s. Cut output now carries its source states.",
         profile, #out, tostring(returnedArea))
-    return { admitted = true, fruitIndex = cap.fruitIndex, groups = out, weightSum = sum }
+    return { admitted = true, fruitIndex = cap.fruitIndex, groups = out, weightSum = sum,
+             fruitName = cap.fruitName, primaryFillTypeName = cap.primaryFillTypeName }
 end
 
 --- The witness entry the current cut records onto: a Mower frame's own target (SG2-5c),

@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard nie mógł przygotować pojemności materiałów dla tej sesji: %s. Ładowanie zostaje przerwane, aby żadne towary nie zostały błędnie odczytane. Sprawdź wybór modów i dziennik."/>
         <text name="sg6_profile_mismatch" text="StockGuard: profil pojemności materiałów i mapy różni się od serwera. Zdobądź pasujący zestaw i sprawdź dziennik hosta."/>
         <text name="sg_site_purpose_yard" text="Podworze StockGuard"/>
+        <text name="sg3_reason_no_material" text="Brak materiału"/>
+        <text name="sg3_reason_unsupported_material" text="Ten materiał nie jest oceniany"/>
+        <text name="sg3_reason_unsupported_profile" text="Profil oceny nieobsługiwany"/>
+        <text name="sg3_reason_origin_unproven" text="Pochodzenie niezarejestrowane"/>
+        <text name="sg3_reason_soil_unavailable" text="Dane gleby niedostępne podczas zbioru"/>
+        <text name="sg3_reason_source_partial" text="Źródło zbioru zarejestrowane tylko częściowo"/>
+        <text name="sg3_reason_maturity_unavailable" text="Dojrzałość uprawy nieznana podczas zbioru"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Pochodzenie niedopuszczalne do spożycia przez ludzi"/>
+        <text name="sg3_reason_quality_partial" text="Jakość znana tylko częściowo"/>
+        <text name="sg3_reason_quality_historical" text="Tylko dawny zapis jakości"/>
+        <text name="sg3_reason_condition_unavailable" text="Stan przechowywania niedostępny"/>
+        <text name="sg3_reason_condition_pending" text="Stan przechowywania w toku"/>
+        <text name="sg3_reason_condition_condemned" text="Odrzucone z powodu stanu przechowywania"/>
+        <text name="sg3_reason_condition_gap" text="Stan przechowywania ma luki"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Stan z innego moda nieobjęty"/>
+        <text name="sg3_reason_process_pending" text="Przetwarzanie w toku"/>
+        <text name="sg3_reason_recipe_not_ready" text="Receptura niegotowa"/>
+        <text name="sg3_reason_grouped_portions" text="Oceniane w porcjach"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Porcje mają różne oceny"/>
+        <text name="sg3_reason_source_changed" text="Zapas zmienił się od odczytu"/>
+        <text name="sg3_reason_disclosure_denied" text="Niedostępne dla ciebie"/>
+        <text name="sg3_reason_profile_mismatch" text="Profile jakości nie pasują"/>
+        <text name="sg3_reason_composition_unknown" text="Skład nieznany"/>
     </texts>
 </l10n>

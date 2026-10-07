@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard kunde inte ordna materialkapaciteten för den här sessionen: %s. Laddningen stoppas så att inga varor läses fel. Kontrollera modurvalet och loggen."/>
         <text name="sg6_profile_mismatch" text="StockGuard: material- och kartkapacitetsprofilen skiljer sig från serverns. Skaffa motsvarande uppsättning och läs värdens logg."/>
         <text name="sg_site_purpose_yard" text="StockGuard-gaard"/>
+        <text name="sg3_reason_no_material" text="Inget material"/>
+        <text name="sg3_reason_unsupported_material" text="Detta material bedöms inte"/>
+        <text name="sg3_reason_unsupported_profile" text="Bedömningsprofilen stöds inte"/>
+        <text name="sg3_reason_origin_unproven" text="Ursprung inte registrerat"/>
+        <text name="sg3_reason_soil_unavailable" text="Markdata saknades vid skörd"/>
+        <text name="sg3_reason_source_partial" text="Skördekällan bara delvis registrerad"/>
+        <text name="sg3_reason_maturity_unavailable" text="Grödans mognad okänd vid skörd"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Ursprunget är inte godkänt som livsmedel"/>
+        <text name="sg3_reason_quality_partial" text="Kvaliteten bara delvis känd"/>
+        <text name="sg3_reason_quality_historical" text="Endast tidigare kvalitetsregistrering"/>
+        <text name="sg3_reason_condition_unavailable" text="Lagringsskick inte tillgängligt"/>
+        <text name="sg3_reason_condition_pending" text="Lagringsskick väntar"/>
+        <text name="sg3_reason_condition_condemned" text="Kasserat på grund av lagringsskick"/>
+        <text name="sg3_reason_condition_gap" text="Lagringsskicket har luckor"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Skick från en annan mod täcks inte"/>
+        <text name="sg3_reason_process_pending" text="Bearbetning väntar"/>
+        <text name="sg3_reason_recipe_not_ready" text="Receptet är inte klart"/>
+        <text name="sg3_reason_grouped_portions" text="Bedömt i portioner"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Portionerna har olika betyg"/>
+        <text name="sg3_reason_source_changed" text="Lagret har ändrats sedan läsning"/>
+        <text name="sg3_reason_disclosure_denied" text="Inte tillgängligt för dig"/>
+        <text name="sg3_reason_profile_mismatch" text="Kvalitetsprofilerna stämmer inte"/>
+        <text name="sg3_reason_composition_unknown" text="Sammansättning okänd"/>
     </texts>
 </l10n>

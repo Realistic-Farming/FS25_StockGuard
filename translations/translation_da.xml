@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard kunne ikke klargøre materialekapaciteten for denne session: %s. Indlæsningen stopper, så ingen varer læses forkert. Tjek modvalget og loggen."/>
         <text name="sg6_profile_mismatch" text="StockGuard: materiale- og kortkapacitetsprofilen afviger fra serverens. Skaf den tilsvarende opsætning og se i værtens log."/>
         <text name="sg_site_purpose_yard" text="StockGuard-gaard"/>
+        <text name="sg3_reason_no_material" text="Intet materiale"/>
+        <text name="sg3_reason_unsupported_material" text="Dette materiale bedømmes ikke"/>
+        <text name="sg3_reason_unsupported_profile" text="Bedømmelsesprofil understøttes ikke"/>
+        <text name="sg3_reason_origin_unproven" text="Oprindelse ikke registreret"/>
+        <text name="sg3_reason_soil_unavailable" text="Jorddata var ikke tilgængelige ved høst"/>
+        <text name="sg3_reason_source_partial" text="Høstkilde kun delvist registreret"/>
+        <text name="sg3_reason_maturity_unavailable" text="Afgrødens modenhed ukendt ved høst"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Oprindelse ikke egnet til menneskeføde"/>
+        <text name="sg3_reason_quality_partial" text="Kvalitet kun delvist kendt"/>
+        <text name="sg3_reason_quality_historical" text="Kun tidligere kvalitetsregistrering"/>
+        <text name="sg3_reason_condition_unavailable" text="Lagertilstand ikke tilgængelig"/>
+        <text name="sg3_reason_condition_pending" text="Lagertilstand afventer"/>
+        <text name="sg3_reason_condition_condemned" text="Kasseret på grund af lagertilstand"/>
+        <text name="sg3_reason_condition_gap" text="Lagertilstand har huller"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Tilstand fra et andet mod er ikke dækket"/>
+        <text name="sg3_reason_process_pending" text="Forarbejdning afventer"/>
+        <text name="sg3_reason_recipe_not_ready" text="Opskrift ikke klar"/>
+        <text name="sg3_reason_grouped_portions" text="Bedømt i portioner"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Portioner har forskellige karakterer"/>
+        <text name="sg3_reason_source_changed" text="Lager ændret siden aflæsning"/>
+        <text name="sg3_reason_disclosure_denied" text="Ikke tilgængelig for dig"/>
+        <text name="sg3_reason_profile_mismatch" text="Kvalitetsprofiler stemmer ikke overens"/>
+        <text name="sg3_reason_composition_unknown" text="Sammensætning ukendt"/>
     </texts>
 </l10n>

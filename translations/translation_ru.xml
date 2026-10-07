@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard не смог подготовить ёмкость материалов для этой сессии: %s. Загрузка остановлена, чтобы товары не читались неверно. Проверьте набор модов и журнал."/>
         <text name="sg6_profile_mismatch" text="StockGuard: профиль ёмкости материалов и карты отличается от серверного. Получите соответствующую сборку и посмотрите журнал хоста."/>
         <text name="sg_site_purpose_yard" text="Dvor StockGuard"/>
+        <text name="sg3_reason_no_material" text="Нет материала"/>
+        <text name="sg3_reason_unsupported_material" text="Этот материал не оценивается"/>
+        <text name="sg3_reason_unsupported_profile" text="Профиль оценки не поддерживается"/>
+        <text name="sg3_reason_origin_unproven" text="Происхождение не записано"/>
+        <text name="sg3_reason_soil_unavailable" text="Данные о почве при уборке были недоступны"/>
+        <text name="sg3_reason_source_partial" text="Источник урожая записан лишь частично"/>
+        <text name="sg3_reason_maturity_unavailable" text="Спелость культуры при уборке неизвестна"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Происхождение не допускает употребления в пищу"/>
+        <text name="sg3_reason_quality_partial" text="Качество известно лишь частично"/>
+        <text name="sg3_reason_quality_historical" text="Только прежняя запись качества"/>
+        <text name="sg3_reason_condition_unavailable" text="Состояние хранения недоступно"/>
+        <text name="sg3_reason_condition_pending" text="Состояние хранения ожидается"/>
+        <text name="sg3_reason_condition_condemned" text="Забраковано по состоянию хранения"/>
+        <text name="sg3_reason_condition_gap" text="В состоянии хранения есть пробелы"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Состояние из другого мода не охвачено"/>
+        <text name="sg3_reason_process_pending" text="Переработка ожидается"/>
+        <text name="sg3_reason_recipe_not_ready" text="Рецепт не готов"/>
+        <text name="sg3_reason_grouped_portions" text="Оценено по частям"/>
+        <text name="sg3_reason_mixed_portion_grades" text="У частей разные оценки"/>
+        <text name="sg3_reason_source_changed" text="Запас изменился после чтения"/>
+        <text name="sg3_reason_disclosure_denied" text="Вам недоступно"/>
+        <text name="sg3_reason_profile_mismatch" text="Профили качества не совпадают"/>
+        <text name="sg3_reason_composition_unknown" text="Состав неизвестен"/>
     </texts>
 </l10n>

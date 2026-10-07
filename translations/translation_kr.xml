@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard가 이 세션의 자재 용량을 준비하지 못했습니다: %s. 물품이 잘못 읽히지 않도록 로딩을 중단합니다. 모드 선택과 로그를 확인하세요."/>
         <text name="sg6_profile_mismatch" text="StockGuard: 자재 및 지도 용량 프로필이 서버와 다릅니다. 일치하는 구성을 준비하고 호스트 로그를 확인하세요."/>
         <text name="sg_site_purpose_yard" text="StockGuard yard"/>
+        <text name="sg3_reason_no_material" text="자재 없음"/>
+        <text name="sg3_reason_unsupported_material" text="이 자재는 등급이 매겨지지 않습니다"/>
+        <text name="sg3_reason_unsupported_profile" text="등급 프로필을 지원하지 않습니다"/>
+        <text name="sg3_reason_origin_unproven" text="출처가 기록되지 않았습니다"/>
+        <text name="sg3_reason_soil_unavailable" text="수확 시 토양 데이터를 사용할 수 없었습니다"/>
+        <text name="sg3_reason_source_partial" text="수확 출처가 일부만 기록되었습니다"/>
+        <text name="sg3_reason_maturity_unavailable" text="수확 시 작물 성숙도를 알 수 없습니다"/>
+        <text name="sg3_reason_food_origin_ineligible" text="출처가 식용에 적합하지 않습니다"/>
+        <text name="sg3_reason_quality_partial" text="품질을 일부만 알 수 있습니다"/>
+        <text name="sg3_reason_quality_historical" text="과거 품질 기록만 있음"/>
+        <text name="sg3_reason_condition_unavailable" text="보관 상태를 사용할 수 없습니다"/>
+        <text name="sg3_reason_condition_pending" text="보관 상태 대기 중"/>
+        <text name="sg3_reason_condition_condemned" text="보관 상태로 인해 폐기 대상"/>
+        <text name="sg3_reason_condition_gap" text="보관 상태에 공백이 있습니다"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="다른 모드의 상태는 포함되지 않습니다"/>
+        <text name="sg3_reason_process_pending" text="가공 대기 중"/>
+        <text name="sg3_reason_recipe_not_ready" text="레시피가 준비되지 않았습니다"/>
+        <text name="sg3_reason_grouped_portions" text="부분별로 등급 매김"/>
+        <text name="sg3_reason_mixed_portion_grades" text="부분별 등급이 다릅니다"/>
+        <text name="sg3_reason_source_changed" text="읽은 후 재고가 변경되었습니다"/>
+        <text name="sg3_reason_disclosure_denied" text="사용할 수 없습니다"/>
+        <text name="sg3_reason_profile_mismatch" text="품질 프로필이 일치하지 않습니다"/>
+        <text name="sg3_reason_composition_unknown" text="구성을 알 수 없습니다"/>
     </texts>
 </l10n>

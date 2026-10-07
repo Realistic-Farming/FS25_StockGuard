@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard could not arrange material capacity for this session: %s. Loading stops so no goods are misread. Check the mods set and the log."/>
         <text name="sg6_profile_mismatch" text="StockGuard: the material and map capacity profile differs from the server. Obtain the matching setup and consult the host log."/>
         <text name="sg_site_purpose_yard" text="StockGuard yard"/>
+        <text name="sg3_reason_no_material" text="No material"/>
+        <text name="sg3_reason_unsupported_material" text="This material is not graded"/>
+        <text name="sg3_reason_unsupported_profile" text="Grading profile not supported"/>
+        <text name="sg3_reason_origin_unproven" text="Origin not recorded"/>
+        <text name="sg3_reason_soil_unavailable" text="Soil data was unavailable at harvest"/>
+        <text name="sg3_reason_source_partial" text="Harvest source only partly recorded"/>
+        <text name="sg3_reason_maturity_unavailable" text="Crop maturity unknown at harvest"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Origin not eligible for human food"/>
+        <text name="sg3_reason_quality_partial" text="Quality only partly known"/>
+        <text name="sg3_reason_quality_historical" text="Past quality record only"/>
+        <text name="sg3_reason_condition_unavailable" text="Storage condition unavailable"/>
+        <text name="sg3_reason_condition_pending" text="Storage condition still pending"/>
+        <text name="sg3_reason_condition_condemned" text="Condemned by storage condition"/>
+        <text name="sg3_reason_condition_gap" text="Storage condition has gaps"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Condition from another mod not covered"/>
+        <text name="sg3_reason_process_pending" text="Processing still pending"/>
+        <text name="sg3_reason_recipe_not_ready" text="Recipe not ready"/>
+        <text name="sg3_reason_grouped_portions" text="Graded in portions"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Portions have different grades"/>
+        <text name="sg3_reason_source_changed" text="Stock changed since it was read"/>
+        <text name="sg3_reason_disclosure_denied" text="Not available to you"/>
+        <text name="sg3_reason_profile_mismatch" text="Quality profiles do not match"/>
+        <text name="sg3_reason_composition_unknown" text="Composition unknown"/>
     </texts>
 </l10n>

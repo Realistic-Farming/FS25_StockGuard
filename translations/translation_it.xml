@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard non ha potuto predisporre la capacità dei materiali per questa sessione: %s. Il caricamento si interrompe perché nessuna merce venga letta male. Controlla la selezione delle mod e il log."/>
         <text name="sg6_profile_mismatch" text="StockGuard: il profilo di capacità di materiali e mappa è diverso da quello del server. Procurati la configurazione corrispondente e consulta il log dell'host."/>
         <text name="sg_site_purpose_yard" text="Cortile StockGuard"/>
+        <text name="sg3_reason_no_material" text="Nessun materiale"/>
+        <text name="sg3_reason_unsupported_material" text="Questo materiale non viene valutato"/>
+        <text name="sg3_reason_unsupported_profile" text="Profilo di valutazione non supportato"/>
+        <text name="sg3_reason_origin_unproven" text="Origine non registrata"/>
+        <text name="sg3_reason_soil_unavailable" text="Dati del suolo non disponibili al raccolto"/>
+        <text name="sg3_reason_source_partial" text="Fonte del raccolto registrata solo in parte"/>
+        <text name="sg3_reason_maturity_unavailable" text="Maturazione della coltura sconosciuta al raccolto"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Origine non idonea al consumo umano"/>
+        <text name="sg3_reason_quality_partial" text="Qualità nota solo in parte"/>
+        <text name="sg3_reason_quality_historical" text="Solo registrazione di qualità passata"/>
+        <text name="sg3_reason_condition_unavailable" text="Stato di conservazione non disponibile"/>
+        <text name="sg3_reason_condition_pending" text="Stato di conservazione in attesa"/>
+        <text name="sg3_reason_condition_condemned" text="Scartato per lo stato di conservazione"/>
+        <text name="sg3_reason_condition_gap" text="Stato di conservazione incompleto"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Stato di un'altra mod non coperto"/>
+        <text name="sg3_reason_process_pending" text="Lavorazione in attesa"/>
+        <text name="sg3_reason_recipe_not_ready" text="Ricetta non pronta"/>
+        <text name="sg3_reason_grouped_portions" text="Valutato per porzioni"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Le porzioni hanno voti diversi"/>
+        <text name="sg3_reason_source_changed" text="Scorta modificata dopo la lettura"/>
+        <text name="sg3_reason_disclosure_denied" text="Non disponibile per te"/>
+        <text name="sg3_reason_profile_mismatch" text="I profili di qualità non corrispondono"/>
+        <text name="sg3_reason_composition_unknown" text="Composizione sconosciuta"/>
     </texts>
 </l10n>

@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard はこのセッションの資材容量を用意できませんでした: %s。品物が誤って読まれないよう読み込みを中止します。MOD の選択とログを確認してください。"/>
         <text name="sg6_profile_mismatch" text="StockGuard: 資材とマップの容量プロファイルがサーバーと異なります。一致する構成を用意し、ホストのログを確認してください。"/>
         <text name="sg_site_purpose_yard" text="StockGuard yard"/>
+        <text name="sg3_reason_no_material" text="資材なし"/>
+        <text name="sg3_reason_unsupported_material" text="この資材は格付けされません"/>
+        <text name="sg3_reason_unsupported_profile" text="格付けプロファイルは非対応です"/>
+        <text name="sg3_reason_origin_unproven" text="由来が記録されていません"/>
+        <text name="sg3_reason_soil_unavailable" text="収穫時に土壌データがありませんでした"/>
+        <text name="sg3_reason_source_partial" text="収穫元が一部しか記録されていません"/>
+        <text name="sg3_reason_maturity_unavailable" text="収穫時の作物の熟度が不明です"/>
+        <text name="sg3_reason_food_origin_ineligible" text="由来が食用に適しません"/>
+        <text name="sg3_reason_quality_partial" text="品質は一部しか分かりません"/>
+        <text name="sg3_reason_quality_historical" text="過去の品質記録のみ"/>
+        <text name="sg3_reason_condition_unavailable" text="保管状態を取得できません"/>
+        <text name="sg3_reason_condition_pending" text="保管状態は保留中です"/>
+        <text name="sg3_reason_condition_condemned" text="保管状態により廃棄対象です"/>
+        <text name="sg3_reason_condition_gap" text="保管状態に欠落があります"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="他のMODの状態は対象外です"/>
+        <text name="sg3_reason_process_pending" text="加工は保留中です"/>
+        <text name="sg3_reason_recipe_not_ready" text="レシピの準備ができていません"/>
+        <text name="sg3_reason_grouped_portions" text="部分ごとに格付け"/>
+        <text name="sg3_reason_mixed_portion_grades" text="部分ごとに等級が異なります"/>
+        <text name="sg3_reason_source_changed" text="読み取り後に在庫が変わりました"/>
+        <text name="sg3_reason_disclosure_denied" text="利用できません"/>
+        <text name="sg3_reason_profile_mismatch" text="品質プロファイルが一致しません"/>
+        <text name="sg3_reason_composition_unknown" text="組成が不明です"/>
     </texts>
 </l10n>

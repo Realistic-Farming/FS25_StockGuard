@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard không thể sắp xếp dung lượng vật liệu cho phiên này: %s. Quá trình tải dừng lại để không hàng hóa nào bị đọc sai. Hãy kiểm tra bộ mod và nhật ký."/>
         <text name="sg6_profile_mismatch" text="StockGuard: hồ sơ dung lượng vật liệu và bản đồ khác với máy chủ. Hãy lấy cấu hình phù hợp và xem nhật ký của máy chủ."/>
         <text name="sg_site_purpose_yard" text="San StockGuard"/>
+        <text name="sg3_reason_no_material" text="Không có vật liệu"/>
+        <text name="sg3_reason_unsupported_material" text="Vật liệu này không được xếp hạng"/>
+        <text name="sg3_reason_unsupported_profile" text="Không hỗ trợ hồ sơ xếp hạng"/>
+        <text name="sg3_reason_origin_unproven" text="Chưa ghi nhận nguồn gốc"/>
+        <text name="sg3_reason_soil_unavailable" text="Không có dữ liệu đất khi thu hoạch"/>
+        <text name="sg3_reason_source_partial" text="Nguồn thu hoạch chỉ được ghi nhận một phần"/>
+        <text name="sg3_reason_maturity_unavailable" text="Không rõ độ chín của cây trồng khi thu hoạch"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Nguồn gốc không đủ điều kiện làm thực phẩm"/>
+        <text name="sg3_reason_quality_partial" text="Chất lượng chỉ biết một phần"/>
+        <text name="sg3_reason_quality_historical" text="Chỉ có hồ sơ chất lượng trước đây"/>
+        <text name="sg3_reason_condition_unavailable" text="Không có tình trạng bảo quản"/>
+        <text name="sg3_reason_condition_pending" text="Tình trạng bảo quản đang chờ"/>
+        <text name="sg3_reason_condition_condemned" text="Bị loại do tình trạng bảo quản"/>
+        <text name="sg3_reason_condition_gap" text="Tình trạng bảo quản có khoảng trống"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Tình trạng từ mod khác không được bao gồm"/>
+        <text name="sg3_reason_process_pending" text="Chế biến đang chờ"/>
+        <text name="sg3_reason_recipe_not_ready" text="Công thức chưa sẵn sàng"/>
+        <text name="sg3_reason_grouped_portions" text="Xếp hạng theo phần"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Các phần có hạng khác nhau"/>
+        <text name="sg3_reason_source_changed" text="Kho đã thay đổi kể từ khi đọc"/>
+        <text name="sg3_reason_disclosure_denied" text="Không khả dụng với bạn"/>
+        <text name="sg3_reason_profile_mismatch" text="Hồ sơ chất lượng không khớp"/>
+        <text name="sg3_reason_composition_unknown" text="Không rõ thành phần"/>
     </texts>
 </l10n>
