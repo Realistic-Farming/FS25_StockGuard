@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard no pudo preparar la capacidad de materiales para esta sesión: %s. La carga se detiene para que ninguna mercancía se lea mal. Revisa la selección de mods y el registro."/>
         <text name="sg6_profile_mismatch" text="StockGuard: el perfil de capacidad de materiales y mapa difiere del servidor. Consigue la configuración correspondiente y consulta el registro del anfitrión."/>
         <text name="sg_site_purpose_yard" text="Patio StockGuard"/>
+        <text name="sg3_reason_no_material" text="Sin material"/>
+        <text name="sg3_reason_unsupported_material" text="Este material no se califica"/>
+        <text name="sg3_reason_unsupported_profile" text="Perfil de calificación no admitido"/>
+        <text name="sg3_reason_origin_unproven" text="Origen no registrado"/>
+        <text name="sg3_reason_soil_unavailable" text="Datos del suelo no disponibles en la cosecha"/>
+        <text name="sg3_reason_source_partial" text="Origen de la cosecha registrado solo en parte"/>
+        <text name="sg3_reason_maturity_unavailable" text="Madurez del cultivo desconocida en la cosecha"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Origen no apto para consumo humano"/>
+        <text name="sg3_reason_quality_partial" text="Calidad conocida solo en parte"/>
+        <text name="sg3_reason_quality_historical" text="Solo registro de calidad anterior"/>
+        <text name="sg3_reason_condition_unavailable" text="Estado de almacenamiento no disponible"/>
+        <text name="sg3_reason_condition_pending" text="Estado de almacenamiento pendiente"/>
+        <text name="sg3_reason_condition_condemned" text="Desechado por el estado de almacenamiento"/>
+        <text name="sg3_reason_condition_gap" text="El estado de almacenamiento tiene huecos"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Estado de otro mod no cubierto"/>
+        <text name="sg3_reason_process_pending" text="Procesamiento pendiente"/>
+        <text name="sg3_reason_recipe_not_ready" text="Receta no lista"/>
+        <text name="sg3_reason_grouped_portions" text="Calificado por porciones"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Las porciones tienen calificaciones distintas"/>
+        <text name="sg3_reason_source_changed" text="Existencias cambiadas desde su lectura"/>
+        <text name="sg3_reason_disclosure_denied" text="No disponible para ti"/>
+        <text name="sg3_reason_profile_mismatch" text="Los perfiles de calidad no coinciden"/>
+        <text name="sg3_reason_composition_unknown" text="Composición desconocida"/>
     </texts>
 </l10n>

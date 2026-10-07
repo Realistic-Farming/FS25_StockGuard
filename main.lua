@@ -75,6 +75,13 @@ source(modDirectory .. "src/native/SGGroundArea.lua")
 -- SG2-5bc-save: the Tedder's and the Mower's remainders survive a save with their StockGuard entries.
 source(modDirectory .. "src/native/SGFieldToolBufferSave.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
+-- SG-3 Part 2.1: the food and feed grading member (profiles, the pure evaluator, the stored
+-- qualityBasisV1 producer, the derived sg3.assessments, and the member that registers them).
+source(modDirectory .. "src/sg3/SG3Profiles.lua")
+source(modDirectory .. "src/sg3/SG3Evaluator.lua")
+source(modDirectory .. "src/sg3/SG3Quality.lua")
+source(modDirectory .. "src/sg3/SG3Assessments.lua")
+source(modDirectory .. "src/sg3/SG3.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
 -- and the sale gate. These four shipped in the zip but were never sourced, so the
@@ -136,6 +143,11 @@ local function installNativeKernel(mission)
     })
     local ok, why = host:install()
     print("[StockGuard] native kernel " .. (ok and "installed: native carrier adapter registered (storage and fill-unit kinds)" or ("not installed: " .. tostring(why))))
+    -- SG-3 Part 2.1: the grading member registers its properties on the same handle, server only.
+    if SG3 ~= nil then
+        local member, whySG3 = SG3.install(mission.stockGuard)
+        if member == nil then print("[StockGuard] SG-3: not installed: " .. tostring(whySG3)) end
+    end
     -- SG2-4a: the ground section and SG2's own save participant, then the boundary goes live.
     local sg = stockGuardOf(mission)
     -- SG2-5a: a Windrower work area's per-call retirements keep a budget of their own, so they
@@ -172,6 +184,7 @@ do
     if FSBaseMission ~= nil and FSBaseMission.delete ~= nil then
         SGClassHook.prepend(FSBaseMission, "delete", StockGuardHooks.ID, function(mission)
             if SGNativeHost ~= nil and SGNativeHost.current ~= nil then pcall(SGNativeHost.current.teardown, SGNativeHost.current) end
+            if SG3 ~= nil then pcall(SG3.teardown, mission.stockGuard) end
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.delete, sg) end
         end, StockGuard)

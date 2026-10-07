@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard nemohl zajistit kapacitu materiálů pro toto sezení: %s. Načítání se zastaví, aby se žádné zboží nečetlo chybně. Zkontrolujte výběr modů a log."/>
         <text name="sg6_profile_mismatch" text="StockGuard: profil kapacity materiálů a mapy se liší od serveru. Opatřete si odpovídající sestavu a nahlédněte do logu hostitele."/>
         <text name="sg_site_purpose_yard" text="Dvur StockGuard"/>
+        <text name="sg3_reason_no_material" text="Žádný materiál"/>
+        <text name="sg3_reason_unsupported_material" text="Tento materiál se nehodnotí"/>
+        <text name="sg3_reason_unsupported_profile" text="Profil hodnocení není podporován"/>
+        <text name="sg3_reason_origin_unproven" text="Původ nezaznamenán"/>
+        <text name="sg3_reason_soil_unavailable" text="Údaje o půdě nebyly při sklizni dostupné"/>
+        <text name="sg3_reason_source_partial" text="Zdroj sklizně zaznamenán jen zčásti"/>
+        <text name="sg3_reason_maturity_unavailable" text="Zralost plodiny při sklizni neznámá"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Původ nevhodný pro lidskou spotřebu"/>
+        <text name="sg3_reason_quality_partial" text="Kvalita známá jen zčásti"/>
+        <text name="sg3_reason_quality_historical" text="Pouze dřívější záznam kvality"/>
+        <text name="sg3_reason_condition_unavailable" text="Stav skladování nedostupný"/>
+        <text name="sg3_reason_condition_pending" text="Stav skladování čeká"/>
+        <text name="sg3_reason_condition_condemned" text="Vyřazeno kvůli stavu skladování"/>
+        <text name="sg3_reason_condition_gap" text="Stav skladování má mezery"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Stav z jiného modu není pokryt"/>
+        <text name="sg3_reason_process_pending" text="Zpracování čeká"/>
+        <text name="sg3_reason_recipe_not_ready" text="Receptura není připravena"/>
+        <text name="sg3_reason_grouped_portions" text="Hodnoceno po částech"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Části mají různé známky"/>
+        <text name="sg3_reason_source_changed" text="Zásoba se od čtení změnila"/>
+        <text name="sg3_reason_disclosure_denied" text="Pro vás nedostupné"/>
+        <text name="sg3_reason_profile_mismatch" text="Profily kvality se neshodují"/>
+        <text name="sg3_reason_composition_unknown" text="Složení neznámé"/>
     </texts>
 </l10n>

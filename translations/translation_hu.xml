@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="A StockGuard nem tudta beállítani az anyagkapacitást ehhez a munkamenethez: %s. A betöltés leáll, hogy egyetlen árut se olvasson félre. Ellenőrizd a modválasztást és a naplót."/>
         <text name="sg6_profile_mismatch" text="StockGuard: az anyag- és térképkapacitási profil eltér a szerverétől. Szerezd be a megfelelő összeállítást, és nézd meg a gazda naplóját."/>
         <text name="sg_site_purpose_yard" text="StockGuard-udvar"/>
+        <text name="sg3_reason_no_material" text="Nincs anyag"/>
+        <text name="sg3_reason_unsupported_material" text="Ez az anyag nincs minősítve"/>
+        <text name="sg3_reason_unsupported_profile" text="A minősítési profil nem támogatott"/>
+        <text name="sg3_reason_origin_unproven" text="Az eredet nincs rögzítve"/>
+        <text name="sg3_reason_soil_unavailable" text="A talajadatok a betakarításkor nem voltak elérhetők"/>
+        <text name="sg3_reason_source_partial" text="A betakarítás forrása csak részben rögzített"/>
+        <text name="sg3_reason_maturity_unavailable" text="A növény érettsége a betakarításkor ismeretlen"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Az eredet nem alkalmas emberi fogyasztásra"/>
+        <text name="sg3_reason_quality_partial" text="A minőség csak részben ismert"/>
+        <text name="sg3_reason_quality_historical" text="Csak korábbi minőségi feljegyzés"/>
+        <text name="sg3_reason_condition_unavailable" text="A tárolási állapot nem elérhető"/>
+        <text name="sg3_reason_condition_pending" text="A tárolási állapot függőben"/>
+        <text name="sg3_reason_condition_condemned" text="A tárolási állapot miatt selejtezve"/>
+        <text name="sg3_reason_condition_gap" text="A tárolási állapot hiányos"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Másik mod állapota nincs lefedve"/>
+        <text name="sg3_reason_process_pending" text="A feldolgozás függőben"/>
+        <text name="sg3_reason_recipe_not_ready" text="A recept nem kész"/>
+        <text name="sg3_reason_grouped_portions" text="Részenként minősítve"/>
+        <text name="sg3_reason_mixed_portion_grades" text="A részek minősítése eltér"/>
+        <text name="sg3_reason_source_changed" text="A készlet az olvasás óta változott"/>
+        <text name="sg3_reason_disclosure_denied" text="Számodra nem elérhető"/>
+        <text name="sg3_reason_profile_mismatch" text="A minőségi profilok nem egyeznek"/>
+        <text name="sg3_reason_composition_unknown" text="Az összetétel ismeretlen"/>
     </texts>
 </l10n>

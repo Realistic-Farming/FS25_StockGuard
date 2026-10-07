@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard 無法為本次工作階段安排物料容量：%s。為避免貨物被誤讀，載入已停止。請檢查模組選擇和記錄檔。"/>
         <text name="sg6_profile_mismatch" text="StockGuard：物料和地圖容量設定檔與伺服器不同。請取得相符的設定並查看主機記錄檔。"/>
         <text name="sg_site_purpose_yard" text="StockGuard yard"/>
+        <text name="sg3_reason_no_material" text="無物料"/>
+        <text name="sg3_reason_unsupported_material" text="此物料不評級"/>
+        <text name="sg3_reason_unsupported_profile" text="不支援該評級設定"/>
+        <text name="sg3_reason_origin_unproven" text="來源未記錄"/>
+        <text name="sg3_reason_soil_unavailable" text="收穫時土壤資料無法使用"/>
+        <text name="sg3_reason_source_partial" text="收穫來源僅部分記錄"/>
+        <text name="sg3_reason_maturity_unavailable" text="收穫時作物成熟度未知"/>
+        <text name="sg3_reason_food_origin_ineligible" text="來源不適合食用"/>
+        <text name="sg3_reason_quality_partial" text="品質僅部分已知"/>
+        <text name="sg3_reason_quality_historical" text="僅有過去的品質記錄"/>
+        <text name="sg3_reason_condition_unavailable" text="儲存狀態無法使用"/>
+        <text name="sg3_reason_condition_pending" text="儲存狀態待定"/>
+        <text name="sg3_reason_condition_condemned" text="因儲存狀態而報廢"/>
+        <text name="sg3_reason_condition_gap" text="儲存狀態有缺口"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="未涵蓋其他模組的狀態"/>
+        <text name="sg3_reason_process_pending" text="加工待定"/>
+        <text name="sg3_reason_recipe_not_ready" text="配方未就緒"/>
+        <text name="sg3_reason_grouped_portions" text="按部分評級"/>
+        <text name="sg3_reason_mixed_portion_grades" text="各部分等級不同"/>
+        <text name="sg3_reason_source_changed" text="讀取後庫存已變更"/>
+        <text name="sg3_reason_disclosure_denied" text="對你無法使用"/>
+        <text name="sg3_reason_profile_mismatch" text="品質設定不相符"/>
+        <text name="sg3_reason_composition_unknown" text="成分未知"/>
     </texts>
 </l10n>

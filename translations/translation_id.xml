@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard tidak dapat menyiapkan kapasitas material untuk sesi ini: %s. Pemuatan dihentikan agar tidak ada barang yang salah dibaca. Periksa pilihan mod dan log."/>
         <text name="sg6_profile_mismatch" text="StockGuard: profil kapasitas material dan peta berbeda dari server. Dapatkan susunan yang cocok dan periksa log host."/>
         <text name="sg_site_purpose_yard" text="Halaman StockGuard"/>
+        <text name="sg3_reason_no_material" text="Tidak ada material"/>
+        <text name="sg3_reason_unsupported_material" text="Material ini tidak dinilai"/>
+        <text name="sg3_reason_unsupported_profile" text="Profil penilaian tidak didukung"/>
+        <text name="sg3_reason_origin_unproven" text="Asal tidak tercatat"/>
+        <text name="sg3_reason_soil_unavailable" text="Data tanah tidak tersedia saat panen"/>
+        <text name="sg3_reason_source_partial" text="Sumber panen hanya tercatat sebagian"/>
+        <text name="sg3_reason_maturity_unavailable" text="Kematangan tanaman saat panen tidak diketahui"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Asal tidak layak untuk pangan manusia"/>
+        <text name="sg3_reason_quality_partial" text="Kualitas hanya diketahui sebagian"/>
+        <text name="sg3_reason_quality_historical" text="Hanya catatan kualitas lama"/>
+        <text name="sg3_reason_condition_unavailable" text="Kondisi penyimpanan tidak tersedia"/>
+        <text name="sg3_reason_condition_pending" text="Kondisi penyimpanan masih tertunda"/>
+        <text name="sg3_reason_condition_condemned" text="Ditolak karena kondisi penyimpanan"/>
+        <text name="sg3_reason_condition_gap" text="Kondisi penyimpanan memiliki celah"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Kondisi dari mod lain tidak tercakup"/>
+        <text name="sg3_reason_process_pending" text="Pemrosesan masih tertunda"/>
+        <text name="sg3_reason_recipe_not_ready" text="Resep belum siap"/>
+        <text name="sg3_reason_grouped_portions" text="Dinilai per porsi"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Porsi memiliki nilai berbeda"/>
+        <text name="sg3_reason_source_changed" text="Stok berubah sejak dibaca"/>
+        <text name="sg3_reason_disclosure_denied" text="Tidak tersedia untuk Anda"/>
+        <text name="sg3_reason_profile_mismatch" text="Profil kualitas tidak cocok"/>
+        <text name="sg3_reason_composition_unknown" text="Komposisi tidak diketahui"/>
     </texts>
 </l10n>

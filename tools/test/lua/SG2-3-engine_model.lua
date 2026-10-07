@@ -71,14 +71,20 @@ local DESCS = {
     -- haulm crop (no chopper type, chopperUseHaulm), so Combine.lua:983-991 runs both ways.
     [FruitType.WHEAT] = setmetatable({ index = FruitType.WHEAT, name = "WHEAT", fillTypeIndex = ENGINE_FT.WHEAT, windrowFillTypeIndex = ENGINE_FT.STRAW,
         literPerSqm = 1, windrowLiterPerSqm = 1, hasWindrow = true, chopperType = FieldChopperType.CHOPPER_STRAW, chopperUseHaulm = false,
-        minHarvestingGrowthState = 3, maxHarvestingGrowthState = 4, minForageGrowthState = 3, cutState = 6,
+        minHarvestingGrowthState = 3, maxHarvestingGrowthState = 4, minForageGrowthState = 3, maxForageGrowthState = 4, cutState = 6,
         harvestTransitions = { [3] = 6, [4] = 6 }, yieldScales = { [3] = 0.5, [4] = 1 }, terrainDataPlaneId = 1,
-        densityTypeIndex = 1, startStateChannel = 2, numStateChannels = 3 }, FruitDesc),
+        densityTypeIndex = 1, startStateChannel = 2, numStateChannels = 3,
+        -- SG-3 U4: the state tables FruitTypeDesc.lua:125-143 and :213-241 load and :489-497
+        -- derives (harvest-ready = minHarvesting..maxHarvesting, each to the cut state).
+        growthStateToName = { "sown", "germinated", "ripening", "harvestReady", "withered", "cut" },
+        harvestReadyTransitions = { [3] = 6, [4] = 6 }, cutStates = { [6] = true }, witheredState = 5 }, FruitDesc),
     [FruitType.BARLEY] = setmetatable({ index = FruitType.BARLEY, name = "BARLEY", fillTypeIndex = ENGINE_FT.BARLEY, windrowFillTypeIndex = ENGINE_FT.STRAW,
         literPerSqm = 1, windrowLiterPerSqm = 1, hasWindrow = true, chopperType = nil, chopperUseHaulm = true,
-        minHarvestingGrowthState = 3, maxHarvestingGrowthState = 4, minForageGrowthState = 3, cutState = 6,
+        minHarvestingGrowthState = 3, maxHarvestingGrowthState = 4, minForageGrowthState = 3, maxForageGrowthState = 4, cutState = 6,
         harvestTransitions = { [3] = 6, [4] = 6 }, yieldScales = { [3] = 0.5, [4] = 1 }, terrainDataPlaneId = 1,
-        densityTypeIndex = 2, startStateChannel = 2, numStateChannels = 3 }, FruitDesc),
+        densityTypeIndex = 2, startStateChannel = 2, numStateChannels = 3,
+        growthStateToName = { "sown", "germinated", "ripening", "harvestReady", "withered", "cut" },
+        harvestReadyTransitions = { [3] = 6, [4] = 6 }, cutStates = { [6] = true }, witheredState = 5 }, FruitDesc),
 }
 g_fruitTypeManager = {
     -- FruitTypeManager.lua:472 and :491.
@@ -90,6 +96,15 @@ g_fruitTypeManager = {
     getFruitTypeByFillTypeIndex = function(_, ft) for _, d in pairs(DESCS) do if d.fillTypeIndex == ft then return d end end return nil end,
     getFruitTypeIndexByFillTypeIndex = function(_, ft) for i, d in pairs(DESCS) do if d.fillTypeIndex == ft then return i end end return nil end,
     getFillTypeIndexByFruitTypeIndex = function(_, i) return DESCS[i] and DESCS[i].fillTypeIndex or nil end,
+    -- FruitTypeManager.lua:248-251 (the fill type's name; MODELED through the fill type manager).
+    getFillTypeNameByFruitTypeIndex = function(_, i) return DESCS[i] and g_fillTypeManager:getFillTypeNameByIndex(DESCS[i].fillTypeIndex) or nil end,
+    -- FruitTypeManager.lua:228 (the list of descriptors, in index order).
+    getFruitTypes = function()
+        local list = {}
+        for _, d in pairs(DESCS) do list[#list + 1] = d end
+        table.sort(list, function(a, b) return a.index < b.index end)
+        return list
+    end,
     getWindrowFillTypeIndexByFruitTypeIndex = function(_, i) return DESCS[i] and DESCS[i].windrowFillTypeIndex or nil end,
     -- FruitTypeManager MODELED: one litre per harvested (scaled) pixel.
     getFruitTypeAreaLiters = function(_, i, area, _useWindrowed) return area * (DESCS[i] and DESCS[i].literPerSqm or 1) end,

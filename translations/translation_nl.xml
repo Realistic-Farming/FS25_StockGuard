@@ -4,5 +4,28 @@
         <text name="sg6_capacity_refused" text="StockGuard kon de materiaalcapaciteit voor deze sessie niet inrichten: %s. Het laden stopt zodat geen goederen verkeerd gelezen worden. Controleer de modselectie en het logboek."/>
         <text name="sg6_profile_mismatch" text="StockGuard: het materiaal- en kaartcapaciteitsprofiel verschilt van de server. Haal de passende samenstelling op en raadpleeg het logboek van de host."/>
         <text name="sg_site_purpose_yard" text="StockGuard-erf"/>
+        <text name="sg3_reason_no_material" text="Geen materiaal"/>
+        <text name="sg3_reason_unsupported_material" text="Dit materiaal wordt niet beoordeeld"/>
+        <text name="sg3_reason_unsupported_profile" text="Beoordelingsprofiel niet ondersteund"/>
+        <text name="sg3_reason_origin_unproven" text="Herkomst niet vastgelegd"/>
+        <text name="sg3_reason_soil_unavailable" text="Bodemgegevens waren bij de oogst niet beschikbaar"/>
+        <text name="sg3_reason_source_partial" text="Oogstbron slechts deels vastgelegd"/>
+        <text name="sg3_reason_maturity_unavailable" text="Rijpheid van het gewas bij de oogst onbekend"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Herkomst niet geschikt voor menselijke consumptie"/>
+        <text name="sg3_reason_quality_partial" text="Kwaliteit slechts deels bekend"/>
+        <text name="sg3_reason_quality_historical" text="Alleen een eerdere kwaliteitsregistratie"/>
+        <text name="sg3_reason_condition_unavailable" text="Opslagtoestand niet beschikbaar"/>
+        <text name="sg3_reason_condition_pending" text="Opslagtoestand nog in afwachting"/>
+        <text name="sg3_reason_condition_condemned" text="Afgekeurd door de opslagtoestand"/>
+        <text name="sg3_reason_condition_gap" text="Opslagtoestand heeft hiaten"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Toestand uit een andere mod niet gedekt"/>
+        <text name="sg3_reason_process_pending" text="Verwerking nog in afwachting"/>
+        <text name="sg3_reason_recipe_not_ready" text="Recept niet gereed"/>
+        <text name="sg3_reason_grouped_portions" text="Per portie beoordeeld"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Porties hebben verschillende cijfers"/>
+        <text name="sg3_reason_source_changed" text="Voorraad gewijzigd sinds het lezen"/>
+        <text name="sg3_reason_disclosure_denied" text="Niet beschikbaar voor jou"/>
+        <text name="sg3_reason_profile_mismatch" text="Kwaliteitsprofielen komen niet overeen"/>
+        <text name="sg3_reason_composition_unknown" text="Samenstelling onbekend"/>
     </texts>
 </l10n>
