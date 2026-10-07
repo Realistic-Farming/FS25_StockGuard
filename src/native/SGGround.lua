@@ -50,6 +50,16 @@
 --   * the runs codec coalesces identical adjacent cells; every cell's stock has its own
 --     identity, so in practice each run holds one cell. Compression changes only layout,
 --     never the grain or a record (:160, :237);
+--   * MAINTENANCE row 237 (Bob's intake of 2026-10-07): an installed record carries its
+--     own stock's materialRevision (SGOperations installProperty), so a set keyed with it
+--     is never shared once a property is stored on every cell. The shared set is kept and
+--     keyed WITHOUT it, and a cell carries an optional map materialRevisions (property id
+--     to revision) only where a record's revision differs from the cell's own
+--     dataRevision; a born cell, where they are equal, writes nothing more. The restore
+--     takes the cell's map entry, else the set's own value (a payload written before this
+--     carries it there), else the cell's dataRevision, so every record comes back as it
+--     was saved. An UPDATE installs before it bumps the stock and a publish restamps only
+--     its own record, so the revision is not derived from dataRevision alone;
 --   * the unresolved historical ground stocks travel beside them, bounded by the core's
 --     own retired-stock rule (SGOperations pruneRetired: at most 256 historical stocks).
 -- On reload the staged cells become a core-shaped set that the commit hands to SG-1's
@@ -166,13 +176,27 @@ function GR.validCell(c, properties)
     if c.knowledge ~= nil and not SGRecords.KNOWLEDGE[c.knowledge] then return nil, "KNOWLEDGE" end
     if c.reason ~= nil and not nonempty(c.reason, 256) then return nil, "REASON" end
     if c.lastGeneration ~= nil and (not isInteger(c.lastGeneration) or c.lastGeneration < 0) then return nil, "LAST_GENERATION" end
+    -- MAINTENANCE row 237: the cell's own materialRevision per property, where it differs.
+    if c.materialRevisions ~= nil then
+        if type(c.materialRevisions) ~= "table" then return nil, "MATERIAL_REVISIONS" end
+        for pid, rev in pairs(c.materialRevisions) do
+            if not nonempty(pid, 128) or not nonempty(rev, 64) then return nil, "MATERIAL_REVISIONS" end
+        end
+    end
     return c
+end
+
+local function sameRevisions(a, b)
+    if a == nil or b == nil then return a == b end
+    for k, v in pairs(a) do if b[k] ~= v then return false end end
+    for k in pairs(b) do if a[k] == nil then return false end end
+    return true
 end
 
 local function sameContents(a, b)
     return a.fillType == b.fillType and a.liters == b.liters and a.generation == b.generation and a.property == b.property
         and a.stockId == b.stockId and a.dataRevision == b.dataRevision and a.knowledge == b.knowledge and a.reason == b.reason
-        and a.lastGeneration == b.lastGeneration
+        and a.lastGeneration == b.lastGeneration and sameRevisions(a.materialRevisions, b.materialRevisions)
 end
 
 --- The cells as runs: sorted by z then x; a run extends over the next cell of the same
@@ -192,7 +216,8 @@ function GR.encodeCells(cells, properties)
             run.n = run.n + 1
         else
             run = { z = c.z, x = c.x, n = 1, fillType = c.fillType, liters = c.liters, generation = c.generation, property = c.property,
-                    stockId = c.stockId, dataRevision = c.dataRevision, knowledge = c.knowledge, reason = c.reason, lastGeneration = c.lastGeneration }
+                    stockId = c.stockId, dataRevision = c.dataRevision, knowledge = c.knowledge, reason = c.reason, lastGeneration = c.lastGeneration,
+                    materialRevisions = c.materialRevisions ~= nil and copy(c.materialRevisions) or nil }
             runs[#runs + 1] = run
         end
     end
@@ -208,7 +233,8 @@ function GR.decodeRuns(runs, properties)
         if type(r) ~= "table" or not isInteger(r.n) or r.n < 1 then return nil, "RUN:" .. i end
         for k = 0, r.n - 1 do
             local c = { x = (tonumber(r.x) or -1) + k, z = r.z, fillType = r.fillType, liters = r.liters, generation = r.generation, property = r.property,
-                        stockId = r.stockId, dataRevision = r.dataRevision, knowledge = r.knowledge, reason = r.reason, lastGeneration = r.lastGeneration }
+                        stockId = r.stockId, dataRevision = r.dataRevision, knowledge = r.knowledge, reason = r.reason, lastGeneration = r.lastGeneration,
+                        materialRevisions = r.materialRevisions ~= nil and copy(r.materialRevisions) or nil }
             local ok, why = GR.validCell(c, properties)
             if ok == nil then return nil, "RUN:" .. i .. ":" .. why end
             local key = GR.cellKey(c.x, c.z)
@@ -324,7 +350,19 @@ function GR:groundRecords()
         local d = c.binding.sourceDescriptor
         local s = c.stockId ~= nil and stockBy[c.stockId] or nil
         if s ~= nil and type(d) == "table" and s.materialRef ~= nil and s.materialRef.kind == "FILL_TYPE" then
-            local shared = { properties = s.properties or {}, acceptedCauses = s.acceptedCauses or {} }
+            -- MAINTENANCE row 237: the set is shared without each record's materialRevision; the
+            -- cell keeps a revision only where it differs from its own dataRevision.
+            local records, revisions = {}, nil
+            for i, p in ipairs(s.properties or {}) do
+                local r = copy(p)
+                if r.materialRevision ~= nil and r.materialRevision ~= s.dataRevision then
+                    revisions = revisions or {}
+                    revisions[r.propertyId] = r.materialRevision
+                end
+                r.materialRevision = nil
+                records[i] = r
+            end
+            local shared = { properties = records, acceptedCauses = s.acceptedCauses or {} }
             local ck = SGValues.canonicalKey(shared)
             local pk = keys[ck]
             if pk == nil then
@@ -334,7 +372,8 @@ function GR:groundRecords()
                 properties[pk] = shared
             end
             cells[GR.cellKey(d.x, d.z)] = { x = d.x, z = d.z, fillType = s.materialRef.fillTypeName, liters = s.observedAmount, generation = s.contentsGeneration,
-                property = pk, stockId = s.stockId, dataRevision = s.dataRevision, knowledge = s.knowledge, reason = s.reason, lastGeneration = c.lastGeneration }
+                property = pk, stockId = s.stockId, dataRevision = s.dataRevision, knowledge = s.knowledge, reason = s.reason, lastGeneration = c.lastGeneration,
+                materialRevisions = revisions }
         end
     end
     return cells, properties, rec.historical
@@ -463,11 +502,23 @@ function GR.coreOf(identity, cells, properties, historical)
         if binding == nil then return nil, "CELL_BINDING" end
         local cid = SGRecords.carrierKeyString(binding.carrierKey)
         local materialRef = { kind = "FILL_TYPE", fillTypeName = c.fillType }
+        -- MAINTENANCE row 237: each record's materialRevision is the cell's own entry, else the
+        -- set's own value (a payload written before the row carries it there), else the cell's
+        -- dataRevision (the record was installed with it and the save left it out).
+        local records = copy(shared.properties)
+        for _, r in ipairs(records) do
+            local own = c.materialRevisions ~= nil and type(r) == "table" and c.materialRevisions[r.propertyId] or nil
+            if own ~= nil then
+                r.materialRevision = own
+            elseif type(r) == "table" and r.materialRevision == nil then
+                r.materialRevision = c.dataRevision
+            end
+        end
         core.carriers[#core.carriers + 1] = { carrierId = cid, adapterId = A.NATIVE_ADAPTER_ID, binding = binding, lastGeneration = c.lastGeneration or c.generation,
             stockId = c.stockId, native = { materialRef = materialRef, amount = c.liters, unit = A.UNIT } }
         core.stocks[#core.stocks + 1] = { stockId = c.stockId, contentsGeneration = c.generation, dataRevision = c.dataRevision, carrierId = cid,
             carrierKey = copy(binding.carrierKey), quantityBasisKey = binding.quantityBasisKey, materialRef = copy(materialRef), observedAmount = c.liters,
-            amountUnit = A.UNIT, knowledge = c.knowledge, reason = c.reason, properties = copy(shared.properties), acceptedCauses = copy(shared.acceptedCauses) }
+            amountUnit = A.UNIT, knowledge = c.knowledge, reason = c.reason, properties = records, acceptedCauses = copy(shared.acceptedCauses) }
     end
     -- [MAINTENANCE row 214] A ground payload written before the fix can carry a historical twin
     -- of a cell's stock (the restore wrote one whenever a fresh id met the cell's saved id), which
