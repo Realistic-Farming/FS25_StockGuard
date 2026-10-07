@@ -1,12 +1,15 @@
 -- SG3-2-1-ground_save_size_spec_test.lua
 --
 -- SG-3 Part 2.1, the mower's side and the ground save (Bob, 2026-10-07: "the ground save-size
--- measurement belongs in 2.1: one number from a mown field's save, with and without the PR"; and the
--- transform keys on nativePath, so a mower's birth is a named unknown, never graded).
+-- measurement belongs in 2.1: one number from a mown field's save, with and without the PR"). Through
+-- Part 2.1 the transform graded only the cutter's path, so a mower's birth was a named unknown; since
+-- Part 2.2 the Mower's cut (GROUND_MOWER_CUT) is graded too, and this bench measures that.
 --
 -- With SG-3 installed every birth asks qualityBasisV1's producer (birth = true, SG-3 Part 1). The
 -- mower's path is GROUND_MOWER_CUT and its drop is a ground birth, so every mown ground cell now holds
--- a STORED qualityBasisV1 record: UNAVAILABLE, ORIGIN_UNPROVEN. SG2-4b's ground save writes each
+-- a STORED qualityBasisV1 record, graded from the cut's own portions. This world's Soil publishes no
+-- values (its soilOn publishes the ground-condition surface only), so each record is UNKNOWN with
+-- SOIL_UNAVAILABLE and no score pair, and keeps its coverage (none of its litres known). SG2-4b's ground save writes each
 -- distinct set of a cell's property records once; since MAINTENANCE row 237 (StockGuard #54) the set
 -- is keyed without each record's materialRevision, which a cell keeps beside it only where it differs
 -- from the cell's dataRevision. This bench measures what the record costs, on a first save and on a
@@ -22,8 +25,8 @@
 -- property. The cells' qualityBasisV1 exists only because the settle asked SG-3's producer.
 --
 -- Groups:
---   Z  a mown field, with and without SG-3: every mown cell's record is the named unknown
---      ORIGIN_UNPROVEN (never graded, never TRANSFORM_ERROR); the ground payload's size both ways, the
+--   Z  a mown field, with and without SG-3: every mown cell's record is graded, UNKNOWN for want of
+--      Soil's values (never a guessed pair, never TRANSFORM_ERROR); the ground payload's size both ways, the
 --      difference per cell and the saved sets, pinned (Z8), and the same after a reload (Z9)
 --   R  the save and the reload: the restored cells keep their records, unchanged
 --
@@ -853,13 +856,23 @@ local function mownField(withSG3, key, index)
     return m, sg, host, w
 end
 
---- The ground cells' qualityBasisV1 records, as "KNOWLEDGE:reason=count" sorted, and the cell count.
+--- A qualityBasisV1 record as "UNAVAILABLE:<reason>", or "KNOWLEDGE:<Feed reasons>:e<earned>" (":noScore"
+--- without a pair), or "none".
+local function recordKey(q)
+    if q == nil then return "none" end
+    if q.knowledge == "UNAVAILABLE" then return "UNAVAILABLE:" .. tostring(q.reason) end
+    local pl = q.payload or {}
+    local feed = pl.sourceWitness and pl.sourceWitness.originUse and pl.sourceWitness.originUse.FEED or nil
+    return tostring(q.knowledge) .. ":" .. table.concat(feed and feed.reasons or {}, " ") .. (pl.earnedScore ~= nil and (":e" .. tostring(pl.earnedScore)) or ":noScore")
+end
+
+--- The ground cells' qualityBasisV1 records, as "<recordKey>=count" sorted, and the cell count.
 local function cellRecords(sg)
     local n, kinds = 0, {}
     for _, s in ipairs(groundStocks(sg)) do
         n = n + 1
         local q = s.properties[QB]
-        local k = q == nil and "none" or (tostring(q.knowledge) .. ":" .. tostring(q.reason))
+        local k = recordKey(q)
         kinds[k] = (kinds[k] or 0) + 1
     end
     local out = {}
@@ -896,19 +909,19 @@ group("Z", function()
     local cells, recs = cellRecords(sg)
     RESULT.cells = cells
     T.ok("Z1 [world] the field has mown cells, at least one a pass", cells >= FIELD_PASSES)
-    T.eq("Z2 [entry point] every mown cell holds qualityBasisV1 as the named unknown ORIGIN_UNPROVEN: the mower's path is never graded, and never a TRANSFORM_ERROR",
-        recs, "UNAVAILABLE:ORIGIN_UNPROVEN=" .. cells)
+    T.eq("Z2 [entry point] every mown cell holds qualityBasisV1 graded from the cut (SG-3 Part 2.2): with no Soil values published, UNKNOWN with SOIL_UNAVAILABLE and no score pair, never a guessed grade and never a TRANSFORM_ERROR",
+        recs, "UNKNOWN:SOIL_UNAVAILABLE:noScore=" .. cells)
     local buffers = {}
     for _, st in pairs(sg.operations.retiredStocks) do
         if NA.isMowerBufferKey ~= nil and NA.isMowerBufferKey(st.carrierKey) then
             local q = st.properties and st.properties[QB] or nil
-            buffers[q == nil and "none" or (tostring(q.knowledge) .. ":" .. tostring(q.reason))] = true
+            buffers[recordKey(q)] = true
         end
     end
     local bk = {}
     for k in pairs(buffers) do bk[#bk + 1] = k end
     table.sort(bk)
-    T.eq("Z3 the Mower's buffer, born from the GROUND_MOWER_CUT witness, held the same named unknown", table.concat(bk, ","), "UNAVAILABLE:ORIGIN_UNPROVEN")
+    T.eq("Z3 the Mower's buffer, born from the GROUND_MOWER_CUT witness, held the same reading", table.concat(bk, ","), "UNKNOWN:SOIL_UNAVAILABLE:noScore")
     nativeSave(m, "sg3_z_with")
     local withBytes, withTokens = tokenBytes("sg3_z_with/" .. GR.PAYLOAD_FILE, GR.PAYLOAD_ROOT)
     local envWith = tokenBytes("sg3_z_with/stockGuard.xml", "stockGuard")
@@ -942,14 +955,18 @@ group("Z", function()
         string.format("cells=%d payload_without=%dB/%dtok payload_with=%dB/%dtok delta=%dB(+%.1f%%) per_cell=%.1fB property_sets %d->%d envelope_without=%s envelope_with=%s",
             cells, withoutBytes or -1, withoutTokens, withBytes or -1, withTokens, delta, 100 * delta / math.max(1, withoutBytes or 1), delta / math.max(1, cells),
             setsWithout, setsWith, tostring(envWithout), tostring(envWith)),
-        "cells=302 payload_without=40713B/10610tok payload_with=45800B/11247tok delta=5087B(+12.5%) per_cell=16.8B property_sets 1->2 envelope_without=1108 envelope_with=1108")
+        "cells=302 payload_without=40713B/10610tok payload_with=51250B/14171tok delta=10537B(+25.9%) per_cell=34.9B property_sets 1->2 envelope_without=1108 envelope_with=1108")
     local deltaAgain = (againBytes or 0) - (withoutBytes or 0)
     T.eq("Z9 THE MEASUREMENT AFTER A RELOAD: the same field with SG-3, reloaded and saved again",
         string.format("payload_again=%dB/%dtok delta=%dB(+%.1f%%) per_cell=%.1fB property_sets=%d", againBytes or -1, againTokens, deltaAgain,
             100 * deltaAgain / math.max(1, withoutBytes or 1), deltaAgain / math.max(1, cells), setsAgain),
-        "payload_again=53348B/12471tok delta=12635B(+31.0%) per_cell=41.8B property_sets=2")
+        "payload_again=58798B/15395tok delta=18085B(+44.4%) per_cell=59.9B property_sets=2")
     -- Before MAINTENANCE row 237 (StockGuard #54) the same field saved 93,877 B in 302 sets: each installed
     -- record carried its own stock's materialRevision inside the shared set.
+    -- Part 2.1 (the mower's record the named unknown ORIGIN_UNPROVEN, no coverage) saved 45,800 B, and 53,348 B
+    -- after a reload. Part 2.2 grades the cut, so each record carries its coverage (0 of the cell's litres
+    -- known here), which the ground save keeps beside each cell since MAINTENANCE row 239 (#57): about 18 B
+    -- a cell more. With Soil's values varying across the field, see the PR body's measurement.
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════

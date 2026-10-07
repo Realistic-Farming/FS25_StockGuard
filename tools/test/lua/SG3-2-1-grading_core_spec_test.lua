@@ -22,8 +22,9 @@
 --      state, missing descriptor tables; Soil absent or with no grain; grass precedence
 --   F  the unknown floor through the real path: a known frame then a Soil-less frame, one hopper
 --   D  a delay slot's drain: SG-1's combine carries the pair into the hopper unchanged
---   G  nativePath gating (Bob, 2026-10-07): only COMBINE_CUT is graded; any other birth is a named
---      unknown, never graded and never a throw; a refused cut profile is SOURCE_PARTIAL
+--   G  nativePath gating (Bob, 2026-10-07): only COMBINE_CUT is graded (and, since Part 2.2, the Mower's
+--      GROUND_MOWER_CUT: SG3-2-2-mower_chain_spec_test.lua); any other birth is a named unknown, never
+--      graded and never a throw; a refused cut profile is SOURCE_PARTIAL
 --   T  the two native transforms keep the pair and make Feed-only; any other basis is unavailable
 --   B  a bale needing SOIL_BALE_CONDITION_V1 (Part 3) is UNAVAILABLE with a historical letter
 --   V  validate refuses a malformed payload
@@ -359,7 +360,8 @@ group("G", function()
         local r, why = Q.transform(birthContext({ nativePath = path, portions = true }))
         out[#out + 1] = path .. "=" .. tostring(r) .. ":" .. tostring(why)
     end
-    T.eq("G2 every other path, the mower's included, is the named unknown ORIGIN_UNPROVEN even with a full portion: never graded",
+    -- MOWER_CUT is no native path; the Mower's own, GROUND_MOWER_CUT, is graded since Part 2.2 (SG3-2-2's M).
+    T.eq("G2 every other path is the named unknown ORIGIN_UNPROVEN even with a full portion: never graded",
         table.concat(out, ","), "MOWER_CUT=nil:ORIGIN_UNPROVEN,WINDROWER=nil:ORIGIN_UNPROVEN,TEDDER_DROP=nil:ORIGIN_UNPROVEN,BALER_PICKUP=nil:ORIGIN_UNPROVEN")
     local raised = {}
     local junk = { nil, {}, { nativePath = "COMBINE_CUT" }, { nativePath = "COMBINE_CUT", portions = "x" }, { nativePath = "COMBINE_CUT", portions = { 7, { slotId = "s1" } } },

@@ -1319,7 +1319,9 @@ function G.mowerAfterCut(host, frame, fruitIndex, returned, result)
             portions[#portions + 1] = { slotId = callRef .. ":p" .. k, nativeCreatorKey = creator, weight = grp.weight,
                 knowledge = grp.prepared and "UNKNOWN" or "KNOWN", reason = grp.prepared and G.MOWER_PREPARED_REASON or nil,
                 profile = SGCutState.MOWER_PROFILE, growthState = grp.state, pixels = grp.pixels, yieldScale = grp.yieldScale,
-                soilCell = grp.cell, soil = grp.soil, prepared = grp.prepared == true }
+                soilCell = grp.cell, soil = grp.soil, prepared = grp.prepared == true,
+                -- SG-3 Part 2.2: U4's frozen RAW_MATURITY_V1 inputs and the fruit's own output, as the cutter's carry
+                maturity = grp.maturity, fruitName = result.fruitName, primaryFillTypeName = result.primaryFillTypeName }
             weightSum = weightSum + grp.weight
         end
     end
@@ -1407,7 +1409,8 @@ function G.mowerSettle(host, gf, op, ok)
     local evidencePortions = {}
     for _, p in ipairs(op.portions) do
         evidencePortions[#evidencePortions + 1] = { slotId = p.slotId, weight = p.weight, knowledge = p.knowledge, reason = p.reason, profile = p.profile,
-            growthState = p.growthState, pixels = p.pixels, yieldScale = p.yieldScale, soilCell = p.soilCell, soil = p.soil, prepared = p.prepared }
+            growthState = p.growthState, pixels = p.pixels, yieldScale = p.yieldScale, soilCell = p.soilCell, soil = p.soil, prepared = p.prepared,
+            maturity = p.maturity, fruitName = p.fruitName, primaryFillTypeName = p.primaryFillTypeName }
     end
     local evidence = { nativePath = "GROUND_MOWER_CUT", callRef = op.callRef, fillTypeName = op.outputName, destination = m.mode,
                        returnedArea = op.returned, produced = L, before = B, fresh = op.fresh, portions = evidencePortions, weightSum = op.weightSum }

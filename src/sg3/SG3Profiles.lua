@@ -35,9 +35,10 @@ P.USE_PROFILE_FOR = { FOOD = P.FOOD_PROFILE, FEED = P.FEED_PROFILE }
 -- The native transforms this part interprets (:263, :267); any other basis is unavailable.
 P.TRANSFORMS = { NATIVE_HAY_CONVERT_V1 = true, NATIVE_BALE_FEED_V1 = true }
 
--- The native path whose birth this part grades: the cutter's cut (SGHarvestCapture.PATH_CUT).
--- Every other birth (the mower's is 2.2) is a named unknown origin, never graded.
-P.GRADED_BIRTH_PATH = "COMBINE_CUT"
+-- The native paths whose births are graded: the cutter's cut (SGHarvestCapture.PATH_CUT) and, since
+-- Part 2.2, the Mower's cut (SGGroundObserver's GROUND_MOWER_CUT, MOWER_STATE_VOLUME_V1, SG-2 :513-517).
+-- Every other birth is a named unknown origin, never graded.
+P.GRADED_BIRTH_PATHS = { COMBINE_CUT = true, GROUND_MOWER_CUT = true }
 
 -- ── the calibration table (:157-178) ─────────────────────────────────────────
 -- key: the row's calibrationKey; names: its admitted names, case normalised; n/p/k: {min, opt}

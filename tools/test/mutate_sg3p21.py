@@ -21,6 +21,11 @@
 #     and with SG-3 installed it never is (evaluateUse's own HISTORICAL branch is E11, barred by B4);
 #   - comments.
 #
+# SG-3 Part 2.2 (the Mower's cut graded): P7 and Q1 are anchored on the lines that replaced the one graded
+# path (P.GRADED_BIRTH_PATHS, and the producer's graded test). Q2 is retired: it made every path graded,
+# killed by the mower's cells leaving ORIGIN_UNPROVEN (the save bench's Z2), which 2.2 now does by design;
+# the reverse, the Mower's path not graded, is mutate_sg3p22.py's P1.
+#
 # Anchors are written with "\n"; in a CRLF file they are matched as "\r\n".
 #
 # Usage: py tools/test/mutate_sg3p21.py <id>        one mutant (prefix match must be unique)
@@ -62,7 +67,7 @@ MUTATIONS = [
  ("P4-withered-score", PR, [("WITHERED = 20 }", "WITHERED = 45 }", 1)], "withered scores 45 (M1)", CORE),
  ("P5-food-band", PR, [("FOOD = { A = 85, B = 70 }", "FOOD = { A = 80, B = 70 }", 1)], "Food's A band at 80 (N4)", CORE),
  ("P6-straw-not-feed-only", PR, [("P.FEED_ONLY = { STRAW = true, ", "P.FEED_ONLY = { ", 1)], "straw is no supported material (S6b)", CORE),
- ("P7-graded-path", PR, [('P.GRADED_BIRTH_PATH = "COMBINE_CUT"', 'P.GRADED_BIRTH_PATH = "GROUND_MOWER_CUT"', 1)], "the cutter's path is not graded (S3)", CORE),
+ ("P7-graded-path", PR, [('P.GRADED_BIRTH_PATHS = { COMBINE_CUT = true, GROUND_MOWER_CUT = true }', 'P.GRADED_BIRTH_PATHS = { GROUND_MOWER_CUT = true }', 1)], "the cutter's path is not graded (S3)", CORE),
  ("P8-release-open", PR, [("P.RELEASE_LOCKED = true", "P.RELEASE_LOCKED = false", 1)], "the player projection is OPEN (S1)", CORE),
  ("P9-bale-straw-no-condition", PR, [("P.BALE_CONDITION_MATERIALS = { STRAW = true, ", "P.BALE_CONDITION_MATERIALS = { ", 1)],
   "a straw bale grades without its condition owner (B1)", CORE),
@@ -104,9 +109,7 @@ MUTATIONS = [
  ("E22-historical-letter-unsuitable", EV, [('    if suitability == "SUITABLE" then h.grade = E.grade(use, payload.remainingScore) end\n', "    h.grade = E.grade(use, payload.remainingScore)\n", 1)],
   "a historical Food letter for a Food-ineligible origin (B3)", CORE),
  # ── the producer ──
- ("Q1-every-path-graded", QU, [("    local graded = ev.nativePath == P.GRADED_BIRTH_PATH\n", "    local graded = true\n", 1)], "the mower's path grades a full portion (G2)", CORE),
- ("Q2-every-path-graded-mower", QU, [("    local graded = ev.nativePath == P.GRADED_BIRTH_PATH\n", "    local graded = true\n", 1)],
-  "the real mower's cells are not ORIGIN_UNPROVEN (Z2)", SAVE),
+ ("Q1-every-path-graded", QU, [('    local graded = type(ev.nativePath) == "string" and P.GRADED_BIRTH_PATHS[ev.nativePath] == true\n', "    local graded = true\n", 1)], "every other path grades a full portion (G2)", CORE),
  ("Q3-any-basis", QU, [('    if basis == false or (basis ~= nil and not P.TRANSFORMS[basis]) then return nil, "UNSUPPORTED_PROFILE" end\n', '    if basis == false then return nil, "UNSUPPORTED_PROFILE" end\n', 1)],
   "an unknown conversion basis is interpreted (T3)", CORE),
  ("Q4-transform-keeps-food", QU, [("    if basis ~= nil then E.feedOnly(res.payload) end\n", "", 1)], "a native transform leaves Food eligible (T1)", CORE),
