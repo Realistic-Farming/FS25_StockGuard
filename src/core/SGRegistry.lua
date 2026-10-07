@@ -143,6 +143,11 @@ function G:registerProperty(propertyId, spec)
     if spec.applicability ~= nil and type(spec.applicability) ~= "table" then return nil, "APPLICABILITY" end
     if not isFn(spec.validate) or not isFn(spec.combine) or not isFn(spec.transform) or not isFn(spec.disclosure) then return nil, "CALLBACKS" end
     if spec.residency == "OWNER_RESOLVED" and (not isFn(spec.resolveResident) or not isFn(spec.getResidentRevision)) then return nil, "RESIDENT_CALLBACKS" end
+    -- SG-3 Part 1 (Bob's SG-3 intake, U1; SG-1 :253-255, :285; SG-3 :98-100): a STORED property may declare
+    -- that it interprets a genuine birth (birth = true); settle then calls its transform on each candidate born
+    -- from creation slots (SGOperations interpretDestination). Optional, a boolean, STORED only.
+    if spec.birth ~= nil and type(spec.birth) ~= "boolean" then return nil, "BIRTH" end
+    if spec.birth == true and spec.residency ~= "STORED" then return nil, "BIRTH_RESIDENCY" end
     spec = shallow(spec)
     local causal = spec.validateCause ~= nil or spec.transformCausalState ~= nil or spec.compactCausalState ~= nil or spec.causal == true
     if causal and not (isFn(spec.validateCause) and isFn(spec.transformCausalState) and isFn(spec.compactCausalState)) then

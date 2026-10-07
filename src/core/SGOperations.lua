@@ -749,6 +749,26 @@ local function interpretDestination(self, context, kind, contributions, destinat
     if destinationBefore ~= nil then
         for pid in pairs(destinationBefore.properties or {}) do propertyIds[pid] = true end
     end
+    -- SG-3 Part 1 (Bob's SG-3 intake, U1, and his R-15 note of 2026-10-07; SG-1 :253-255, :285; SG-3 :98-100).
+    -- New material born from creation slots, into any candidate holding stock (a BIRTH, a REPLACE, or an UPDATE
+    -- of material already there: a harvest fills one hopper over many ticks) in anything but a REBIND, is
+    -- interpreted by every STORED producer that declared births (SGRegistry, birth = true), through its
+    -- transform, once, with the existing record as outputs[1].destinationBefore (SG-3 :98, "existing material
+    -- requires its expected material and property revisions"). A slot's contribution carries no properties of
+    -- its own, so before this no producer was ever asked about new material. Only a candidate holding stock
+    -- reaches here (settle's step 7). A carrier-only move, a REBIND and a restore never come here as a birth
+    -- (SG-3 :99, :346).
+    local birth = false
+    if kind ~= "REBIND" then
+        for _, c in ipairs(contributions) do
+            if c.slotId ~= nil then birth = true break end
+        end
+    end
+    if birth then
+        for pid, lease in self.registry:each(SGRegistry.KIND_PROPERTY) do
+            if lease.spec.birth == true then propertyIds[pid] = true end
+        end
+    end
     local useTransform = kind == "CONVERT"
     for _, c in ipairs(contributions) do if c.conversionBasisId ~= nil then useTransform = true end end
     local results = {}
@@ -786,13 +806,14 @@ local function interpretDestination(self, context, kind, contributions, destinat
             end
         else
             local ok, result, reason
-            if useTransform then
+            local viaTransform = useTransform or (birth and reg.spec.birth == true)
+            if viaTransform then
                 ok, result, reason = pcall(reg.spec.transform, copy(context), copy(contributions), { { carrierId = cand.carrierId, slotId = cand.slotId, stockRef = copy(cand.stockRef), amount = cand.amount, unit = cand.unit, materialRef = copy(cand.materialRef), destinationBefore = destinationBefore and copy(destinationBefore) or nil } })
             else
                 ok, result, reason = pcall(reg.spec.combine, copy(context), copy(contributions), destinationBefore and copy(destinationBefore) or nil)
             end
             if not ok then
-                results[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, useTransform and "TRANSFORM_ERROR" or "COMBINE_ERROR")
+                results[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, viaTransform and "TRANSFORM_ERROR" or "COMBINE_ERROR")
             elseif result == nil then
                 results[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, tostring(reason or "UNKNOWN"))
             else

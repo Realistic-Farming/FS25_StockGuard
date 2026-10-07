@@ -397,3 +397,85 @@ group("R", function()
     T.eq("R3 a client combine's cut opens nothing", host.nextCut - before, 0)
     FSBaseMission.delete(m)
 end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Q. SG-3 PART 1, THE ENTRY-POINT BAR: A CUT'S BIRTH IS INTERPRETED, AND THE PLAYER VIEW READS IT
+-- ══════════════════════════════════════════════════════════════════════════
+-- Bob's SG-3 intake (U1, U2): a STORED producer that declares births, registered through the mission handle,
+-- is asked once per carrier the cut is born into, through its transform, with the cut's own outcomeEvidence;
+-- a producer that does not declare births is never asked; the next cut into the same hopper is an UPDATE.
+-- The farm's STOCK view (getManagementView, what NS-7's transport builds) carries the disclosed child and
+-- omits one whose disclosure is DISCLOSURE_DENIED. Nothing here writes a property, a stock or a row.
+group("Q", function()
+    local m, sg, host, w = boot(function(m, w)
+        w.combine = combineIn(m, "vehicle:combine")
+        w.header = headerIn(m, "vehicle:header", w.combine, { areas = 2, width = 4, depth = 1 })
+        ENGINE_PLANE.sow(FRUIT, 0, 0, 4, 1, 4)
+        ENGINE_PLANE.sow(FRUIT, 4, 0, 8, 1, 3)
+        ENGINE_PLANE.sow(FRUIT, 10, 0, 14, 1, 4)
+    end)
+    local calls, plain, combines = {}, 0, 0
+    local function rec(pid, amount, payload)
+        return { propertyId = pid, schemaVersion = 1, producerId = "sg3", propertyRevision = 0, knowledge = "KNOWN", knownAmount = amount, basisAmount = amount, amountUnit = "LITRE", payload = payload }
+    end
+    local function stored(pid, over)
+        local s = { schemaVersion = 1, producerId = "sg3", residency = "STORED", validate = function() return true end,
+            combine = function() return nil end, transform = function() return nil end, disclosure = function(_, r) return r end }
+        for k, v in pairs(over) do s[k] = v end
+        return m.stockGuard.registerProperty(pid, s)
+    end
+    stored("sg3.q", { birth = true,
+        transform = function(ctx, inputs, outputs)
+            local ev = ctx.report and ctx.report.outcomeEvidence or {}
+            local db = outputs[1].destinationBefore
+            local held = db and db.properties and db.properties["sg3.q"] or nil
+            calls[#calls + 1] = { kind = ctx.operationKind, path = ev.nativePath, portions = #(ev.portions or {}), carrierId = outputs[1].carrierId, inputs = #inputs,
+                before = held and num(held.knownAmount) or "none" }
+            return rec("sg3.q", outputs[1].amount, { portions = #(ev.portions or {}) })
+        end,
+        combine = function(ctx, contributions, before)
+            combines = combines + 1
+            local total = before and before.observedAmount or 0
+            for _, c in ipairs(contributions) do total = total + c.amount end
+            return rec("sg3.q", total, { portions = "combined" })
+        end })
+    stored("sg3.private", { birth = true,
+        transform = function(ctx, inputs, outputs) return rec("sg3.private", outputs[1].amount, { secret = 1 }) end,
+        disclosure = function() return nil, "DISCLOSURE_DENIED" end })
+    stored("x.plain", { combine = function() plain = plain + 1 return nil end, transform = function() plain = plain + 1 return nil end })
+    local hop, straw1 = hopperId(w.combine), slotId(w.combine, NA.KIND_STRAW_SLOT, 1)
+    ENGINE_HARVEST_TICK(w.header, w.combine, 16)
+    local names = { [hop] = "hopper", [straw1] = "straw1" }
+    local seen = {}
+    for _, c in ipairs(calls) do seen[#seen + 1] = tostring(names[c.carrierId] or c.carrierId) .. ":" .. tostring(c.path) .. ":" .. c.portions .. ":" .. c.inputs end
+    table.sort(seen)
+    local hs = stockAt(sg, hop)
+    local q = hs and hs.properties["sg3.q"]
+    T.eq("Q1 NAMED [entry point]: one cut through main.lua's install is ONE BIRTH into the hopper and the straw slot, and the declared birth producer is asked once for each, through its transform, with the cut's evidence (two portions) and two slot inputs; the hopper's stock carries its record",
+        head(host.lastHarvest) .. "|" .. #calls .. "|" .. table.concat(seen, ",") .. "|" .. (q and (q.knowledge .. ":" .. num(q.knownAmount) .. ":" .. tostring(q.payload.portions)) or "none"),
+        "COMBINE_CUT/COMMITTED|2|hopper:COMBINE_CUT:2:2,straw1:COMBINE_CUT:2:2|KNOWN:6:2")
+    T.eq("Q2 a producer that does not declare births was never asked", plain, 0)
+    local function hopperRow()
+        local page = sg.views:getManagementView({ farmId = 1, userId = "host", actorState = "RESOLVED", connectionId = "c1" }, { route = "STOCK", selectionKind = "FARM" })
+        for _, row in ipairs(page.view and page.view.rows or {}) do
+            if row.rowKind == "STOCK" and row.carrierId == hop then
+                local out = {}
+                for _, p in ipairs(row.properties or {}) do out[#out + 1] = p.propertyId .. ":" .. tostring(p.knowledge) end
+                return table.concat(out, ",")
+            end
+        end
+        return "no row (" .. tostring(page.state) .. ")"
+    end
+    T.eq("Q3 NAMED: the farm's STOCK view carries the hopper's disclosed sg3.q child and omits sg3.private entirely (its disclosure is DISCLOSURE_DENIED): no identity or schema placeholder",
+        hopperRow(), "sg3.q:KNOWN")
+    local n = #calls
+    ENGINE_PLANE.sow(FRUIT, 0, 0, 8, 1, 4)
+    ENGINE_HARVEST_TICK(w.header, w.combine, 16)
+    q = stockAt(sg, hop) and stockAt(sg, hop).properties["sg3.q"]
+    local hopperBirths, before = 0, "none"
+    for i = n + 1, #calls do if calls[i].carrierId == hop then hopperBirths, before = hopperBirths + 1, calls[i].before end end
+    T.eq("Q4 NAMED (Bob's R-15 note): the next cut into the same hopper is an UPDATE of the same material, and its new grain is interpreted too: ONE transform call for the hopper with the hopper's record (6 L) as destinationBefore, never its combine; the record follows the whole hopper",
+        head(host.lastHarvest) .. "|" .. hopperBirths .. "|" .. before .. "|" .. combines .. "|" .. (q and (q.knowledge .. ":" .. num(q.knownAmount) .. ":" .. tostring(q.payload.portions)) or "none"),
+        "COMBINE_CUT/COMMITTED|1|6|0|KNOWN:" .. num(w.combine:getFillUnitFillLevel(1)) .. ":2")
+    FSBaseMission.delete(m)
+end)

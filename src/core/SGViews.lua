@@ -193,26 +193,43 @@ local function amountUnitToken(unit)
 end
 W.amountUnitToken = amountUnitToken
 
+--- The PROPERTY children of a STOCK row (SG-3 Part 1, Bob's SG-3 intake U2):
+---   * a stored record, as before;
+---   * an OWNER_RESOLVED property, resolved live through its owner (purpose PLAYER_VIEW, at one stable owner
+---     revision) where the material is resident, as readMaterial reads it; elsewhere its carried record, if any;
+---   * a disclosure that answers nil, "DISCLOSURE_DENIED" omits the child entirely: no identity or schema
+---     placeholder (SG-3 :47, :507). Any other refusal keeps the NOT_DISCLOSED placeholder.
 local function disclosedProperties(self, stock, actor, carrier)
     local out = {}
+    local records = {}
+    for pid, p in pairs(stock.properties) do records[pid] = p end
+    local cycle = {}
+    for pid, reg in self.registry:each(SGRegistry.KIND_PROPERTY) do
+        if reg.spec.residency == "OWNER_RESOLVED" and self.operations:isResident(reg, carrier) then
+            local live = self.operations:resolveResident(reg, stock, "PLAYER_VIEW", cycle)
+            if not (live.knowledge == "UNAVAILABLE" and live.reason == SGOperations.NOT_RESIDENT) then records[pid] = live end
+        end
+    end
     local pids = {}
-    for pid in pairs(stock.properties) do pids[#pids + 1] = pid end
+    for pid in pairs(records) do pids[#pids + 1] = pid end
     table.sort(pids)
     for _, pid in ipairs(pids) do
-        local p = stock.properties[pid]
+        local p = records[pid]
         local reg = self.registry:property(pid)
-        local disclosed = nil
+        local disclosed, denied = nil, false
         if reg ~= nil then
             local context = { purpose = "PLAYER_VIEW", trustedActorContext = copy(actor), carrierBinding = copy(carrier.binding), stockRef = self.operations:stockRef(stock) }
-            local ok, d = pcall(reg.spec.disclosure, context, copy(p))
+            local ok, d, why = pcall(reg.spec.disclosure, context, copy(p))
             if ok and type(d) == "table" and SGRecords.isPropertyRecord(d) then
                 disclosed = { propertyId = d.propertyId, schemaVersion = d.schemaVersion, producerId = d.producerId, propertyRevision = d.propertyRevision, knowledge = d.knowledge, knownAmount = d.knownAmount, basisAmount = d.basisAmount, amountUnit = d.amountUnit, payload = d.payload, reason = d.reason }
+            elseif ok and d == nil and why == "DISCLOSURE_DENIED" then
+                denied = true
             end
         end
-        if disclosed == nil then
+        if disclosed == nil and not denied then
             disclosed = { propertyId = pid, schemaVersion = p.schemaVersion, producerId = p.producerId, propertyRevision = p.propertyRevision, knowledge = "UNAVAILABLE", reason = reg and "NOT_DISCLOSED" or "PRODUCER_ABSENT" }
         end
-        out[#out + 1] = disclosed
+        if disclosed ~= nil then out[#out + 1] = disclosed end
     end
     return out
 end
