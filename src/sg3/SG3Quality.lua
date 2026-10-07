@@ -52,17 +52,44 @@ local function candidateOf(ctx, contributions)
     return nil
 end
 
+Q.mowerClassLogged = Q.mowerClassLogged or false
+
+--- [SG-3 Part 2.2, Bob's R-15] The in-game evidence for GRASS_QUALITY_V1's named states (:204), which no
+--- offline source can check: the first graded Mower birth of a launch says, once, each captured state
+--- name and the RAW_MATURITY_V1 class it read, one entry per distinct pair (a cut has a portion per
+--- state and Soil cell, so a wide mower would otherwise repeat the same pair many times).
+local function logMowerClasses(portions)
+    if Q.mowerClassLogged then return end
+    local parts, seen, fruit = {}, {}, nil
+    for _, p in ipairs(portions) do
+        if type(p) == "table" and p.knowledge == "KNOWN" and type(p.maturity) == "table" then
+            local row = P.cropOf(p.fruitName)
+            fruit = fruit or p.fruitName
+            local part = "state " .. tostring(p.maturity.stateName) .. " " .. tostring(row ~= nil and E.classify(p.maturity, row.selector) or "UNSUPPORTED_MATERIAL")
+            if not seen[part] then
+                seen[part] = true
+                parts[#parts + 1] = part
+            end
+        end
+    end
+    if #parts == 0 then return end
+    table.sort(parts)
+    Q.mowerClassLogged = true
+    print("[StockGuard] SG-3: first graded mower cut (fruit " .. tostring(fruit) .. "): " .. table.concat(parts, ", ") .. ". Logged once per launch.")
+end
+
 --- The entries a set of contributions and the destination's own remainder make. A slot contribution
 --- is a birth: graded from its evidence portion on the cutter's path, a named unknown origin on any
 --- other. A carried contribution brings its own record.
 local function entriesOf(ctx, contributions, destinationBefore, outputName)
     local ev = ctx.report and ctx.report.outcomeEvidence or {}
-    local graded = ev.nativePath == P.GRADED_BIRTH_PATH
+    local graded = type(ev.nativePath) == "string" and P.GRADED_BIRTH_PATHS[ev.nativePath] == true
     local bySlot = {}
     if graded then
         for _, p in ipairs(type(ev.portions) == "table" and ev.portions or {}) do
             if type(p) == "table" and p.slotId ~= nil then bySlot[p.slotId] = p end
         end
+        if ev.nativePath == "GROUND_MOWER_CUT" and type(ev.portions) == "table" then logMowerClasses(ev.portions) end
     end
     local entries = {}
     for _, c in ipairs(contributions or {}) do

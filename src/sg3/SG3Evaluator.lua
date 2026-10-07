@@ -99,6 +99,9 @@ end
 
 --- One cut portion (SGHarvestCapture's evidence portion) born into output `outputName` at `amount`.
 function E.bornEntry(portion, amount, outputName)
+    -- Prepared foliage the Mower could not attribute "remains unknown origin" (:192, :515; Bob's 2.2
+    -- R-15): ORIGIN_UNPROVEN. Any other refused reading is SOURCE_PARTIAL.
+    if type(portion) == "table" and portion.prepared == true then return E.unknownEntry(amount, "ORIGIN_UNPROVEN") end
     if type(portion) ~= "table" or portion.knowledge ~= "KNOWN" then return E.unknownEntry(amount, "SOURCE_PARTIAL") end
     local row, cropKey = P.cropOf(portion.fruitName)
     if row == nil then return E.unknownEntry(amount, "UNSUPPORTED_MATERIAL") end
