@@ -86,6 +86,8 @@ local DESCS = {
         growthStateToName = { "sown", "germinated", "ripening", "harvestReady", "withered", "cut" },
         harvestReadyTransitions = { [3] = 6, [4] = 6 }, cutStates = { [6] = true }, witheredState = 5 }, FruitDesc),
 }
+-- A bench may add a descriptor of its own here (a model extension: the shipped game has many more fruits).
+ENGINE_FRUIT_DESCS = DESCS
 g_fruitTypeManager = {
     -- FruitTypeManager.lua:472 and :491.
     getDefaultDataPlaneId = function() return 1 end,

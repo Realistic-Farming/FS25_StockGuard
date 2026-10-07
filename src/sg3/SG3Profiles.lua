@@ -36,7 +36,7 @@ P.USE_PROFILE_FOR = { FOOD = P.FOOD_PROFILE, FEED = P.FEED_PROFILE }
 P.TRANSFORMS = { NATIVE_HAY_CONVERT_V1 = true, NATIVE_BALE_FEED_V1 = true }
 
 -- The native paths whose births are graded: the cutter's cut (SGHarvestCapture.PATH_CUT) and, since
--- Part 2.2, the Mower's cut (SGGroundObserver's GROUND_MOWER_CUT, MOWER_STATE_VOLUME_V1, :513-517).
+-- Part 2.2, the Mower's cut (SGGroundObserver's GROUND_MOWER_CUT, MOWER_STATE_VOLUME_V1, SG-2 :513-517).
 -- Every other birth is a named unknown origin, never graded.
 P.GRADED_BIRTH_PATHS = { COMBINE_CUT = true, GROUND_MOWER_CUT = true }
 

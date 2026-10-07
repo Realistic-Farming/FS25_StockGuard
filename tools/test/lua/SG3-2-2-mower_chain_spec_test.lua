@@ -2,15 +2,18 @@
 --
 -- SG-3 Part 2.2 (SG-3 v1.2 build brief; Bob's SG-3 intake of 2026-10-06, Part 2; his 2.2 R-15 of
 -- 2026-10-07): the Mower's cut is graded, and its pair is carried through the hay and the silage
--- square-bale chains. The Mower's births on GROUND_MOWER_CUT (MOWER_STATE_VOLUME_V1, :192, :513-517)
--- reach 2.1's evaluator with U4's inputs on each portion; prepared foliage is ORIGIN_UNPROVEN; the
--- Tedder's pass is NATIVE_HAY_CONVERT_V1 (:263) and a bale's fermentation NATIVE_BALE_FEED_V1 (:267);
+-- square-bale chains. The Mower's births on GROUND_MOWER_CUT (MOWER_STATE_VOLUME_V1, SG-3 :192, SG-2
+-- :513-517) reach 2.1's evaluator with U4's inputs on each portion; prepared foliage is ORIGIN_UNPROVEN;
+-- the Tedder's pass is NATIVE_HAY_CONVERT_V1 (:263) and a bale's fermentation NATIVE_BALE_FEED_V1 (:267);
 -- a bale's current assessment needs SOIL_BALE_CONDITION_V1, which is Part 3 (:254).
 --
 -- THE ENTRY-POINT BAR IS GROUP M (with H2 and S2 for the chains): bale-2b's world, VERBATIM (main.lua's
 -- install, the live Baler class, the Bale, the wrapper, the item system and the savegame controller),
--- with SG-3's modules in main.lua's order and the field tool model's Mower and Tedder ported. Every
--- machine is a vehicle in the mission's list before the barrier; the meadow is sown on the fruit plane;
+-- with SG-3's modules in main.lua's order, the field tool model's Mower and Tedder ported, and the meadow
+-- as its own descriptor (MEADOW, the grass row; greenMiddle and harvestReady its mowing states, harvestReady
+-- also withered, as SG-3 :204 describes the shipped meadow) on the shipped converter pairs (MEADOW to
+-- GRASS_WINDROW, WHEAT to STRAW; maps_fruitTypes.xml:59-67). Every machine is a vehicle in the mission's
+-- list before the barrier; the meadow is sown on the fruit plane;
 -- Soil is reachable only as the mission handle. Nothing pre-fills a quality record, a carrier, a stock,
 -- a catalogue or a maturity class: each record exists because a native call made it.
 --
@@ -2019,12 +2022,36 @@ function Mission:getHarvestScaleMultiplier() return 1 end
 local QB = "qualityBasisV1"
 local Q3 = SG3Quality
 
+-- ── The meadow (a model extension; Bob's 2.2 build R-15) ──────────────────────────────────────
+-- The shipped Mower converts GRASS and MEADOW to GRASS_WINDROW and WHEAT, BARLEY, OAT, CANOLA and
+-- SOYBEAN to STRAW (maps_fruitTypes.xml:59-67). The engine model has WHEAT and BARLEY only, and the
+-- field tool model stands the meadow in with WHEAT, a pair the shipped Mower never makes. So the meadow
+-- is its own descriptor here, named MEADOW (SG-3's grass row, GRASS_QUALITY_V1), shaped as the brief
+-- describes the shipped meadow (SG-3 :204, citing meadowEU/meadow.xml:43): greenMiddle (3) and
+-- harvestReady (4) are the ordinary mowing states, both harvest-ready transitions at yield scales .5 and
+-- 1, and harvestReady is flagged withered as well. GRASS_QUALITY_V1's precedence (:194) reads it
+-- HARVEST_READY before the withered test; without it, it would be WITHERED. The other state names are
+-- the model's. It regrows from 3, so the preparation (updateMowerArea) makes mowable decoration
+-- greenMiddle meadow.
+FruitType.MEADOW = 13
+ENGINE_FRUIT_DESCS[FruitType.MEADOW] = setmetatable({ index = FruitType.MEADOW, name = "MEADOW",
+    fillTypeIndex = g_fillTypeManager:getFillTypeIndexByName("GRASS"), windrowFillTypeIndex = GRASS, literPerSqm = 1, windrowLiterPerSqm = 1, hasWindrow = true,
+    minHarvestingGrowthState = 3, maxHarvestingGrowthState = 4, minForageGrowthState = 3, maxForageGrowthState = 4, cutState = 6,
+    harvestTransitions = { [3] = 6, [4] = 6 }, yieldScales = { [3] = 0.5, [4] = 1 }, terrainDataPlaneId = 1,
+    densityTypeIndex = 3, startStateChannel = 2, numStateChannels = 3,
+    growthStateToName = { "sown", "greenSmall", "greenMiddle", "harvestReady", "withered", "cut" },
+    harvestReadyTransitions = { [3] = 6, [4] = 6 }, cutStates = { [6] = true }, witheredState = 4, regrows = true, firstRegrowthState = 3 },
+    getmetatable(ENGINE_FRUIT_DESCS[FruitType.WHEAT]))
+
 -- ── Soil's values on the mission handle ───────────────────────────────────────────────────────
 -- Shaped on SoilFertilityManager:getSoilValueAtWorld (a value and Soil's grain), published as
 -- g_currentMission.soilFertilityManager (SoilFertilizer main.lua:761), the only route; added beside the
 -- 5d surface soilOn publishes. Wheat's row is N 35/55, P 25/40, K 25/40: N 45 fits .5, P 40 fits 1,
 -- K 25 fits 0, so npkFit 50; pH 6.5 is the optimum 100; agronomyFit = .75 x 50 + .25 x 100 = 62.5 (:180).
 -- A harvest-ready cut earns .6 x 62.5 + .4 x 100 = 77.5 (:180-198); Feed's bands 80/60 make it a B.
+-- The grass row is N 30/50, P 25/40, K 20/40: N 45 fits .75, P 40 fits 1, K 25 fits .25, so npkFit
+-- 66.67 and agronomyFit 75; a harvest-ready (or greenMiddle) meadow cut earns .6 x 75 + .4 x 100 = 85,
+-- Feed's A.
 local SOILV = { nitrogen = 45, phosphorus = 40, potassium = 25, pH = 6.5 }
 local function chainSoil(m) m.soilFertilityManager.getSoilValueAtWorld = function(_, key, x, z) return SOILV[key], 2 end end
 
@@ -2059,9 +2086,9 @@ end
 local function chainBuild(kind)
     return function(m, w)
         chainSoil(m)
-        -- "straw": the Mower's converter turns the cut into STRAW, the shape of the admitted oilseed-to-STRAW
-        -- converter (NATIVE_MOWER_STRAW_V1, SG-2 :185, SG-3 :320) on the bench's one forage fruit.
-        local mopts = kind == "straw" and { converters = { [FruitType.MEADOW] = { fillTypeIndex = STRAW_FT, conversionFactor = 200.37 } } } or nil
+        -- "straw": the shipped Mower's WHEAT -> STRAW converter (maps_fruitTypes.xml:62; NATIVE_MOWER_STRAW_V1,
+        -- SG-2 :185, SG-3 :320), the same factor as the meadow's.
+        local mopts = kind == "straw" and { converters = { [FruitType.WHEAT] = { fillTypeIndex = STRAW_FT, conversionFactor = 200.37 } } } or nil
         w.mower = vehicleIn(m, ENGINE_NEW_MOWER("vehicle:mower", mopts))
         w.mower.eventListeners.onLoadFinished = {}
         if kind == "hay" then
@@ -2159,44 +2186,47 @@ group("M", function()
     sowMeadow(4)
     local lines = printed(function() ENGINE_MOWER_TICK(w.mower) end)
     local cells, litres, n = cellsText(m, sg)
-    T.eq("M1 [entry point] the Mower's cut is graded (MOWER_STATE_VOLUME_V1, :192, :513-517): every ground cell of its drop holds the brief's pair, wheat's calibration, GRASS_WINDROW as the material, Food ineligible and Feed eligible",
+    T.eq("M1 [entry point] the Mower's cut is graded (MOWER_STATE_VOLUME_V1, SG-3 :192, SG-2 :513-517): every ground cell of its drop holds the brief's pair, the grass row's calibration (GRASS_QUALITY_V1), GRASS_WINDROW as the material, Food ineligible and Feed eligible",
         n .. " cells, " .. num(litres) .. " L: " .. cells,
-        "50 cells, 400 L: KNOWN 8/8 e77.5 r77.5 wheat/wheat/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[] x50")
+        "50 cells, 400 L: KNOWN 8/8 e85 r85 grass/grass/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[] x50")
     -- The cut made 2 x 200.37 = 400.74 L (the converter's factor, not a round number); the ground took 50
     -- cells of 8 L and the rest stays in the drop area's buffer (Mower.lua:358-367), a live stock.
     local buf = stockAt(sg, cid(NA.mowerBufferBinding(w.mower, 2)))
     T.eq("M2 the Mower's buffer, born from the GROUND_MOWER_CUT witness, holds the same pair on the litres it has not dropped",
         tostring(buf and buf.materialRef and buf.materialRef.fillTypeName) .. "|" .. fq((read(m, refOfStock(sg, buf), QB))),
-        "GRASS_WINDROW|KNOWN 0.74/0.74 e77.5 r77.5 wheat/wheat/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[]")
+        "GRASS_WINDROW|KNOWN 0.74/0.74 e85 r85 grass/grass/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[]")
     local cell = groundStocks(sg)[1]
-    T.eq("M3 a cell's current assessment: Food UNSUITABLE (grass windrow is Feed-only, :246), Feed a B at 77.5",
-        assess(m, refOfStock(sg, cell)), "READY KNOWN UNSUITABLE - - [FOOD_ORIGIN_INELIGIBLE] | READY KNOWN SUITABLE B 77.5 []")
+    T.eq("M3 a cell's current assessment: Food UNSUITABLE (grass windrow is Feed-only, :246), Feed an A at 85",
+        assess(m, refOfStock(sg, cell)), "READY KNOWN UNSUITABLE - - [FOOD_ORIGIN_INELIGIBLE] | READY KNOWN SUITABLE A 85 []")
     -- The cut's two pixels lie in two Soil cells, so it has two portions of the same state: one entry.
     T.eq("M4 NAMED (Bob's 2.2 R-15, point 2): the first graded mower cut of a launch logs each captured state name and its RAW_MATURITY_V1 class, one entry per distinct pair",
         tostring(first(lines, "[StockGuard] SG-3: first graded mower cut")),
-        "[StockGuard] SG-3: first graded mower cut (fruit WHEAT): state harvestReady HARVEST_READY. Logged once per launch.")
+        "[StockGuard] SG-3: first graded mower cut (fruit MEADOW): state harvestReady HARVEST_READY. Logged once per launch.")
     sowMeadow(4)
     local again = printed(function() ENGINE_MOWER_TICK(w.mower) end)
     T.eq("M5 a second graded cut in the same launch logs nothing more", count(again, "first graded mower cut"), 0)
     FSBaseMission.delete(m)
-    -- Another launch: one pixel at 3, the other at 4, so two distinct pairs, sorted.
+    -- Another launch: the first pixel at 4 (harvestReady), the second at 3 (greenMiddle), so the cut's
+    -- portions come in the other order from the sorted line.
     resetWorld()
     soilReset()
     Q3.mowerClassLogged = false
     m, sg, host, w = chainBoot("plain", "c22m6", 406)
-    ENGINE_PLANE.sow(FruitType.MEADOW, -1, -1, 0, 0, 3)
-    ENGINE_PLANE.sow(FruitType.MEADOW, 0, -1, 1, 0, 4)
+    ENGINE_PLANE.sow(FruitType.MEADOW, -1, -1, 0, 0, 4)
+    ENGINE_PLANE.sow(FruitType.MEADOW, 0, -1, 1, 0, 3)
     lines = printed(function() ENGINE_MOWER_TICK(w.mower) end)
-    -- The model's descriptor makes 3 (ripening) and 4 (harvestReady) both harvest-ready transitions.
-    T.eq("M6 a cut over two states names both, once each, sorted", tostring(first(lines, "[StockGuard] SG-3: first graded mower cut")),
-        "[StockGuard] SG-3: first graded mower cut (fruit WHEAT): state harvestReady HARVEST_READY, state ripening HARVEST_READY. Logged once per launch.")
+    -- harvestReady is also the meadow's withered state: it reads HARVEST_READY through GRASS_QUALITY_V1's
+    -- precedence (:194, :204), the line Bob's R-15 asks the tester to read.
+    T.eq("M6 NAMED (:204): a cut over greenMiddle and harvestReady names both HARVEST_READY under the grass row, once each, sorted",
+        tostring(first(lines, "[StockGuard] SG-3: first graded mower cut")),
+        "[StockGuard] SG-3: first graded mower cut (fruit MEADOW): state greenMiddle HARVEST_READY, state harvestReady HARVEST_READY. Logged once per launch.")
     FSBaseMission.delete(m)
-    -- A Mower whose converter makes STRAW (SG-2 :185, SG-3 :320: "existing straw Feed-only eligibility and
+    -- A Mower converting wheat to STRAW (SG-2 :185, SG-3 :320: "existing straw Feed-only eligibility and
     -- common intrinsic quality ... including the admitted oilseed-to-STRAW converter; no Food").
     resetWorld()
     soilReset()
     m, sg, host, w = chainBoot("straw", "c22m7", 410)
-    sowMeadow(4)
+    ENGINE_PLANE.sow(FruitType.WHEAT, -1, -1, 1, 1, 4)
     ENGINE_MOWER_TICK(w.mower)
     local cells7, litres7, n7 = cellsText(m, sg)
     T.eq("M7 NAMED (NATIVE_MOWER_STRAW_V1, row 193's :185 remainder): a Mower converting to STRAW births graded straw: the crop's pair, Feed-only, no Food",
@@ -2206,7 +2236,7 @@ group("M", function()
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
--- P. PREPARED FOLIAGE IS ORIGIN_UNPROVEN (:192, :515; Bob's 2.2 R-15, point 1)
+-- P. PREPARED FOLIAGE IS ORIGIN_UNPROVEN (SG-3 :192, SG-2 :515; Bob's 2.2 R-15, point 1)
 -- ══════════════════════════════════════════════════════════════════════════
 group("P", function()
     -- Both cut pixels carry only mowable decoration: the preparation makes them meadow at its first
@@ -2249,16 +2279,16 @@ group("H", function()
     ENGINE_TEDDER_TICK(w.tedder)
     local cells = cellsText(m, sg)
     T.eq("H1 the Tedder's pass is NATIVE_HAY_CONVERT_V1 (:263): every tedded cell keeps the mower's pair, Feed-only, and records the transform",
-        cells, "KNOWN 8/8 e77.5 r77.5 wheat/wheat/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[] last NATIVE_HAY_CONVERT_V1 x50")
+        cells, "KNOWN 8/8 e85 r85 grass/grass/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[] last NATIVE_HAY_CONVERT_V1 x50")
     tick(w.baler)
     local bales = listed(w.baler)
     local bale = bales[1]
     local s = bale ~= nil and baleStock(sg, bale) or nil
     T.eq("H2 [entry point] the Baler's pickup and its square finish carry the pair onto the bale: DRYGRASS_WINDROW, the brief's pair, Feed-only; a bale formed from several cells is a plain combine, so it records no lastTransform (:240)",
         #bales .. "|" .. tostring(s and s.materialRef and s.materialRef.fillTypeName) .. "|" .. fq((read(m, refOfStock(sg, s), QB))),
-        "1|DRYGRASS_WINDROW|KNOWN 100/100 e77.5 r77.5 wheat/wheat/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[]")
+        "1|DRYGRASS_WINDROW|KNOWN 100/100 e85 r85 grass/grass/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[]")
     T.eq("H3 the bale's current assessment needs SOIL_BALE_CONDITION_V1 (Part 3): UNAVAILABLE with CONDITION_UNAVAILABLE, the recorded pair a historical letter (:254, :388)",
-        assess(m, refOfStock(sg, s)), "UNAVAILABLE UNAVAILABLE UNAVAILABLE - - [CONDITION_UNAVAILABLE] h:-/77.5 | UNAVAILABLE UNAVAILABLE UNAVAILABLE - - [CONDITION_UNAVAILABLE] h:B/77.5")
+        assess(m, refOfStock(sg, s)), "UNAVAILABLE UNAVAILABLE UNAVAILABLE - - [CONDITION_UNAVAILABLE] h:-/85 | UNAVAILABLE UNAVAILABLE UNAVAILABLE - - [CONDITION_UNAVAILABLE] h:A/85")
     FSBaseMission.delete(m)
 end)
 
@@ -2276,7 +2306,7 @@ group("S", function()
     local s0 = bale ~= nil and baleStock(sg, bale) or nil
     T.eq("S1 the Baler picks the Mower's grass windrow up and finishes a square GRASS_WINDROW bale carrying the pair",
         tostring(s0 and s0.materialRef and s0.materialRef.fillTypeName) .. "|" .. fq((read(m, refOfStock(sg, s0), QB))),
-        "GRASS_WINDROW|KNOWN 100/100 e77.5 r77.5 wheat/wheat/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[]")
+        "GRASS_WINDROW|KNOWN 100/100 e85 r85 grass/grass/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[]")
     -- The wrapper grabs and wraps it; BaleManager calls onFermentationEnd at the fermentation's end (BaleManager.lua:208).
     BW.grab(w.wrapper, bale)
     BW.wrap(w.wrapper, 1)
@@ -2284,9 +2314,9 @@ group("S", function()
     local s = baleStock(sg, bale)
     T.eq("S2 [entry point] the fermentation's end is NATIVE_BALE_FEED_V1 (:267): the bale is SILAGE, keeps the pair, Feed-only, and records the transform it performed (:240)",
         tostring(s and s.materialRef and s.materialRef.fillTypeName) .. "|" .. fq((read(m, refOfStock(sg, s), QB))),
-        "SILAGE|KNOWN 100/100 e77.5 r77.5 wheat/wheat/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[] last NATIVE_BALE_FEED_V1")
+        "SILAGE|KNOWN 100/100 e85 r85 grass/grass/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[] last NATIVE_BALE_FEED_V1")
     T.eq("S3 the silage bale's current assessment is UNAVAILABLE with CONDITION_UNAVAILABLE and the historical letter (:254)",
-        assess(m, refOfStock(sg, s)), "UNAVAILABLE UNAVAILABLE UNAVAILABLE - - [CONDITION_UNAVAILABLE] h:-/77.5 | UNAVAILABLE UNAVAILABLE UNAVAILABLE - - [CONDITION_UNAVAILABLE] h:B/77.5")
+        assess(m, refOfStock(sg, s)), "UNAVAILABLE UNAVAILABLE UNAVAILABLE - - [CONDITION_UNAVAILABLE] h:-/85 | UNAVAILABLE UNAVAILABLE UNAVAILABLE - - [CONDITION_UNAVAILABLE] h:A/85")
     FSBaseMission.delete(m)
 end)
 
@@ -2307,18 +2337,18 @@ group("R", function()
     local cellsAfter, litresAfter, nAfter = cellsText(m2, sg2)
     T.eq("R1 a save and a reload with the tedded windrow on the ground: every cell comes back with its record as it was",
         nAfter .. " cells, " .. num(litresAfter) .. " L: " .. cellsAfter .. "|" .. tostring(cellsAfter == cellsBefore and nAfter == nBefore and litresAfter == litresBefore),
-        "50 cells, 400 L: KNOWN 8/8 e77.5 r77.5 wheat/wheat/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[] last NATIVE_HAY_CONVERT_V1 x50|true")
+        "50 cells, 400 L: KNOWN 8/8 e85 r85 grass/grass/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[] last NATIVE_HAY_CONVERT_V1 x50|true")
     tick(w2.baler)
     local s = baleStock(sg2, listed(w2.baler)[1])
     local before = s ~= nil and SGValues.copy(s.properties[QB]) or nil
     T.eq("R2 the Baler in the reloaded mission bales the restored cells, and the bale carries their pair",
-        fq((read(m2, refOfStock(sg2, s), QB))), "KNOWN 100/100 e77.5 r77.5 wheat/wheat/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[]")
+        fq((read(m2, refOfStock(sg2, s), QB))), "KNOWN 100/100 e85 r85 grass/grass/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[]")
     local m3, sg3, host3, w3 = reload2b(m2, w2, "c22r2", 409, { capacity = 100, lay = {}, build = chainBuild("hay") })
     local bale3 = listed(w3.baler)[1]
     local s3 = bale3 ~= nil and baleStock(sg3, bale3) or nil
     T.eq("R3 a second save and reload: the square hay bale's record comes back exactly as saved",
         tostring(s3 ~= nil and before ~= nil and SGValues.equal(s3.properties[QB], before)) .. "|" .. fq(s3 and s3.properties[QB]),
-        "true|KNOWN 100/100 e77.5 r77.5 wheat/wheat/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[]")
+        "true|KNOWN 100/100 e85 r85 grass/grass/GRASS_WINDROW food 0/1/0[FOOD_ORIGIN_INELIGIBLE] feed 1/0/0[]")
     FSBaseMission.delete(m3)
 end)
 end

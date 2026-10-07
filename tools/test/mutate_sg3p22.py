@@ -12,11 +12,16 @@
 #
 # NOT RUN, and why:
 #   - primaryFillTypeName on the mower's portion and on its evidence copy: bornEntry reads it only to grant
-#     Food to a food crop's own primary output, and every mower output is Feed-only (GRASS_WINDROW, STRAW)
-#     or not the fruit's primary, so Food is ineligible either way (equivalent on every mower birth); the
-#     field is carried as the cutter carries it;
+#     Food to a food crop's own primary output, and every shipped Mower converter (maps_fruitTypes.xml:59-67:
+#     GRASS and MEADOW to GRASS_WINDROW; WHEAT, BARLEY, OAT, CANOLA and SOYBEAN to STRAW) makes a Feed-only
+#     output, so Food is ineligible either way (equivalent on every shipped pair). The field is kept, as the
+#     cutter carries it, for a map's own converter;
 #   - the cutter's own graded path (COMBINE_CUT in P.GRADED_BIRTH_PATHS): mutate_sg3p21.py's P7;
 #   - comments.
+#
+# ONE EXTRA, on an unchanged 2.1 line: X1 removes GRASS_QUALITY_V1's precedence (SG3Evaluator.classify), to
+# show the entry-point bar now reaches it (Bob's 2.2 build R-15 MAJOR: the bench's meadow was the model's
+# wheat, so a meadow cut never selected the grass row). Its own battery is mutate_sg3p21.py.
 #
 # Anchors are written with "\n"; in a CRLF file they are matched as "\r\n".
 #
@@ -51,6 +56,7 @@ DEDUPE = "            if not seen[part] then\n"
 SORT = "    table.sort(parts)\n"
 KNOWN_ONLY = '        if type(p) == "table" and p.knowledge == "KNOWN" and type(p.maturity) == "table" then\n'
 PREPARED = '    if type(portion) == "table" and portion.prepared == true then return E.unknownEntry(amount, "ORIGIN_UNPROVEN") end\n'
+GRASS_FIRST = '    if selector == "GRASS_QUALITY_V1" and m.harvestReady == true and type(m.stateName) == "string"\n'
 
 MUTATIONS = [
  # ── the mower's plan and its evidence ──
@@ -69,6 +75,9 @@ MUTATIONS = [
  ("Q6-unknown-portions-named", QU, [(KNOWN_ONLY, KNOWN_ONLY.replace('p.knowledge == "KNOWN" and ', ""), 1)], "a prepared portion's class is named (P1b)", BENCH),
  # ── prepared foliage ──
  ("B1-prepared-source-partial", EV, [(PREPARED, "", 1)], "prepared foliage is SOURCE_PARTIAL (P1)", BENCH),
+ # ── the extra (an unchanged 2.1 line) ──
+ ("X1-no-grass-precedence", EV, [(GRASS_FIRST, '    if false and selector == "GRASS_QUALITY_V1" and m.harvestReady == true and type(m.stateName) == "string"\n', 1)],
+  "the meadow's harvestReady, also its withered state, reads WITHERED (M1, M4)", BENCH),
 ]
 
 
