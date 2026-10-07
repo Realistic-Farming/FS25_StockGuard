@@ -281,14 +281,32 @@ local function carrierRow(self, carrier, actor)
     }
 end
 
+--- [MAINTENANCE row 238] The STOCK row's knowledge as this viewer may know it (SG-1 :255, :295; SG-3 :47,
+--- :505, :507: a withheld property leaves no trace). SG-1's stock.knowledge is derived from every record on
+--- the stock (SGOperations.knowledgeOf) and stays as it is for trusted reads (the sale facade, the settle).
+--- The row instead derives it from the children the row shows, a DISCLOSURE_DENIED property (omitted)
+--- counting for nothing, and carries over the inventory's own state, which SG-1 marks on the stock:
+---   * an unresolved settlement (SGOperations.settlementQualified): the stock UNAVAILABLE with a reason
+---     that every record carries too;
+---   * an unexplained delta: the reason UNEXPLAINED_DELTA, which the settle's UPDATE, BIRTH and REPLACE
+---     set, and reconcile's drift sets too since this row (never read from the records, which a hidden
+---     one would move: Bob's R-15).
+function W.rowKnowledge(stock, children)
+    local own = SGOperations.knowledgeOf({ properties = children or {} })
+    if SGOperations.settlementQualified(stock) then return "UNAVAILABLE" end
+    if stock.reason == "UNEXPLAINED_DELTA" and own == "KNOWN" then return "PARTIAL" end
+    return own
+end
+
 local function stockRow(self, stock, carrier, actor)
     local n = carrier.native or {}
     local navId, role = navigationOf(self, carrier)
+    local children = disclosedProperties(self, stock, actor, carrier)
     return {
         rowKind = "STOCK", stockRef = self.operations:stockRef(stock), carrierId = carrier.carrierId, quantityBasisKey = stock.quantityBasisKey,
         materialRef = copy(stock.materialRef), amount = stock.observedAmount, amountUnit = amountUnitToken(stock.amountUnit) or "UNAVAILABLE",
-        label = tostring(n.label or carrier.binding.profileId), positionKnown = n.x ~= nil, x = n.x, z = n.z, knowledge = stock.knowledge,
-        properties = disclosedProperties(self, stock, actor, carrier), navigationCarrierId = navId, navigationRole = role,
+        label = tostring(n.label or carrier.binding.profileId), positionKnown = n.x ~= nil, x = n.x, z = n.z, knowledge = W.rowKnowledge(stock, children),
+        properties = children, navigationCarrierId = navId, navigationRole = role,
         actions = actionsFor(self, "STOCK", stock.stockId, actor),
     }
 end
