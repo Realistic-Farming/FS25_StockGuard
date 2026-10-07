@@ -26,6 +26,8 @@
 --      reload, pinned
 --   T  partial coverage (a carried record covering part of a cell) round-trips exactly
 --   O  a payload in the layout before this row loads byte-exact
+--   D  a downgrade round trip (Bob's MAJOR): a payload whose cells lost their lists loads every record,
+--      markers off and the named fields absent, never a refusal of the whole ground
 --   V  validCell refuses a malformed cell list
 --
 --!env: modenv
@@ -1098,6 +1100,43 @@ group("O", function()
     T.eq("O1 [world] the old layout: no marker in any set", tostring(marked), "0")
     local m2, sg2 = reload(m, "m239_o", mowerBuild, { index = 405 })
     T.eq("O2 an old payload loads byte-exact", compare(before, (recordsOf(sg2))), n .. "/" .. n)
+    FSBaseMission.delete(m2)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- D. A DOWNGRADE ROUND TRIP (Bob's MAJOR on #57)
+-- ══════════════════════════════════════════════════════════════════════════
+-- A build before this row loads a new payload keeping each record's markers (SG-1 keeps unknown record
+-- keys) with the named fields absent, and its save drops every cell's list (its runs codec copies named
+-- fields only). That save is made here by stripping every cell's list from this build's own write.
+group("D", function()
+    local m, sg = drivenField("m239_d", 406)
+    local before, n = recordsOf(sg)
+    local real = GR.groundRecords
+    GR.groundRecords = function(self)
+        local cells, properties, historical = real(self)
+        for _, c in pairs(cells) do c.cellValues = nil end
+        return cells, properties, historical
+    end
+    local ok, err = pcall(nativeSave, m, "m239_d")
+    GR.groundRecords = real
+    if not ok then error(err, 0) end
+    local m2, sg2 = reload(m, "m239_d", mowerBuild, { index = 406 })
+    local restored, marked, numbers, others = 0, 0, 0, 0
+    local expect = {}
+    for id in pairs(before) do expect[id] = true end
+    for _, s in ipairs(groundStocks(sg2)) do
+        local q = s.properties[GRADED]
+        if q ~= nil and expect[s.stockId] then
+            restored = restored + 1
+            if q[GR.CELL_RECORD_MARK] ~= nil or q[GR.CELL_PAYLOAD_MARK] ~= nil then marked = marked + 1 end
+            if q.knownAmount ~= nil or q.basisAmount ~= nil or (q.payload and (q.payload.earnedScore ~= nil or q.payload.remainingScore ~= nil)) then numbers = numbers + 1 end
+            if not (q.payload and q.payload.sourceWitness and q.payload.sourceWitness.originUse) then others = others + 1 end
+        end
+    end
+    T.eq("D1 a payload whose cells lost their lists loads every cell's record: markers off, coverage and score pair absent, the rest kept",
+        tostring(sg2.ground.lastRestore and sg2.ground.lastRestore.restored) .. "/" .. restored .. "/" .. marked .. "/" .. numbers .. "/" .. others,
+        n .. "/" .. n .. "/0/0/0")
     FSBaseMission.delete(m2)
 end)
 

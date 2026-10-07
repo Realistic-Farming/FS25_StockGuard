@@ -1,6 +1,6 @@
 # StockGuard MAINTENANCE row 239 mutation battery: per-cell values in the ground save (src/native/SGGround.lua:
 # groundRecords, coreOf, validCell and the runs codec). Rows: MAINT-239-ground_cell_values_spec_test.lua
-# groups S (the entry-point bar), Z, T, O and V.
+# groups S (the entry-point bar), Z, T, O, D and V.
 #
 # TARGETED (Tyson, 2026-09-25 and 2026-09-30): only the lines this PR changes; each mutant runs against
 # the one bench named beside it, never the whole suite. Run ONE mutant per call, in the foreground, and
@@ -69,10 +69,12 @@ NUM_OUT = "                        r.payload[k] = nil\n"
 REC_MARK = "                if recFields ~= nil then r[GR.CELL_RECORD_MARK] = recFields end\n"
 PAY_MARK = "                if payFields ~= nil then r[GR.CELL_PAYLOAD_MARK] = payFields end\n"
 CELL_OUT = "                materialRevisions = revisions, cellValues = cellValues ~= nil and cellList or nil }\n"
-MARKED = '                if type(rf) == "table" or type(pf) == "table" then\n'
+MARKED = '                elseif type(rf) == "table" or type(pf) == "table" then\n'
+DEGRADE = '                if (type(rf) == "table" or type(pf) == "table") and c.cellValues == nil then\n'
 FROM_LITRES = "                        if v == false then v = c.liters end\n"
 PAY_BACK = "                        r.payload[k] = v\n"
-UNMARK = "                    r[GR.CELL_RECORD_MARK], r[GR.CELL_PAYLOAD_MARK] = nil, nil\n"
+COUNT_CHECK = '                    if pos ~= #vals then return nil, "CELL_VALUES:" .. tostring(i) end\n'
+UNMARK = COUNT_CHECK + "                    r[GR.CELL_RECORD_MARK], r[GR.CELL_PAYLOAD_MARK] = nil, nil\n"
 VALID_IF = "    if c.cellValues ~= nil then\n"
 VALID_X = '                    if x ~= false and not isFinite(x) then return nil, "CELL_VALUES" end\n'
 ENC = "                    cellValues = c.cellValues ~= nil and copy(c.cellValues) or nil }\n"
@@ -80,17 +82,19 @@ DEC = "                        cellValues = r.cellValues ~= nil and copy(r.cellV
 
 MUTATIONS = [
  # ── the write ──
- ("W1-coverage-stays-shared", GR, [(COV_OUT, "", 1)], "coverage stays in the shared set: the sets split per cell again (Z1, Z2)", BENCH),
+ ("W1-coverage-stays-shared", GR, [(COV_OUT, "", 1)], "coverage stays in the shared set: the save grows and a stripped save still carries it (Z2, D1)", BENCH),
  ("W2-litres-written", GR, [(LITRES, "                        vals[#vals + 1] = r[f]\n", 1)], "a coverage equal to the litres is written per cell (Z2)", BENCH),
  ("W3-numbers-stay-shared", GR, [(NUM_OUT, "", 1)], "the score pair stays in the shared set: the sets split per cell again (Z1, Z2)", BENCH),
  ("W4-no-record-marker", GR, [(REC_MARK, "", 1)], "the shared copy does not name its coverage: it comes back absent (S1)", BENCH),
  ("W5-no-payload-marker", GR, [(PAY_MARK, "", 1)], "the shared copy does not name its numbers: the pair comes back absent (S1)", BENCH),
  ("W6-cell-list-dropped", GR, [(CELL_OUT, "                materialRevisions = revisions, cellValues = nil }\n", 1)], "the cell's values are never written (S1)", BENCH),
  # ── the restore ──
- ("R1-every-record-needs-values", GR, [(MARKED, "                if true then\n", 1)], "a record without markers (an old payload) is refused (O2, S1)", BENCH),
+ ("R1-every-record-needs-values", GR, [(MARKED, "                elseif true then\n", 1)], "a record without markers (an old payload) is refused (O2, S1)", BENCH),
+ ("D1-no-degrade", GR, [(DEGRADE, "                if false then\n", 1)],
+  "a cell whose list a downgrade dropped refuses the whole ground (D1; Bob's MAJOR on #57)", BENCH),
  ("R2-litres-not-restored", GR, [(FROM_LITRES, "", 1)], "a coverage the save left out does not come back from the litres (S1)", BENCH),
  ("R3-numbers-not-restored", GR, [(PAY_BACK, "", 1)], "the score pair does not come back (S1)", BENCH),
- ("R4-markers-kept", GR, [(UNMARK, "", 1)], "the restored record keeps the markers (S1)", BENCH),
+ ("R4-markers-kept", GR, [(UNMARK, COUNT_CHECK, 1)], "the restored record keeps the markers (S1)", BENCH),
  # ── validCell ──
  ("V1-list-unchecked", GR, [(VALID_IF, "    if false then\n", 1)], "any cell list is accepted (V1)", BENCH),
  ("V2-values-unchecked", GR, [(VALID_X, "", 1)], "a value of any shape is accepted (V1)", BENCH),

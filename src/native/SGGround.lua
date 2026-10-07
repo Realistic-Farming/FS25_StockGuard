@@ -584,7 +584,14 @@ function GR.coreOf(identity, cells, properties, historical)
             -- value the save left out from the cell's litres. A payload written before carries no marker.
             if type(r) == "table" then
                 local rf, pf = r[GR.CELL_RECORD_MARK], r[GR.CELL_PAYLOAD_MARK]
-                if type(rf) == "table" or type(pf) == "table" then
+                if (type(rf) == "table" or type(pf) == "table") and c.cellValues == nil then
+                    -- Bob's MAJOR on #57: a build before this row loads such a record with its markers (SG-1
+                    -- keeps unknown record keys) and the named fields absent, and its own save drops every
+                    -- cell's list (its runs codec copies named fields only). Its record degrades as it already
+                    -- had: the markers come off and the named fields stay absent (both valid), never a
+                    -- refusal of the whole ground. A list present but malformed still refuses.
+                    r[GR.CELL_RECORD_MARK], r[GR.CELL_PAYLOAD_MARK] = nil, nil
+                elseif type(rf) == "table" or type(pf) == "table" then
                     local vals = c.cellValues ~= nil and c.cellValues[i] or nil
                     if type(vals) ~= "table" then return nil, "CELL_VALUES:" .. tostring(i) end
                     local pos = 0
