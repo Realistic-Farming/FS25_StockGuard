@@ -60,6 +60,16 @@
 --     carries it there), else the cell's dataRevision, so every record comes back as it
 --     was saved. An UPDATE installs before it bumps the stock and a publish restamps only
 --     its own record, so the revision is not derived from dataRevision alone;
+--   * MAINTENANCE row 239 (Bob's R-15 on SG-3 2.2): a graded record carries its cell's own
+--     coverage (knownAmount, basisAmount) and its own top-level numbers (SG-3's score pair), so
+--     a mown field's sets split per cell again. Those leave the shared copy, which names them
+--     in two lists (CELL_RECORD_MARK, CELL_PAYLOAD_MARK) so exactly they come back, and the cell
+--     carries them in an optional list cellValues, one entry per record of its set: false, or
+--     the values in the order the markers name them (false for a coverage value equal to the
+--     cell's litres, restored from the litres). Positions, not names, keep it small. What cells share
+--     stays shared: strings, nested tables (a witness, its masks and reasons), revisions,
+--     causes. Every record comes back as it was saved; a payload written before this carries
+--     no marker and loads as it always did;
 --   * the unresolved historical ground stocks travel beside them, bounded by the core's
 --     own retired-stock rule (SGOperations pruneRetired: at most 256 historical stocks).
 -- On reload the staged cells become a core-shaped set that the commit hands to SG-1's
@@ -82,6 +92,10 @@ GR.PAYLOAD_ROOT = "stockGuardGround"
 GR.READY = "READY"
 GR.UNAVAILABLE = "UNAVAILABLE"
 GR.PENDING = "PENDING"
+-- MAINTENANCE row 239: the record fields and the marker names of the per-cell values.
+GR.CELL_RECORD_FIELDS = { "knownAmount", "basisAmount" }
+GR.CELL_RECORD_MARK = "_sgCellRecord"
+GR.CELL_PAYLOAD_MARK = "_sgCellPayload"
 
 local isFinite = SGValues.isFinite
 local isInteger = SGValues.isInteger
@@ -183,6 +197,26 @@ function GR.validCell(c, properties)
             if not nonempty(pid, 128) or not nonempty(rev, 64) then return nil, "MATERIAL_REVISIONS" end
         end
     end
+    -- MAINTENANCE row 239: the cell's own values, one entry per record of its set, in the set's order:
+    -- false for a record that keeps nothing here, else the values its markers name, in their order
+    -- (false for a coverage value equal to the cell's litres).
+    if c.cellValues ~= nil then
+        if type(c.cellValues) ~= "table" or #c.cellValues == 0 then return nil, "CELL_VALUES" end
+        local n = 0
+        for _ in pairs(c.cellValues) do n = n + 1 end
+        if n ~= #c.cellValues then return nil, "CELL_VALUES" end
+        for _, v in ipairs(c.cellValues) do
+            if v ~= false then
+                if type(v) ~= "table" or #v == 0 then return nil, "CELL_VALUES" end
+                local m = 0
+                for _ in pairs(v) do m = m + 1 end
+                if m ~= #v then return nil, "CELL_VALUES" end
+                for _, x in ipairs(v) do
+                    if x ~= false and not isFinite(x) then return nil, "CELL_VALUES" end
+                end
+            end
+        end
+    end
     return c
 end
 
@@ -197,6 +231,7 @@ local function sameContents(a, b)
     return a.fillType == b.fillType and a.liters == b.liters and a.generation == b.generation and a.property == b.property
         and a.stockId == b.stockId and a.dataRevision == b.dataRevision and a.knowledge == b.knowledge and a.reason == b.reason
         and a.lastGeneration == b.lastGeneration and sameRevisions(a.materialRevisions, b.materialRevisions)
+        and SGValues.equal(a.cellValues, b.cellValues)
 end
 
 --- The cells as runs: sorted by z then x; a run extends over the next cell of the same
@@ -217,7 +252,8 @@ function GR.encodeCells(cells, properties)
         else
             run = { z = c.z, x = c.x, n = 1, fillType = c.fillType, liters = c.liters, generation = c.generation, property = c.property,
                     stockId = c.stockId, dataRevision = c.dataRevision, knowledge = c.knowledge, reason = c.reason, lastGeneration = c.lastGeneration,
-                    materialRevisions = c.materialRevisions ~= nil and copy(c.materialRevisions) or nil }
+                    materialRevisions = c.materialRevisions ~= nil and copy(c.materialRevisions) or nil,
+                    cellValues = c.cellValues ~= nil and copy(c.cellValues) or nil }
             runs[#runs + 1] = run
         end
     end
@@ -234,7 +270,8 @@ function GR.decodeRuns(runs, properties)
         for k = 0, r.n - 1 do
             local c = { x = (tonumber(r.x) or -1) + k, z = r.z, fillType = r.fillType, liters = r.liters, generation = r.generation, property = r.property,
                         stockId = r.stockId, dataRevision = r.dataRevision, knowledge = r.knowledge, reason = r.reason, lastGeneration = r.lastGeneration,
-                        materialRevisions = r.materialRevisions ~= nil and copy(r.materialRevisions) or nil }
+                        materialRevisions = r.materialRevisions ~= nil and copy(r.materialRevisions) or nil,
+                        cellValues = r.cellValues ~= nil and copy(r.cellValues) or nil }
             local ok, why = GR.validCell(c, properties)
             if ok == nil then return nil, "RUN:" .. i .. ":" .. why end
             local key = GR.cellKey(c.x, c.z)
@@ -352,7 +389,7 @@ function GR:groundRecords()
         if s ~= nil and type(d) == "table" and s.materialRef ~= nil and s.materialRef.kind == "FILL_TYPE" then
             -- MAINTENANCE row 237: the set is shared without each record's materialRevision; the
             -- cell keeps a revision only where it differs from its own dataRevision.
-            local records, revisions = {}, nil
+            local records, revisions, cellValues, cellList = {}, nil, nil, {}
             for i, p in ipairs(s.properties or {}) do
                 local r = copy(p)
                 if r.materialRevision ~= nil and r.materialRevision ~= s.dataRevision then
@@ -360,6 +397,36 @@ function GR:groundRecords()
                     revisions[r.propertyId] = r.materialRevision
                 end
                 r.materialRevision = nil
+                -- MAINTENANCE row 239: the record's own coverage and top-level numbers go with the cell,
+                -- in the order its markers name (false for coverage equal to the cell's litres).
+                local vals, recFields, payFields = nil, nil, nil
+                for _, f in ipairs(GR.CELL_RECORD_FIELDS) do
+                    if r[f] ~= nil then
+                        recFields = recFields or {}
+                        recFields[#recFields + 1] = f
+                        vals = vals or {}
+                        if r[f] == s.observedAmount then vals[#vals + 1] = false else vals[#vals + 1] = r[f] end
+                        r[f] = nil
+                    end
+                end
+                if type(r.payload) == "table" then
+                    local names = {}
+                    for k, v in pairs(r.payload) do
+                        if type(k) == "string" and type(v) == "number" then names[#names + 1] = k end
+                    end
+                    table.sort(names)
+                    for _, k in ipairs(names) do
+                        payFields = payFields or {}
+                        payFields[#payFields + 1] = k
+                        vals = vals or {}
+                        vals[#vals + 1] = r.payload[k]
+                        r.payload[k] = nil
+                    end
+                end
+                if recFields ~= nil then r[GR.CELL_RECORD_MARK] = recFields end
+                if payFields ~= nil then r[GR.CELL_PAYLOAD_MARK] = payFields end
+                if vals ~= nil then cellValues = cellValues or {} end
+                cellList[i] = vals or false
                 records[i] = r
             end
             local shared = { properties = records, acceptedCauses = s.acceptedCauses or {} }
@@ -373,7 +440,7 @@ function GR:groundRecords()
             end
             cells[GR.cellKey(d.x, d.z)] = { x = d.x, z = d.z, fillType = s.materialRef.fillTypeName, liters = s.observedAmount, generation = s.contentsGeneration,
                 property = pk, stockId = s.stockId, dataRevision = s.dataRevision, knowledge = s.knowledge, reason = s.reason, lastGeneration = c.lastGeneration,
-                materialRevisions = revisions }
+                materialRevisions = revisions, cellValues = cellValues ~= nil and cellList or nil }
         end
     end
     return cells, properties, rec.historical
@@ -506,12 +573,45 @@ function GR.coreOf(identity, cells, properties, historical)
         -- set's own value (a payload written before the row carries it there), else the cell's
         -- dataRevision (the record was installed with it and the save left it out).
         local records = copy(shared.properties)
-        for _, r in ipairs(records) do
+        for i, r in ipairs(records) do
             local own = c.materialRevisions ~= nil and type(r) == "table" and c.materialRevisions[r.propertyId] or nil
             if own ~= nil then
                 r.materialRevision = own
             elseif type(r) == "table" and r.materialRevision == nil then
                 r.materialRevision = c.dataRevision
+            end
+            -- MAINTENANCE row 239: the fields the shared copy names come back from the cell, a coverage
+            -- value the save left out from the cell's litres. A payload written before carries no marker.
+            if type(r) == "table" then
+                local rf, pf = r[GR.CELL_RECORD_MARK], r[GR.CELL_PAYLOAD_MARK]
+                if (type(rf) == "table" or type(pf) == "table") and c.cellValues == nil then
+                    -- Bob's MAJOR on #57: a build before this row loads such a record with its markers (SG-1
+                    -- keeps unknown record keys) and the named fields absent, and its own save drops every
+                    -- cell's list (its runs codec copies named fields only). Its record degrades as it already
+                    -- had: the markers come off and the named fields stay absent (both valid), never a
+                    -- refusal of the whole ground. A list present but malformed still refuses.
+                    r[GR.CELL_RECORD_MARK], r[GR.CELL_PAYLOAD_MARK] = nil, nil
+                elseif type(rf) == "table" or type(pf) == "table" then
+                    local vals = c.cellValues ~= nil and c.cellValues[i] or nil
+                    if type(vals) ~= "table" then return nil, "CELL_VALUES:" .. tostring(i) end
+                    local pos = 0
+                    for _, f in ipairs(type(rf) == "table" and rf or {}) do
+                        pos = pos + 1
+                        local v = vals[pos]
+                        if v == false then v = c.liters end
+                        if not isFinite(v) then return nil, "CELL_VALUE:" .. tostring(f) end
+                        r[f] = v
+                    end
+                    if type(pf) == "table" and type(r.payload) ~= "table" then return nil, "CELL_PAYLOAD" end
+                    for _, k in ipairs(type(pf) == "table" and pf or {}) do
+                        pos = pos + 1
+                        local v = vals[pos]
+                        if not isFinite(v) then return nil, "CELL_VALUE:" .. tostring(k) end
+                        r.payload[k] = v
+                    end
+                    if pos ~= #vals then return nil, "CELL_VALUES:" .. tostring(i) end
+                    r[GR.CELL_RECORD_MARK], r[GR.CELL_PAYLOAD_MARK] = nil, nil
+                end
             end
         end
         core.carriers[#core.carriers + 1] = { carrierId = cid, adapterId = A.NATIVE_ADAPTER_ID, binding = binding, lastGeneration = c.lastGeneration or c.generation,
