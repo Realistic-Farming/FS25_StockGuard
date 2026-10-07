@@ -317,6 +317,16 @@ local function scaleCoverage(stock, oldAmount, newAmount)
     end
 end
 
+--- [MAINTENANCE row 238] Is this stock held by an unresolved settlement? _qualifyCaptured marks one
+--- UNAVAILABLE with the operation's reason and qualifies every record with the same reason.
+function O.settlementQualified(stock)
+    if stock.knowledge ~= "UNAVAILABLE" or stock.reason == nil then return false end
+    for _, p in pairs(stock.properties) do
+        if p.knowledge ~= "UNAVAILABLE" or p.reason ~= stock.reason then return false end
+    end
+    return true
+end
+
 --- Overall knowledge of a stock from its properties: uniform states map
 --- exactly, mixtures are PARTIAL, no properties is UNKNOWN.
 function O.knowledgeOf(stock)
@@ -369,6 +379,10 @@ local function reconcile(self, carrierId, state, reason)
         stock.observedAmount = state.amount
         stock.dataRevision = bump(self)
         if stock.knowledge == "KNOWN" then stock.knowledge = "PARTIAL" end
+        -- [MAINTENANCE row 238] The change is unexplained whatever the knowledge was, and the reason
+        -- says so (MAINTENANCE row 197's reason), so a reader that sees only some of the records (the
+        -- player view) still knows it. An unresolved settlement's reason stands.
+        if not O.settlementQualified(stock) then stock.reason = "UNEXPLAINED_DELTA" end
         notify(self, "STOCK", stock.stockId)
     end
     return stock

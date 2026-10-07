@@ -448,7 +448,7 @@ group("E", function()
         "true/bale/true/nil")
     w.straw:setFillLevel(3000)
     sg.operations:refreshCarrier(host.nativeLease, NA.baleBinding(w.straw), "ADAPTER_OBSERVATION")
-    T.eq("E3 an external setFillLevel (:284, a direct set with no event) is SG-1's reconcile at the next read", stockText(stockOf(sg, w.straw)), "STRAW|3000|UNKNOWN|INITIAL_OBSERVATION")
+    T.eq("E3 an external setFillLevel (:284, a direct set with no event) is SG-1's reconcile at the next read, marked UNEXPLAINED_DELTA (MAINTENANCE row 238)", stockText(stockOf(sg, w.straw)), "STRAW|3000|UNKNOWN|UNEXPLAINED_DELTA")
     endMission(m)
 end)
 
