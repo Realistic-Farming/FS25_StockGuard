@@ -163,7 +163,8 @@ function E.recordEntry(record, amount)
         return mask(u.eligibleFraction or 0, u.ineligibleFraction or 0, u.unknownFraction or 1, copyList(u.reasons))
     end
     return { amount = amount, earned = pl.earnedScore, remaining = pl.remainingScore, cropKey = w.cropKey, calibrationKey = w.calibrationKey,
-             nativeSourceMaterial = w.nativeSourceMaterial, lastTransform = w.lastTransform, use = { FOOD = m(P.FOOD), FEED = m(P.FEED) } }
+             nativeSourceMaterial = w.nativeSourceMaterial, lastTransform = w.lastTransform, use = { FOOD = m(P.FOOD), FEED = m(P.FEED) },
+             covered = pl.coveredConditionCoordinates }
 end
 
 -- ── the combine (:51, :238, :252) ────────────────────────────────────────────
@@ -234,6 +235,15 @@ function E.combine(entries, basisAmount, performedTransform)
     end
     local payload = { representation = P.UNIFORM, profileId = P.SCORE_PROFILE, profileRevision = P.REVISION, originKind = P.ORIGIN_KIND,
                       sourceWitness = witness, coveredConditionCoordinates = {}, coverageGaps = {} }
+    -- [SG-3 Part 3] One positive source carries its covered condition coordinates (a bale's fermentation
+    -- is that bale onto itself); several sources cannot be one UNIFORM coverage, so theirs is dropped.
+    if #positive == 1 and type(positive[1].covered) == "table" then
+        for k, v in pairs(positive[1].covered) do
+            local c = {}
+            for f, x in pairs(v) do c[f] = x end
+            payload.coveredConditionCoordinates[k] = c
+        end
+    end
     if allKnown then
         local earned = clamp(sumE / total, 0, 100)
         payload.earnedScore = earned
@@ -323,7 +333,7 @@ function E.evaluateUse(snap, use, profileId, profileRevision)
     -- A carrier whose current assessment needs a condition owner that is not bound (:254).
     if snap.conditionRequired == true and snap.conditionAvailable ~= true then
         r.historical = historicalOf(pl, use, profileId)
-        return finish("UNAVAILABLE", "UNAVAILABLE", "UNAVAILABLE", { "CONDITION_UNAVAILABLE" })
+        return finish("UNAVAILABLE", "UNAVAILABLE", "UNAVAILABLE", { snap.conditionReason or "CONDITION_UNAVAILABLE" })
     end
     local u = pl.sourceWitness and pl.sourceWitness.originUse and pl.sourceWitness.originUse[use]
     if type(u) ~= "table" then return finish("READY", "UNKNOWN", "UNKNOWN", { "ORIGIN_UNPROVEN" }) end

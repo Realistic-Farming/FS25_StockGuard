@@ -17,8 +17,8 @@
 -- NOT IN THIS PART (Bob's R-15, 2026-10-07): third-party use profiles (:384) are WITHHELD. The member
 -- registers its two built-ins itself, and registerUseProfile is not published: a handle that took any
 -- profile and then always answered UNSUPPORTED_PROFILE would mislead a mod that feature-detects it.
--- TMR_FEED_V1, the mower's birth, the square-bale carry and its condition profile follow in Parts 2.2
--- and 3.
+-- TMR_FEED_V1 follows; the mower's birth and the square-bale carry are Part 2.2, and the square bale's
+-- condition profile SOIL_BALE_CONDITION_V1 is Part 3 (SG3Condition).
 
 SG3 = SG3 or {}
 local S = SG3
@@ -142,7 +142,8 @@ end
 function S.install(handle)
     if g_server == nil then return nil, "CLIENT" end
     if type(handle) ~= "table" or type(handle.registerProperty) ~= "function" then return nil, "NO_HANDLE" end
-    local m = setmetatable({ handle = handle, useProfiles = {}, revisions = {}, nextRevision = 0, ready = false }, Member)
+    local m = setmetatable({ handle = handle, useProfiles = {}, revisions = {}, nextRevision = 0, ready = false,
+                             damageProfiles = {}, witnesses = {}, invalid = {}, inFlight = {} }, Member)
     local why
     m.qualityLease, why = handle.registerProperty(P.QUALITY_PROPERTY, SG3Quality.spec())
     if m.qualityLease == nil then return nil, "QUALITY_PROPERTY:" .. tostring(why) end
@@ -154,6 +155,15 @@ function S.install(handle)
     for _, b in ipairs(S.BUILTIN) do
         local lease, whyP = m:registerUseProfile(P.PRODUCER_ID, b.id, b.version, b.definition)
         if lease == nil then return nil, "USE_PROFILE:" .. tostring(whyP) end
+    end
+    -- [SG-3 Part 3] SOIL_BALE_CONDITION_V1 registered at trusted server initialization, then Soil's listener
+    -- bound; a refusal is retried once at mission start (SG3Condition.installRetryHook).
+    if SG3Condition ~= nil then
+        local dl, whyD = SG3Condition.registerDamageProfile(m, SG3Condition.OWNER_ID, SG3Condition.PROFILE_ID, SG3Condition.PROFILE_VERSION, SG3Condition.definition())
+        if dl == nil then return nil, "DAMAGE_PROFILE:" .. tostring(whyD) end
+        S.current = m
+        SG3Condition.bind(m)
+        SG3Condition.installRetryHook()
     end
     m.ready = true
     handle.sg3 = {
@@ -168,6 +178,7 @@ end
 --- The member's end with its mission: readiness and caches cleared; stored records stay with SG-1.
 function S.teardown(handle)
     if type(handle) == "table" then handle.sg3 = nil end
+    if S.current ~= nil and SG3Condition ~= nil then SG3Condition.teardown(S.current) end
     if S.current ~= nil then
         S.current.ready = false
         S.current.revisions = {}

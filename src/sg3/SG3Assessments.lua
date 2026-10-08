@@ -16,8 +16,9 @@
 -- The owner projection (:403, :407) is built with the lock's release (SG-5's slice).
 --
 -- A BALE whose material is an admitted F215 forage or straw profile needs SOIL_BALE_CONDITION_V1 for
--- its current assessment (:254). That profile is bound in Part 3, so here its current assessment is
--- UNAVAILABLE with CONDITION_UNAVAILABLE, and its recorded quality shows as historical only.
+-- its current assessment (:254). [Part 3] Bound in SG3Condition: the assessment grades only while Soil's
+-- current portion is exactly the one the record covers; otherwise UNAVAILABLE with CONDITION_UNAVAILABLE,
+-- CONDITION_PENDING, CONDITION_GAP or CONDITION_CONDEMNED, and the recorded quality shows as historical.
 
 SG3Assessments = SG3Assessments or {}
 local A = SG3Assessments
@@ -48,12 +49,20 @@ function A.snapshotOf(m, rec, readRevision)
     local mat = rec.materialRef
     local name = type(mat) == "table" and mat.kind == "FILL_TYPE" and mat.fillTypeName or nil
     local isBale = SGNativeAdapters ~= nil and type(SGNativeAdapters.isBaleKey) == "function" and SGNativeAdapters.isBaleKey(rec.carrierKey)
+    local quality = rec.properties and rec.properties[P.QUALITY_PROPERTY] or nil
+    local required = isBale == true and name ~= nil and P.BALE_CONDITION_MATERIALS[name] == true
+    -- [SG-3 Part 3] SOIL_BALE_CONDITION_V1 bound: current only while Soil's portion is exactly the covered one.
+    local available, reason = false, nil
+    if required and SG3Condition ~= nil then
+        available, reason = SG3Condition.currentFor(m, rec.carrierKey and rec.carrierKey.nativeOwnerKey or nil, quality)
+    end
     return {
         stockRef = rec.stockRef, amount = rec.observedAmount, amountUnit = unitToken(rec.amountUnit), materialName = name,
         materialSupported = name ~= nil and m:materialSupported(name),
-        quality = rec.properties and rec.properties[P.QUALITY_PROPERTY] or nil,
-        conditionRequired = isBale == true and name ~= nil and P.BALE_CONDITION_MATERIALS[name] == true,
-        conditionAvailable = false,   -- SOIL_BALE_CONDITION_V1 is bound in Part 3
+        quality = quality,
+        conditionRequired = required,
+        conditionAvailable = available == true,
+        conditionReason = reason,
         readRevision = readRevision,
     }
 end

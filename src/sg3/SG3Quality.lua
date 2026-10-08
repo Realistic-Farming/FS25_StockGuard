@@ -20,9 +20,9 @@
 --
 -- DISCLOSURE (:88). nil, DISCLOSURE_DENIED for every player view, owner and admin included.
 --
--- CAUSAL (:57, :65, :104). The full trio is registered now so the schema never changes; no damage
--- profile is bound in this part (SOIL_BALE_CONDITION_V1 is Part 3), so no SG-3 cause is accepted,
--- the floor travels as carried and there is nothing to compact.
+-- CAUSAL (:57, :65, :104). The full trio is registered so the schema never changes. [Part 3]
+-- SOIL_BALE_CONDITION_V1 (SG3Condition) accepts its own stamp only; a joined bale birth seeds the stream's
+-- cause, every other candidate carries the floor, and there is nothing to compact.
 
 SG3Quality = SG3Quality or {}
 local Q = SG3Quality
@@ -133,6 +133,10 @@ function Q.combine(ctx, contributions, destinationBefore)
     if entries == nil then return nil, why end
     local res, reason = E.combine(entries, cand ~= nil and cand.amount or nil, nil)
     if res == nil then return nil, reason end
+    -- [SG-3 Part 3] Route 1: the bale a square finish made, with Soil's BIRTH witnessed under that finish's
+    -- operation, takes the birth handicap from C0 = 0, once.
+    local witness = SG3Condition ~= nil and SG3Condition.birthWitness(ctx, cand) or nil
+    if witness ~= nil then SG3Condition.applyBirth(res.payload, witness) end
     return recordOf(res, cand ~= nil and cand.unit or nil)
 end
 
@@ -188,8 +192,15 @@ function Q.spec()
         combine = Q.combine,
         transform = Q.transform,
         disclosure = function() return nil, "DISCLOSURE_DENIED" end,
-        validateCause = function() return nil, "NO_DAMAGE_PROFILE" end,
-        transformCausalState = function() return nil end,
+        -- [SG-3 Part 3] SOIL_BALE_CONDITION_V1's stamp (route 2) and the bale birth's seeded cause (route 1).
+        validateCause = function(cause, accepted, target)
+            if SG3Condition == nil then return nil, "NO_DAMAGE_PROFILE" end
+            return SG3Condition.validateCause(cause, accepted, target)
+        end,
+        transformCausalState = function(ctx, sources, candidate)
+            if SG3Condition == nil then return nil end
+            return SG3Condition.transformCausalState(ctx, sources, candidate)
+        end,
         compactCausalState = function() return nil end,
     }
 end

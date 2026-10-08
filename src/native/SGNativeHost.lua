@@ -94,6 +94,9 @@ function H.new(handle, sources)
     self.dirty = {}
     self.dirtyOrder = {}
     self.sinceFlush = 0
+    -- SG-3 Part 3: the operations whose native bracket's original is running, innermost last (the
+    -- square finish only; readOpenOperation on the handle reads it for Soil's echo).
+    self.openOperations = {}
     self.storageSlots = setmetatable({}, { __mode = "k" })  -- storage -> { placeable, slot }
     self.nativeLease = nil     -- the one native adapter's lease, both kinds (SG2-1b)
     self.stations = {}        -- station -> { LOAD = bool, UNLOAD = bool } (SG2-2)
@@ -402,6 +405,24 @@ function H:onStationRegistered(station, kind)
     local tables = self:stationTables()
     if tables == nil or tables[kind] == nil or tables[kind][station] ~= station then return end
     self:bindStation(station, kind)
+end
+
+--- SG-3 Part 3: a bracket's operation is open while its native original runs. Pushed immediately before
+--- the original and popped immediately after it, so nothing during the settle can read it.
+function H:pushOpenOperation(operationId)
+    if type(operationId) == "string" then self.openOperations[#self.openOperations + 1] = operationId end
+end
+
+function H:popOpenOperation(operationId)
+    for i = #self.openOperations, 1, -1 do
+        if self.openOperations[i] == operationId then table.remove(self.openOperations, i) return true end
+    end
+    return false
+end
+
+--- The innermost open operation, or nil.
+function H:innermostOpenOperation()
+    return self.openOperations[#self.openOperations]
 end
 
 --- A station of one kind is being removed from the storage system.
