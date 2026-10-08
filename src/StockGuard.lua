@@ -81,8 +81,11 @@ function SG.new(mission)
     self.enumerated = false
     self.serverSession = "s" .. self.loadEpoch
     self.publicationId = "0"
-    self.fallbackSubscribers = setmetatable({}, { __mode = "k" })   -- connection -> actor (fallback route only)
-    self.clientOrder = { serverSession = nil, viewEpoch = "0", publicationId = "0" }
+    self.fallbackSubscribers = setmetatable({}, { __mode = "k" })   -- connection -> { [route] = true } (fallback route only)
+    -- The fallback client's ordering baseline, one per route (SG-1 :342); clientOrder is STOCK's.
+    self.clientOrders = { STOCK = { serverSession = nil, viewEpoch = "0", publicationId = "0" },
+                          RECIPE_LIBRARY = { serverSession = nil, viewEpoch = "0", publicationId = "0" } }
+    self.clientOrder = self.clientOrders.STOCK
     self.tick = 0
     local host = self
     self.coordinator.onStage = function(_, payload, context) host:onStagedRestore(payload, context) end
@@ -119,6 +122,7 @@ function SG:buildHandle()
     h.registerManagementOwner = function(ownerId, spec) return host.registry:registerManagementOwner(ownerId, spec) end
     h.registerSaveSection = function(sectionId, spec) return host.registry:registerSaveSection(sectionId, spec) end
     h.registerCarrierPending = function(ownerId, spec) return host.registry:registerCarrierPending(ownerId, spec) end
+    h.registerRecipeLibraryView = function(ownerId, spec) return host.registry:registerRecipeLibraryView(ownerId, spec) end
     h.unregisterOwner = function(lease) return host.registry:unregisterOwner(lease) end
     -- Server-local material services
     h.bindCarrier = serverOnly(function(lease, binding, nativeState) return host.operations:bindCarrier(lease, binding, nativeState) end)
@@ -181,14 +185,23 @@ function SG:buildHandle()
     h.getCapabilities = function()
         local caps = host.views:getCapabilities()
         caps.nativeMaterialSave = host.nativeSave ~= nil and host.nativeSave:capability() or nil
+        caps.recipeLibraryRoute = SG.libraryRouteState(host.transport)
         return caps
     end
     h.getManagementView = serverOnly(function(trustedActorContext, selection, readOptions) return host.views:getManagementView(trustedActorContext, selection, readOptions, true) end)
-    h.getRecipeLibraryView = function() return { state = "UNAVAILABLE", reason = "RECIPE_LIBRARY_OWNER_ABSENT" } end
+    -- SG-1 :289: the RECIPE_LIBRARY route's detached view, through its one registered owner.
+    h.getRecipeLibraryView = serverOnly(function(trustedActorContext, selection)
+        local sel = type(selection) == "table" and selection or {}
+        return host.views:getManagementView(trustedActorContext, { route = SGViews.ROUTE_RECIPES, selectionKind = "LIBRARY", libraryId = sel.libraryId }, nil, true)
+    end)
     h.resolveActor = serverOnly(function(connection) return SG.resolveActorFor(host, connection) end)
     h.farmRestoreContext = function() return host.coordinator:context() end
     h.requestView = function(selection, readOptions) return host.transport:requestView(selection, readOptions) end
-    h.getClientView = function() local c = host.transport.client return { state = c.state, reason = c.reason, usable = c.usable, view = c.replica and SGValues.copy(c.replica) or nil, credentials = c.credentials and SGValues.copy(c.credentials) or nil } end
+    h.getClientView = function(route)
+        local c = host.transport.clients[route or SGViews.ROUTE_STOCK]
+        if c == nil then return { state = "UNAVAILABLE", reason = "ROUTE", usable = false } end
+        return { state = c.state, reason = c.reason, usable = c.usable, view = c.replica and SGValues.copy(c.replica) or nil, credentials = c.credentials and SGValues.copy(c.credentials) or nil }
+    end
     h.getStatus = function() return SG.status(host) end
     self.handle = h
     return h
@@ -329,7 +342,7 @@ function SG:onFinishedLoadingObserved()
     self.transport:markDirty()
     -- A server's own local player subscribes itself, as a fallback client does and
     -- as NS-7 subscribes a remote one; a dedicated server has no local player.
-    if self:isServer() and g_dedicatedServer == nil and not self.transport.localSubscribed then
+    if self:isServer() and g_dedicatedServer == nil and not self.transport.localRoutes.STOCK then
         self.transport:requestView({ route = "STOCK", selectionKind = "FARM" }, {})
     end
     log("restore-complete barrier observed; views READY")
@@ -404,6 +417,9 @@ function SG:tryRoute()
     if route ~= nil and not self.routeLogged then
         self.routeLogged = true
         log("private view route: " .. route .. (route == "UNAVAILABLE" and (" (" .. tostring(self.transport.routeReason) .. ")") or ""))
+        if route == "NS7" and not self.transport.recipesRegistered then
+            log("recipe library route UNAVAILABLE: NS-7 refused stockGuard.recipes (" .. tostring(self.transport.recipesReason) .. "); the stock route stays on NS-7")
+        end
         if route == "FALLBACK" and not self:isServer() then
             -- A fallback client subscribes itself; the server never guesses a selection.
             local ok, why = self.transport:requestView({ route = "STOCK", selectionKind = "FARM" }, {})
@@ -489,8 +505,11 @@ function SG:onPlayerFarmChanged(subject)
     else
         if isLocal then
             self.transport:clearReplica("FARM_CHANGED")
-            if self.transport.route == "FALLBACK" and self.transport.client.request ~= nil then
-                self.transport:requestView(self.transport.client.request.selection, self.transport.client.request.readOptions)
+            if self.transport.route == "FALLBACK" then
+                for _, route in ipairs(SGTransport.ROUTES) do
+                    local request = self.transport.clients[route].request
+                    if request ~= nil then self.transport:requestView(request.selection, request.readOptions) end
+                end
             end
         end
     end
@@ -521,16 +540,17 @@ end
 --- dedicated server has no local player to project to.
 function SG:onViewRequest(connection, selection, readOptions)
     if not self:isServer() then return end
+    local route = SGTransport.routeOf(selection)
     local actor = self:resolveActorFor(connection)
     local ok, why = self.transport:setSelection(connection, selection, readOptions)
     if connection == nil then
         if g_dedicatedServer ~= nil then return end
         if not ok then
-            self:sendViewState(nil, "UNAVAILABLE", why, nil)
+            self:sendViewState(nil, "UNAVAILABLE", why, nil, route)
             return
         end
-        self.transport.localDirty = false
-        self:publishTo(nil, actor)
+        self.transport.localDirtyRoutes[route] = nil
+        self:publishTo(nil, actor, route)
         return
     end
     if self.transport.route == "NS7" then
@@ -539,35 +559,41 @@ function SG:onViewRequest(connection, selection, readOptions)
     end
     if self.transport.route ~= "FALLBACK" then return end
     if not ok then
-        self:sendViewState(connection, "UNAVAILABLE", why, nil)
+        self:sendViewState(connection, "UNAVAILABLE", why, nil, route)
         return
     end
-    if connection ~= nil then self.fallbackSubscribers[connection] = true end
-    self:publishTo(connection, actor)
+    if connection ~= nil then
+        local routes = self.fallbackSubscribers[connection] or {}
+        routes[route] = true
+        self.fallbackSubscribers[connection] = routes
+    end
+    self:publishTo(connection, actor, route)
 end
 
-function SG:publishTo(connection, actor)
+function SG:publishTo(connection, actor, route)
+    route = route or SGViews.ROUTE_STOCK
     actor = actor or self:resolveActorFor(connection)
-    local context = { connection = connection, connectionId = actor.connectionId or SGTransport.LOCAL, userId = actor.userId, farmId = actor.farmId, actorState = actor.actorState, serverSession = self.serverSession, subscriptionId = "1", modId = SGTransport.MODULE_ID }
-    local result = self.transport:buildView(context, nil, true)
+    local context = { connection = connection, connectionId = actor.connectionId or SGTransport.LOCAL, userId = actor.userId, farmId = actor.farmId, actorState = actor.actorState, serverSession = self.serverSession, subscriptionId = "1", modId = SGTransport.MODULE_OF[route] or SGTransport.MODULE_ID }
+    local result = self.transport:buildView(context, nil, true, route)
     if result.state ~= "READY" then
-        self:sendViewState(connection, result.state, result.reason, nil)
+        self:sendViewState(connection, result.state, result.reason, nil, route)
         return
     end
-    self:sendViewState(connection, "READY", "", result.values)
+    self:sendViewState(connection, "READY", "", result.values, route)
 end
 
-function SG:sendViewState(connection, state, reason, tokens)
+function SG:sendViewState(connection, state, reason, tokens, route)
+    route = route or SGViews.ROUTE_STOCK
     self.publicationId = SGValues.incrementDecimal(self.publicationId)
     if SGViewStateEvent == nil then return end
-    local event = SGViewStateEvent.new(self.serverSession, self.views.viewEpoch, self.publicationId, state, reason, tokens or {})
+    local event = SGViewStateEvent.new(self.serverSession, self.views.viewEpoch, self.publicationId, state, reason, tokens or {}, route)
     if connection == nil then
         -- Listen-host projection: apply the detached bytes locally.
         self.transport.localActorWaiting = state == "WAITING" and reason == "ACTOR_WAITING"
         self:onViewState(event)
         -- Once per mission, so log.txt shows the host's own view reached READY.
         local replica = self.transport.client.replica
-        if state == "READY" and replica ~= nil and not self.localViewLogged then
+        if route == SGViews.ROUTE_STOCK and state == "READY" and replica ~= nil and not self.localViewLogged then
             self.localViewLogged = true
             log(string.format("host view READY for the local player on route %s: %d row(s)", tostring(self.transport.route or "WAITING"), #(replica.rows or {})))
         end
@@ -581,8 +607,13 @@ end
 function SG:publishAllFallback()
     if self.transport.route ~= "FALLBACK" or not self.transport.dirty or not self:isServer() then return end
     self.transport.dirty = false
-    for connection in pairs(self.fallbackSubscribers) do
-        if connection ~= nil and connection.isConnected ~= false then self:publishTo(connection) end
+    for connection, routes in pairs(self.fallbackSubscribers) do
+        if connection ~= nil and connection.isConnected ~= false and type(routes) == "table" then
+            local actor = self:resolveActorFor(connection)
+            for _, route in ipairs(SGTransport.ROUTES) do
+                if routes[route] then self:publishTo(connection, actor, route) end
+            end
+        end
     end
 end
 
@@ -596,22 +627,32 @@ end
 function SG:publishLocal()
     local t = self.transport
     if not t.localSubscribed or not self:isServer() or g_dedicatedServer ~= nil then return end
-    if not t.localDirty then
-        if not t.localActorWaiting or self:resolveActorFor(nil).actorState == "WAITING" then return end
+    local actorArrived = t.localActorWaiting and self:resolveActorFor(nil).actorState ~= "WAITING"
+    for _, route in ipairs(SGTransport.ROUTES) do
+        if t.localRoutes[route] and (t.localDirtyRoutes[route] or actorArrived) then
+            t.localDirtyRoutes[route] = nil
+            self:publishTo(nil, nil, route)
+        end
     end
     t.localDirty = false
-    self:publishTo(nil)
 end
 
 -- Client side of the fallback route: publications are applied in order.
 -- A different server session replaces the ordering baseline; a lower view
 -- epoch or a publication not after the last applied one is ignored.
 function SG:onViewState(event)
-    local o = self.clientOrder
+    local route = event.route or SGViews.ROUTE_STOCK
+    local o = self.clientOrders[route]
+    if o == nil then return end
+    -- A new server session, seen on either route, resets every route's baseline and clears its replica.
     if o.serverSession ~= event.serverSession then
-        o.serverSession = event.serverSession
-        o.viewEpoch, o.publicationId = "0", "0"
-        self.transport:clearReplica("SERVER_SESSION_CHANGED")
+        for r, other in pairs(self.clientOrders) do
+            if other.serverSession ~= event.serverSession then
+                other.serverSession = event.serverSession
+                other.viewEpoch, other.publicationId = "0", "0"
+                self.transport:clearReplica("SERVER_SESSION_CHANGED", r)
+            end
+        end
     end
     local epochCmp = SGValues.compareDecimal(tostring(event.viewEpoch), o.viewEpoch)
     if epochCmp < 0 then return end
@@ -619,10 +660,20 @@ function SG:onViewState(event)
     o.viewEpoch = tostring(event.viewEpoch)
     o.publicationId = tostring(event.publicationId)
     if event.state ~= "READY" then
-        self.transport:clearReplica(event.reason)
+        self.transport:clearReplica(event.reason, route)
         return
     end
-    self.transport:applyView({ mode = "FULL", values = event.tokens, dataRevision = event.publicationId })
+    self.transport:applyView({ mode = "FULL", values = event.tokens, dataRevision = event.publicationId }, route)
+end
+
+--- The RECIPE_LIBRARY route's transport state for getCapabilities: READY on the fallback or when NS-7
+--- holds stockGuard.recipes, UNAVAILABLE when NS-7 refused it, WAITING until a route is chosen.
+function SG.libraryRouteState(transport)
+    if transport.route == nil then return { state = "WAITING", reasonCode = tostring(transport.routeReason) } end
+    if transport.route == "FALLBACK" then return { state = "READY", reasonCode = "FALLBACK" } end
+    if transport.route == "NS7" and transport.recipesRegistered then return { state = "READY", reasonCode = "NS7" } end
+    if transport.route == "NS7" then return { state = "UNAVAILABLE", reasonCode = tostring(transport.recipesReason) } end
+    return { state = "UNAVAILABLE", reasonCode = tostring(transport.routeReason) }
 end
 
 function SG:onCommandRequest(connection, req)

@@ -31,6 +31,13 @@
 -- UNAVAILABLE (reported), never a unilateral fallback that could split the
 -- server and its clients across two transports.
 --
+-- TWO FIXED ROUTES (SG-1 :342, :500-508; SG-4 :365-369): STOCK and RECIPE_LIBRARY each keep their
+-- own selection per connection, their own client replica, expected key, credentials and ordering,
+-- and their own decoder. With NS-7 they are the distinct scoped modules "stockGuard" and
+-- "stockGuard.recipes"; a refusal of the second leaves STOCK on NS-7 and the library UNAVAILABLE,
+-- never a fallback beside it. Without NS-7 the fallback state event carries the route. A failure on
+-- one route clears only that route; a farm change, a session change and mission end clear both.
+--
 -- Neither transport reaches a server's own local player (SG10-052), so a single
 -- player or listen host reads a detached server view through the host on every
 -- route: requestView hands the selection to the host, which builds it through
@@ -42,11 +49,18 @@ local TR = SGTransport
 local SGTransport_mt = { __index = TR }
 
 TR.MODULE_ID = "stockGuard"
+TR.RECIPES_MODULE_ID = "stockGuard.recipes"
+TR.ROUTES = { "STOCK", "RECIPE_LIBRARY" }
+TR.MODULE_OF = { STOCK = TR.MODULE_ID, RECIPE_LIBRARY = TR.RECIPES_MODULE_ID }
 TR.PROTOCOL_VERSION = 1
 TR.MAX_TOKENS = 4096
 TR.LOCAL = "local"
 
 local copy = SGValues.copy
+
+local function newClient()
+    return { expectedKey = nil, replica = nil, state = "UNAVAILABLE", reason = "NOT_SUBSCRIBED", usable = false, credentials = nil, request = nil }
+end
 
 function TR.new(views, commands)
     local self = setmetatable({}, SGTransport_mt)
@@ -54,16 +68,26 @@ function TR.new(views, commands)
     self.commands = commands
     self.route = nil                 -- "NS7", "FALLBACK" or "UNAVAILABLE"
     self.routeReason = "WAITING"
-    self.selections = setmetatable({}, { __mode = "k" })   -- connection object (or TR.LOCAL) -> selection
-    self.client = { expectedKey = nil, replica = nil, state = "UNAVAILABLE", reason = "NOT_SUBSCRIBED", usable = false, credentials = nil, request = nil }
+    self.selections = setmetatable({}, { __mode = "k" })   -- connection object (or TR.LOCAL) -> { [route] = selection }
+    self.clients = { STOCK = newClient(), RECIPE_LIBRARY = newClient() }
+    self.client = self.clients.STOCK -- the STOCK route's client state
     self.registered = false
+    self.recipesRegistered = false   -- NS-7 holds "stockGuard.recipes"
+    self.recipesReason = "WAITING"
     self.stockGuard = nil            -- back pointer set by the host
     self.dirty = false
-    self.localSubscribed = false     -- a server with a local player reads its own detached view
+    self.localSubscribed = false     -- a server with a local player reads its own detached view (any route)
+    self.localRoutes = {}            -- route -> true once that local player subscribed it
     self.localDirty = false
+    self.localDirtyRoutes = {}       -- route -> true while its local view waits to be republished
     self.localActorWaiting = false   -- the last local view waited on the host's own player
     return self
 end
+
+local function routeOf(selection)
+    return (type(selection) == "table" and selection.route) or SGViews.ROUTE_STOCK
+end
+TR.routeOf = routeOf
 
 local function keyOf(connection)
     if connection == nil then return TR.LOCAL end
@@ -94,13 +118,21 @@ end
 -- ---------------------------------------------------------
 -- Selection per connection (server)
 -- ---------------------------------------------------------
-function TR:selectionFor(connection)
+--- The connection's current selection on one route (STOCK by default). STOCK begins at FARM; a
+--- RECIPE_LIBRARY selection exists only once that route was requested (SG-1 :500), nil until then.
+function TR:selectionFor(connection, route)
+    route = route or SGViews.ROUTE_STOCK
     local key = keyOf(connection)
-    local s = self.selections[key]
-    if s == nil then
+    local byRoute = self.selections[key]
+    if byRoute == nil then
+        byRoute = {}
+        self.selections[key] = byRoute
+    end
+    local s = byRoute[route]
+    if s == nil and route == SGViews.ROUTE_STOCK then
         s = { normalized = { route = SGViews.ROUTE_STOCK, selectionKind = "FARM" }, options = {} }
         s.selectionKey = SGViews.selectionKey(s.normalized, s.options)
-        self.selections[key] = s
+        byRoute[route] = s
     end
     return s
 end
@@ -111,7 +143,10 @@ function TR:setSelection(connection, selection, readOptions)
     if normalized == nil then return false, why end
     local options, whyO = SGViews.normalizeReadOptions(normalized, readOptions, false)
     if options == nil then return false, whyO end
-    self.selections[keyOf(connection)] = { normalized = normalized, options = options, selectionKey = SGViews.selectionKey(normalized, options) }
+    local key = keyOf(connection)
+    local byRoute = self.selections[key] or {}
+    byRoute[normalized.route] = { normalized = normalized, options = options, selectionKey = SGViews.selectionKey(normalized, options) }
+    self.selections[key] = byRoute
     self.dirty = true
     return true
 end
@@ -123,7 +158,7 @@ end
 -- ---------------------------------------------------------
 -- Producer (server): buildView(context, previous, forceFull)
 -- ---------------------------------------------------------
-function TR:buildView(context, previous, forceFull)
+function TR:buildView(context, previous, forceFull, route)
     if type(context) ~= "table" then return { state = "ERROR", reason = "CONTEXT" } end
     -- The actor's connection identity is DERIVED from the connection object, never
     -- taken from context.connectionId, so a producer context minted by another module
@@ -136,7 +171,8 @@ function TR:buildView(context, previous, forceFull)
     local actor = { farmId = context.farmId, userId = context.userId, actorState = context.actorState, connectionId = connectionId }
     if context.actorState == "WAITING" then return { state = "WAITING", reason = "ACTOR_WAITING" } end
     if context.actorState == "SPECTATOR" or context.actorState == "INVALID" then return { state = "DENIED", reason = "ACTOR_" .. tostring(context.actorState) } end
-    local sel = self:selectionFor(context.connection)
+    local sel = self:selectionFor(context.connection, route)
+    if sel == nil then return { state = "UNAVAILABLE", reason = "NOT_SUBSCRIBED" } end
     local page = self.views:getManagementView(actor, { route = sel.normalized.route, selectionKind = sel.normalized.selectionKind, siteId = sel.normalized.siteId, groundFootprint = sel.normalized.groundFootprint, libraryId = sel.normalized.libraryId }, sel.options, false)
     if page.view == nil then return { state = "ERROR", reason = tostring(page.reason) } end
     local view = page.view
@@ -166,51 +202,68 @@ end
 -- ---------------------------------------------------------
 -- Consumer (client): applyView(publication) / clearView(reason)
 -- ---------------------------------------------------------
-function TR:applyView(publication)
+--- The route's own decoder (SGViews:decodeRouteView), or the STOCK decoder for a transport built
+--- without views.
+local function decodeFor(self, tokens, route)
+    if self.views ~= nil and type(self.views.decodeRouteView) == "function" then return self.views:decodeRouteView(tokens, route) end
+    if route == SGViews.ROUTE_STOCK then return SGViews.decodeView(tokens) end
+    return nil, "UNSUPPORTED_ROUTE", true
+end
+
+function TR:applyView(publication, route)
+    route = route or SGViews.ROUTE_STOCK
+    local client = self.clients[route]
+    if client == nil then return { outcome = "TERMINAL", reason = "UNSUPPORTED_ROUTE" } end
     if type(publication) ~= "table" then return { outcome = "RETRYABLE", reason = "APPLY_ERROR" } end
     local tokens = publication.values
     if not SGValues.isTokenArray(tokens) then return { outcome = "RETRYABLE", reason = "APPLY_ERROR", dataRevision = publication.dataRevision } end
-    local view, why, terminal = SGViews.decodeView(tokens)
+    local view, why, terminal = decodeFor(self, tokens, route)
     if view == nil then
-        self:clearReplica(why)
+        self:clearReplica(why, route)
         if terminal then return { outcome = "TERMINAL", reason = "UNSUPPORTED_APPLICATION_VERSION", dataRevision = publication.dataRevision } end
         return { outcome = "RETRYABLE", reason = why, dataRevision = publication.dataRevision }
     end
     if publication.mode ~= "FULL" then return { outcome = "RETRYABLE", reason = "MODE", dataRevision = publication.dataRevision } end
-    if self.client.expectedKey ~= nil and view.selectionKey ~= self.client.expectedKey then
+    if client.expectedKey ~= nil and view.selectionKey ~= client.expectedKey then
         -- A late publication for another selection cannot restore a menu.
         return { outcome = "RETRYABLE", reason = "SELECTION_MISMATCH", dataRevision = publication.dataRevision }
     end
-    self.client.replica = view
-    self.client.state = view.availability
-    self.client.reason = view.reasonCode
-    self.client.usable = view.availability == "READY"
-    self.client.credentials = view.commandSessionId ~= nil and { commandSessionId = view.commandSessionId, nextSequence = view.nextSequence } or nil
+    client.replica = view
+    client.state = view.availability
+    client.reason = view.reasonCode
+    client.usable = view.availability == "READY"
+    client.credentials = view.commandSessionId ~= nil and { commandSessionId = view.commandSessionId, nextSequence = view.nextSequence } or nil
     return { outcome = "APPLIED", reason = nil, dataRevision = publication.dataRevision }
 end
 
-function TR:clearView(reason)
-    self:clearReplica(reason)
+function TR:clearView(reason, route)
+    self:clearReplica(reason, route)
 end
 
-function TR:clearReplica(reason)
-    self.client.replica = nil
-    self.client.usable = false
-    self.client.credentials = nil
-    self.client.state = "UNAVAILABLE"
-    self.client.reason = tostring(reason or "CLEARED")
+--- Clear one route's replica, or every route's when route is nil (a farm or session change, mission end).
+function TR:clearReplica(reason, route)
+    for r, c in pairs(self.clients) do
+        if route == nil or route == r then
+            c.replica = nil
+            c.usable = false
+            c.credentials = nil
+            c.state = "UNAVAILABLE"
+            c.reason = tostring(reason or "CLEARED")
+        end
+    end
 end
 
---- The client computes its expected selectionKey from its own request.
+--- The client computes its expected selectionKey from its own request, on that request's route.
 function TR:expectSelection(selection, readOptions)
-    local normalized, why = SGViews.normalizeSelection(selection and selection.route or SGViews.ROUTE_STOCK, selection)
+    local normalized, why = SGViews.normalizeSelection(routeOf(selection), selection)
     if normalized == nil then return nil, why end
     local options, whyO = SGViews.normalizeReadOptions(normalized, readOptions, false)
     if options == nil then return nil, whyO end
-    self.client.expectedKey = SGViews.selectionKey(normalized, options)
-    self.client.request = { selection = copy(selection), readOptions = copy(readOptions or {}) }
-    self:clearReplica("SELECTION_CHANGING")
-    return self.client.expectedKey
+    local client = self.clients[normalized.route]
+    client.expectedKey = SGViews.selectionKey(normalized, options)
+    client.request = { selection = copy(selection), readOptions = copy(readOptions or {}) }
+    self:clearReplica("SELECTION_CHANGING", normalized.route)
+    return client.expectedKey
 end
 
 --- Client subscription. A server with a local player (single player or a listen
@@ -233,19 +286,22 @@ function TR:requestView(selection, readOptions, sender)
         local key, why = self:expectSelection(selection, readOptions)
         if key == nil then return false, why end
         self.localSubscribed = true
+        self.localRoutes[routeOf(selection)] = true
         sg:onViewRequest(nil, selection, readOptions)
         return true
     end
-    local normalized, why = SGViews.normalizeSelection(selection.route or SGViews.ROUTE_STOCK, selection)
+    local normalized, why = SGViews.normalizeSelection(routeOf(selection), selection)
     if normalized == nil then return false, why end
     local options, whyO = SGViews.normalizeReadOptions(normalized, readOptions, false)
     if options == nil then return false, whyO end
     if self.route ~= "FALLBACK" and self.route ~= "NS7" then return false, "ROUTE" end
+    -- NS-7 refused the library's module: that route is UNAVAILABLE, with no fallback beside NS-7.
+    if self.route == "NS7" and normalized.route == SGViews.ROUTE_RECIPES and not self.recipesRegistered then return false, "RECIPES_ROUTE_UNAVAILABLE" end
     if SGViewRequestEvent == nil then return false, "EVENT_CLASS" end
     local connection = sender
     if connection == nil and g_client ~= nil and type(g_client.getServerConnection) == "function" then connection = g_client:getServerConnection() end
     if connection == nil or type(connection.sendEvent) ~= "function" then return false, "NO_SERVER_CONNECTION" end
-    local c = self.client
+    local c = self.clients[normalized.route]
     local before = { c.expectedKey, c.request, c.replica, c.state, c.reason, c.usable, c.credentials }
     self:expectSelection(selection, readOptions)
     local ok = pcall(function() connection:sendEvent(SGViewRequestEvent.new(selection, readOptions)) end)
@@ -259,7 +315,7 @@ function TR:requestView(selection, readOptions, sender)
     -- selection (:775-829), whichever of the two events the server takes first
     -- (brief :508, requestScopedFull recovers the selected view).
     if self.route == "NS7" and self.networkSync ~= nil and type(self.networkSync.requestScopedFull) == "function" then
-        pcall(self.networkSync.requestScopedFull, self.networkSync, TR.MODULE_ID)
+        pcall(self.networkSync.requestScopedFull, self.networkSync, TR.MODULE_OF[normalized.route])
     end
     return true
 end
@@ -281,16 +337,24 @@ function TR:selectRoute(mission)
             if caps.bootstrapVersion == 1 and supported then
                 if caps.ready == true then
                     local transport = self
-                    local okR, registered, whyR = pcall(ns.registerScopedModule, ns, TR.MODULE_ID, {
-                        buildView = function(context, previous, forceFull) return transport:buildView(context, previous, forceFull) end,
-                        applyView = function(publication) return transport:applyView(publication) end,
-                        clearView = function(reason) return transport:clearView(reason) end,
-                    })
+                    local function moduleFor(route)
+                        return {
+                            buildView = function(context, previous, forceFull) return transport:buildView(context, previous, forceFull, route) end,
+                            applyView = function(publication) return transport:applyView(publication, route) end,
+                            clearView = function(reason) return transport:clearView(reason, route) end,
+                        }
+                    end
+                    local okR, registered, whyR = pcall(ns.registerScopedModule, ns, TR.MODULE_ID, moduleFor(SGViews.ROUTE_STOCK))
                     if okR and registered == true then
                         self.route = "NS7"
                         self.routeReason = "READY"
                         self.networkSync = ns
                         self.registered = true
+                        -- The library's own module beside it; a refusal leaves only that route UNAVAILABLE.
+                        local okQ, registeredQ, whyQ = pcall(ns.registerScopedModule, ns, TR.RECIPES_MODULE_ID, moduleFor(SGViews.ROUTE_RECIPES))
+                        self.recipesRegistered = okQ and registeredQ == true
+                        self.recipesReason = self.recipesRegistered and "READY" or ("NS7_RECIPES_REGISTRATION_REFUSED:" .. tostring(okQ and whyQ or registeredQ))
+                        if not self.recipesRegistered then self:clearReplica(self.recipesReason, SGViews.ROUTE_RECIPES) end
                         return self.route
                     end
                     self.route = "UNAVAILABLE"
@@ -304,27 +368,35 @@ function TR:selectRoute(mission)
     end
     self.route = "FALLBACK"
     self.routeReason = "READY"
+    self.recipesReason = "READY"
     return self.route
 end
 
 function TR:markDirty()
     self.dirty = true
     self.localDirty = true
+    for route in pairs(self.localRoutes) do self.localDirtyRoutes[route] = true end
     if self.route == "NS7" and self.networkSync ~= nil and type(self.networkSync.markDirty) == "function" then
         pcall(self.networkSync.markDirty, self.networkSync, TR.MODULE_ID)
+        if self.recipesRegistered then pcall(self.networkSync.markDirty, self.networkSync, TR.RECIPES_MODULE_ID) end
     end
 end
 
 function TR:teardown()
     if self.route == "NS7" and self.networkSync ~= nil and type(self.networkSync.unregisterScopedModule) == "function" then
         pcall(self.networkSync.unregisterScopedModule, self.networkSync, TR.MODULE_ID)
+        if self.recipesRegistered then pcall(self.networkSync.unregisterScopedModule, self.networkSync, TR.RECIPES_MODULE_ID) end
     end
     self.route = nil
     self.routeReason = "MISSION_END"
     self.networkSync = nil
     self.registered = false
+    self.recipesRegistered = false
+    self.recipesReason = "MISSION_END"
     self.localSubscribed = false
+    self.localRoutes = {}
     self.localDirty = false
+    self.localDirtyRoutes = {}
     self.localActorWaiting = false
     self.selections = setmetatable({}, { __mode = "k" })
     self:clearReplica("MISSION_END")
@@ -442,15 +514,18 @@ if Event ~= nil and Class ~= nil and InitEventClass ~= nil then
     end
 
     -- SGViewStateEvent: server -> one connection. Body: serverSession,
-    -- viewEpoch, publicationId, state, reason, then the token array.
+    -- viewEpoch, publicationId, state, reason, route, then the token array.
+    -- The route precedes the tokens, so a token failure clears only that
+    -- route; an unknown or empty route drops the event and clears nothing.
     SGViewStateEvent = SGViewStateEvent or {}
     local SGViewStateEvent_mt = Class(SGViewStateEvent, Event)
     InitEventClass(SGViewStateEvent, "SGViewStateEvent")
     function SGViewStateEvent.emptyNew() return Event.new(SGViewStateEvent_mt) end
-    function SGViewStateEvent.new(serverSession, viewEpoch, publicationId, state, reason, tokens)
+    function SGViewStateEvent.new(serverSession, viewEpoch, publicationId, state, reason, tokens, route)
         local self = SGViewStateEvent.emptyNew()
         self.serverSession, self.viewEpoch, self.publicationId = serverSession, viewEpoch, publicationId
         self.state, self.reason, self.tokens = state, reason or "", tokens or {}
+        self.route = route or SGViews.ROUTE_STOCK
         return self
     end
     function SGViewStateEvent:writeStream(streamId, connection)
@@ -459,6 +534,7 @@ if Event ~= nil and Class ~= nil and InitEventClass ~= nil then
         streamWriteString(streamId, self.publicationId)
         streamWriteString(streamId, self.state)
         streamWriteString(streamId, self.reason)
+        streamWriteString(streamId, tostring(self.route or SGViews.ROUTE_STOCK))
         writeTokens(streamId, self.tokens)
     end
     function SGViewStateEvent:readStream(streamId, connection)
@@ -467,14 +543,16 @@ if Event ~= nil and Class ~= nil and InitEventClass ~= nil then
         self.publicationId = streamReadString(streamId)
         self.state = streamReadString(streamId)
         self.reason = streamReadString(streamId)
+        self.route = streamReadString(streamId)
         self.tokens, self.tokensError = readTokens(streamId)
         self:run(connection)
     end
     function SGViewStateEvent:run(connection)
         local sg = hostOnClient()
         if sg == nil or not fromServer(connection) then return end
+        if TR.MODULE_OF[self.route] == nil then return end
         if self.tokens == nil then
-            sg.transport:clearReplica("TRANSPORT_" .. tostring(self.tokensError))
+            sg.transport:clearReplica("TRANSPORT_" .. tostring(self.tokensError), self.route)
             return
         end
         sg:onViewState(self)
