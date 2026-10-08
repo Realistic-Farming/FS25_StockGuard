@@ -148,6 +148,17 @@ function SG:buildHandle()
         if host.collectionSeals == nil or SGCollectionSeal == nil then return nil, "UNAVAILABLE" end
         return SGCollectionSeal.read(host.collectionSeals, receiptRef)
     end)
+    -- SG-3 Part 3 (F215's echo): the open operation of the current native bracket, read by Soil at a bale's
+    -- BIRTH, REBIND and RETIRE. A dot call; { operationId } for the innermost bracket only while SG-1 still
+    -- holds that operation open, nil otherwise. Today only the square baler's finish opens one.
+    h.readOpenOperation = serverOnly(function(...)
+        if select("#", ...) > 0 and select(1, ...) == h then return nil, "CALLED_WITH_COLON" end
+        local native = SGNativeHost ~= nil and SGNativeHost.current or nil
+        if native == nil or native.handle ~= h or type(native.innermostOpenOperation) ~= "function" then return nil end
+        local id = native:innermostOpenOperation()
+        if id == nil or host.operations.openHandles[id] == nil then return nil end
+        return { operationId = id }
+    end)
     h.fillUnitStockRef = serverOnly(function(...)
         local vehicle, fillUnitIndex = ...
         if vehicle == h then return nil, "CALLED_WITH_COLON" end

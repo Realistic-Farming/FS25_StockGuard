@@ -2399,6 +2399,7 @@ function G.finishClose(host, open)
     local ns = native ~= nil and lease.spec.readNativeState(open.binding, native) or nil
     local bale = newBaleAfter(spec, open.bales)
     local report = nil
+    local witnesses = SG3Condition ~= nil and SG3Condition.collect(open.cap.operationId) or nil   -- SG-3 Part 3: cleared either way
     if ns ~= nil and moved > G.EPSILON then
         local baleBinding = bale ~= nil and A.baleBinding(bale) or nil
         local baleNative = baleBinding ~= nil and lease.spec.resolveCarrier(baleBinding) or nil
@@ -2406,6 +2407,7 @@ function G.finishClose(host, open)
         if baleState ~= nil then
             local evidence = { nativePath = "GROUND_BALER_FINISH", callRef = open.callRef, chamberBefore = open.before, chamberAfter = after, baleLevel = baleState.amount }
             if math.abs(baleState.amount - moved) > G.EPSILON then evidence.nativeGain = baleState.amount - moved end
+            if witnesses ~= nil then evidence.sg3ConditionWitnesses = { slotId = open.slotId, nativeBaleUniqueId = baleBinding.carrierKey.nativeOwnerKey, witnesses = witnesses } end
             report = { participantsAfter = { [open.carrierId] = ns },
                 allocations = { { source = { carrierId = open.carrierId }, sourceAmount = moved, sourceUnit = A.UNIT,
                                   destination = { slotId = open.slotId }, destinationAmount = baleState.amount, destinationUnit = baleState.unit or A.UNIT, result = "TRANSFERRED" } },
@@ -2476,7 +2478,9 @@ local function aroundFinish(original, vehicle, ...)
     local open = nil
     local okOpen, result = pcall(G.finishOpen, host, vehicle)
     if okOpen then open = result else logOnce("finishOpen", "bale finish failed to open (" .. tostring(result) .. ")") end
+    if open ~= nil then host:pushOpenOperation(open.cap.operationId) end   -- SG-3 Part 3: open while the original runs
     local n, r = packn(pcall(original, vehicle, ...))
+    if open ~= nil then host:popOpenOperation(open.cap.operationId) end
     if open ~= nil then
         local okClose, err = pcall(G.finishClose, host, open)
         if not okClose then

@@ -81,6 +81,7 @@ source(modDirectory .. "src/sg3/SG3Profiles.lua")
 source(modDirectory .. "src/sg3/SG3Evaluator.lua")
 source(modDirectory .. "src/sg3/SG3Quality.lua")
 source(modDirectory .. "src/sg3/SG3Assessments.lua")
+source(modDirectory .. "src/sg3/SG3Condition.lua")   -- SG-3 Part 3: SOIL_BALE_CONDITION_V1, the bale condition join
 source(modDirectory .. "src/sg3/SG3.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
