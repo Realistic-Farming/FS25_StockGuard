@@ -196,8 +196,10 @@ function C.after(m, ev, ticket)
         m.invalid[uid or ""] = nil   -- the bale is gone; nothing remains to assess
         return
     end
-    -- A REBIND or RESET with no joined operation: not guessed (route 2 covers ADVANCE only here).
-    return C.invalidate(m, uid, ev.kind == "REBIND" and "REBIND_UNJOINED" or "RESET_UNSUPPORTED")
+    -- A BIRTH, REBIND or RESET with no joined operation (a bale born outside the square finish, a storage move):
+    -- not guessed (route 2 covers ADVANCE only here).
+    local why = (ev.kind == "BIRTH" and "BIRTH_UNJOINED") or (ev.kind == "REBIND" and "REBIND_UNJOINED") or "RESET_UNSUPPORTED"
+    return C.invalidate(m, uid, why)
 end
 
 --- The listener's callbacks for one member.

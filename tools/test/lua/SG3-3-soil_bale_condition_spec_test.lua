@@ -2572,13 +2572,14 @@ group("U", function()
     cb.afterChange({ kind = "ADVANCE", carrierEventSequence = 41, nativeIds = { "pair1" }, result = "APPLIED" }, t1)
     local t2 = cb.beforeChange({ kind = "ADVANCE", carrierEventSequence = 42, nativeIds = { "result1" } })
     cb.afterChange({ kind = "ADVANCE", carrierEventSequence = 42, nativeIds = { "result1" }, result = "REFUSED" }, t2)
-    for i, kind in ipairs({ "REBIND", "RESET" }) do
+    for i, kind in ipairs({ "REBIND", "RESET", "BIRTH" }) do
         local ev = { kind = kind, carrierEventSequence = 42 + i, nativeIds = { kind:lower() .. "1" }, result = "APPLIED" }
         cb.afterChange(ev, cb.beforeChange(ev))
     end
-    T.eq("U3 an after paired with another event's before, reporting a result other than APPLIED, or a REBIND or RESET no operation joined, is not guessed",
-        tostring(member.invalid.pair1) .. " " .. tostring(member.invalid.result1) .. " " .. tostring(member.invalid.rebind1) .. " " .. tostring(member.invalid.reset1),
-        "PAIR_MISMATCH RESULT_REFUSED REBIND_UNJOINED RESET_UNSUPPORTED")
+    T.eq("U3 an after paired with another event's before, reporting a result other than APPLIED, or a REBIND, RESET or BIRTH no operation joined, is not guessed",
+        tostring(member.invalid.pair1) .. " " .. tostring(member.invalid.result1) .. " " .. tostring(member.invalid.rebind1) .. " " .. tostring(member.invalid.reset1)
+        .. " " .. tostring(member.invalid.birth1),
+        "PAIR_MISMATCH RESULT_REFUSED REBIND_UNJOINED RESET_UNSUPPORTED BIRTH_UNJOINED")
     -- An operation id SG-1 holds open, set by hand for this guard alone and removed straight after.
     sg.operations.openHandles["op:u4"] = {}
     local heldOnly = C3.isOpen("op:u4")

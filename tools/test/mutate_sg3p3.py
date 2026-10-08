@@ -100,7 +100,7 @@ MUTATIONS = [
  ("C10-open-off-stack", CD, swap(OPEN_RET, "    return ops ~= nil and ops.openHandles[operationId] ~= nil\n"), "an operation SG-1 holds open counts though no bracket's original runs (U4)", BENCH),
  ("C11-open-unheld", CD, swap(OPEN_RET, "    return onStack\n"), "an operation on the stack counts though SG-1 no longer holds it (U4)", BENCH),
  ("C12-retire-as-reset", CD, swap('    if ev.kind == "RETIRE" then\n', "    if false then\n"), "a RETIRE is read as an unsupported RESET (O1)", BENCH),
- ("C13-rebind-guessed", CD, swap('    return C.invalidate(m, uid, ev.kind == "REBIND" and "REBIND_UNJOINED" or "RESET_UNSUPPORTED")\n', "    return\n"), "an unjoined REBIND or a RESET leaves the bale current (U3)", BENCH),
+ ("C13-unjoined-guessed", CD, swap("    return C.invalidate(m, uid, why)\n", "    return\n"), "an unjoined BIRTH or REBIND, or a RESET, leaves the bale current (U3)", BENCH),
  # ── route 1 ──
  ("C14-queue-kept", CD, drop("    m.witnesses[operationId] = nil\n"), "the collected queue is never cleared (J2)", BENCH),
  ("C15-witness-any-slot", CD, swap("    if type(cw) ~= \"table\" or cand == nil or cand.slotId == nil or cand.slotId ~= cw.slotId then return nil end\n",
