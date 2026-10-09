@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Számodra nem elérhető"/>
         <text name="sg3_reason_profile_mismatch" text="A minőségi profilok nem egyeznek"/>
         <text name="sg3_reason_composition_unknown" text="Az összetétel ismeretlen"/>
+        <text name="sg4_reason_library_loading" text="Receptkönyvtár betöltése"/>
+        <text name="sg4_reason_library_unavailable" text="A receptkönyvtár nem érhető el"/>
+        <text name="sg4_reason_library_not_owned" text="Ez a receptkönyvtár egy másik gazdaságé"/>
+        <text name="sg4_reason_library_retired" text="Ez a receptkönyvtár már nincs használatban"/>
+        <text name="sg4_reason_library_full" text="A receptkönyvtár megtelt"/>
+        <text name="sg4_reason_no_profile" text="Nincs elérhető támogatott recepttípus"/>
+        <text name="sg4_reason_profile_absent" text="Ennek a receptnek a típusa nem érhető el"/>
+        <text name="sg4_reason_profile_unavailable" text="A recepttípus nem használhatja ezt a receptet"/>
+        <text name="sg4_reason_recipe_unknown" text="A recept nem található"/>
+        <text name="sg4_reason_recipe_retired" text="Ez a recept el lett távolítva"/>
+        <text name="sg4_reason_recipe_stale" text="Ez a recept megváltozott, frissíts és próbáld újra"/>
+        <text name="sg4_reason_definition_invalid" text="A recept érvénytelen"/>
+        <text name="sg4_reason_ingredient_invalid" text="Egy összetevő itt nem engedélyezett"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Egy mennyiség kívül esik a megengedett tartományon"/>
+        <text name="sg4_reason_total_incomplete" text="A mennyiségek nem adják ki a teljes receptet"/>
+        <text name="sg4_reason_required_role_missing" text="Hiányzik egy kötelező összetevő"/>
+        <text name="sg4_reason_intent_unsupported" text="Ez a recepttípus nem támogatja ezt a használatot"/>
     </texts>
 </l10n>

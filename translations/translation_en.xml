@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Not available to you"/>
         <text name="sg3_reason_profile_mismatch" text="Quality profiles do not match"/>
         <text name="sg3_reason_composition_unknown" text="Composition unknown"/>
+        <text name="sg4_reason_library_loading" text="Recipe library is loading"/>
+        <text name="sg4_reason_library_unavailable" text="Recipe library is unavailable"/>
+        <text name="sg4_reason_library_not_owned" text="This recipe library belongs to another farm"/>
+        <text name="sg4_reason_library_retired" text="This recipe library is no longer in use"/>
+        <text name="sg4_reason_library_full" text="The recipe library is full"/>
+        <text name="sg4_reason_no_profile" text="No supported recipe type is available"/>
+        <text name="sg4_reason_profile_absent" text="The recipe type of this recipe is not available"/>
+        <text name="sg4_reason_profile_unavailable" text="The recipe type cannot use this recipe"/>
+        <text name="sg4_reason_recipe_unknown" text="Recipe not found"/>
+        <text name="sg4_reason_recipe_retired" text="This recipe was removed"/>
+        <text name="sg4_reason_recipe_stale" text="This recipe has changed, refresh and try again"/>
+        <text name="sg4_reason_definition_invalid" text="The recipe is not valid"/>
+        <text name="sg4_reason_ingredient_invalid" text="An ingredient is not allowed here"/>
+        <text name="sg4_reason_value_out_of_bounds" text="An amount is outside the allowed range"/>
+        <text name="sg4_reason_total_incomplete" text="The amounts do not add up to the whole recipe"/>
+        <text name="sg4_reason_required_role_missing" text="A required ingredient is missing"/>
+        <text name="sg4_reason_intent_unsupported" text="This recipe type does not support that use"/>
     </texts>
 </l10n>

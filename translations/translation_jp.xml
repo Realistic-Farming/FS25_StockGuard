@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="利用できません"/>
         <text name="sg3_reason_profile_mismatch" text="品質プロファイルが一致しません"/>
         <text name="sg3_reason_composition_unknown" text="組成が不明です"/>
+        <text name="sg4_reason_library_loading" text="レシピライブラリを読み込み中"/>
+        <text name="sg4_reason_library_unavailable" text="レシピライブラリを利用できません"/>
+        <text name="sg4_reason_library_not_owned" text="このレシピライブラリは別の農場のものです"/>
+        <text name="sg4_reason_library_retired" text="このレシピライブラリは使用されていません"/>
+        <text name="sg4_reason_library_full" text="レシピライブラリがいっぱいです"/>
+        <text name="sg4_reason_no_profile" text="対応するレシピの種類がありません"/>
+        <text name="sg4_reason_profile_absent" text="このレシピの種類は利用できません"/>
+        <text name="sg4_reason_profile_unavailable" text="このレシピの種類ではこのレシピを使用できません"/>
+        <text name="sg4_reason_recipe_unknown" text="レシピが見つかりません"/>
+        <text name="sg4_reason_recipe_retired" text="このレシピは削除されました"/>
+        <text name="sg4_reason_recipe_stale" text="このレシピは変更されました。更新して再試行してください"/>
+        <text name="sg4_reason_definition_invalid" text="レシピが無効です"/>
+        <text name="sg4_reason_ingredient_invalid" text="この材料はここでは使用できません"/>
+        <text name="sg4_reason_value_out_of_bounds" text="量が許容範囲外です"/>
+        <text name="sg4_reason_total_incomplete" text="量の合計がレシピ全体になりません"/>
+        <text name="sg4_reason_required_role_missing" text="必須の材料がありません"/>
+        <text name="sg4_reason_intent_unsupported" text="このレシピの種類はその用途に対応していません"/>
     </texts>
 </l10n>

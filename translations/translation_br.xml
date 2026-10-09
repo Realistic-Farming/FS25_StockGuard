@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Indisponível para você"/>
         <text name="sg3_reason_profile_mismatch" text="Os perfis de qualidade não correspondem"/>
         <text name="sg3_reason_composition_unknown" text="Composição desconhecida"/>
+        <text name="sg4_reason_library_loading" text="Carregando a biblioteca de receitas"/>
+        <text name="sg4_reason_library_unavailable" text="A biblioteca de receitas não está disponível"/>
+        <text name="sg4_reason_library_not_owned" text="Esta biblioteca de receitas pertence a outra fazenda"/>
+        <text name="sg4_reason_library_retired" text="Esta biblioteca de receitas não está mais em uso"/>
+        <text name="sg4_reason_library_full" text="A biblioteca de receitas está cheia"/>
+        <text name="sg4_reason_no_profile" text="Nenhum tipo de receita compatível está disponível"/>
+        <text name="sg4_reason_profile_absent" text="O tipo desta receita não está disponível"/>
+        <text name="sg4_reason_profile_unavailable" text="O tipo de receita não pode usar esta receita"/>
+        <text name="sg4_reason_recipe_unknown" text="Receita não encontrada"/>
+        <text name="sg4_reason_recipe_retired" text="Esta receita foi removida"/>
+        <text name="sg4_reason_recipe_stale" text="Esta receita mudou, atualize e tente de novo"/>
+        <text name="sg4_reason_definition_invalid" text="A receita não é válida"/>
+        <text name="sg4_reason_ingredient_invalid" text="Um ingrediente não é permitido aqui"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Uma quantidade está fora do intervalo permitido"/>
+        <text name="sg4_reason_total_incomplete" text="As quantidades não formam a receita completa"/>
+        <text name="sg4_reason_required_role_missing" text="Falta um ingrediente obrigatório"/>
+        <text name="sg4_reason_intent_unsupported" text="Este tipo de receita não suporta esse uso"/>
     </texts>
 </l10n>
