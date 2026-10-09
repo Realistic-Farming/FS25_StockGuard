@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="사용할 수 없습니다"/>
         <text name="sg3_reason_profile_mismatch" text="품질 프로필이 일치하지 않습니다"/>
         <text name="sg3_reason_composition_unknown" text="구성을 알 수 없습니다"/>
+        <text name="sg4_reason_library_loading" text="레시피 라이브러리 불러오는 중"/>
+        <text name="sg4_reason_library_unavailable" text="레시피 라이브러리를 사용할 수 없습니다"/>
+        <text name="sg4_reason_library_not_owned" text="이 레시피 라이브러리는 다른 농장의 것입니다"/>
+        <text name="sg4_reason_library_retired" text="이 레시피 라이브러리는 더 이상 사용되지 않습니다"/>
+        <text name="sg4_reason_library_full" text="레시피 라이브러리가 가득 찼습니다"/>
+        <text name="sg4_reason_no_profile" text="지원되는 레시피 유형이 없습니다"/>
+        <text name="sg4_reason_profile_absent" text="이 레시피의 유형을 사용할 수 없습니다"/>
+        <text name="sg4_reason_profile_unavailable" text="이 레시피 유형으로는 이 레시피를 사용할 수 없습니다"/>
+        <text name="sg4_reason_recipe_unknown" text="레시피를 찾을 수 없습니다"/>
+        <text name="sg4_reason_recipe_retired" text="이 레시피는 삭제되었습니다"/>
+        <text name="sg4_reason_recipe_stale" text="이 레시피가 변경되었습니다. 새로 고친 후 다시 시도하세요"/>
+        <text name="sg4_reason_definition_invalid" text="레시피가 올바르지 않습니다"/>
+        <text name="sg4_reason_ingredient_invalid" text="이 재료는 여기에서 허용되지 않습니다"/>
+        <text name="sg4_reason_value_out_of_bounds" text="양이 허용 범위를 벗어났습니다"/>
+        <text name="sg4_reason_total_incomplete" text="양의 합계가 전체 레시피가 되지 않습니다"/>
+        <text name="sg4_reason_required_role_missing" text="필수 재료가 없습니다"/>
+        <text name="sg4_reason_intent_unsupported" text="이 레시피 유형은 해당 용도를 지원하지 않습니다"/>
     </texts>
 </l10n>

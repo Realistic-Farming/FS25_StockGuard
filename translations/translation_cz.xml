@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Pro vás nedostupné"/>
         <text name="sg3_reason_profile_mismatch" text="Profily kvality se neshodují"/>
         <text name="sg3_reason_composition_unknown" text="Složení neznámé"/>
+        <text name="sg4_reason_library_loading" text="Načítání knihovny receptur"/>
+        <text name="sg4_reason_library_unavailable" text="Knihovna receptur není dostupná"/>
+        <text name="sg4_reason_library_not_owned" text="Tato knihovna receptur patří jiné farmě"/>
+        <text name="sg4_reason_library_retired" text="Tato knihovna receptur se již nepoužívá"/>
+        <text name="sg4_reason_library_full" text="Knihovna receptur je plná"/>
+        <text name="sg4_reason_no_profile" text="Není dostupný žádný podporovaný typ receptury"/>
+        <text name="sg4_reason_profile_absent" text="Typ této receptury není dostupný"/>
+        <text name="sg4_reason_profile_unavailable" text="Tento typ receptury nemůže použít tuto recepturu"/>
+        <text name="sg4_reason_recipe_unknown" text="Receptura nenalezena"/>
+        <text name="sg4_reason_recipe_retired" text="Tato receptura byla odstraněna"/>
+        <text name="sg4_reason_recipe_stale" text="Tato receptura se změnila, obnovte a zkuste to znovu"/>
+        <text name="sg4_reason_definition_invalid" text="Receptura není platná"/>
+        <text name="sg4_reason_ingredient_invalid" text="Tato složka zde není povolena"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Množství je mimo povolený rozsah"/>
+        <text name="sg4_reason_total_incomplete" text="Množství nedávají dohromady celou recepturu"/>
+        <text name="sg4_reason_required_role_missing" text="Chybí povinná složka"/>
+        <text name="sg4_reason_intent_unsupported" text="Tento typ receptury toto použití nepodporuje"/>
     </texts>
 </l10n>

@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Вам недоступно"/>
         <text name="sg3_reason_profile_mismatch" text="Профили качества не совпадают"/>
         <text name="sg3_reason_composition_unknown" text="Состав неизвестен"/>
+        <text name="sg4_reason_library_loading" text="Загрузка библиотеки рецептов"/>
+        <text name="sg4_reason_library_unavailable" text="Библиотека рецептов недоступна"/>
+        <text name="sg4_reason_library_not_owned" text="Эта библиотека рецептов принадлежит другой ферме"/>
+        <text name="sg4_reason_library_retired" text="Эта библиотека рецептов больше не используется"/>
+        <text name="sg4_reason_library_full" text="Библиотека рецептов заполнена"/>
+        <text name="sg4_reason_no_profile" text="Нет доступного поддерживаемого типа рецепта"/>
+        <text name="sg4_reason_profile_absent" text="Тип этого рецепта недоступен"/>
+        <text name="sg4_reason_profile_unavailable" text="Этот тип рецепта не может использовать этот рецепт"/>
+        <text name="sg4_reason_recipe_unknown" text="Рецепт не найден"/>
+        <text name="sg4_reason_recipe_retired" text="Этот рецепт удалён"/>
+        <text name="sg4_reason_recipe_stale" text="Этот рецепт изменился, обновите и попробуйте снова"/>
+        <text name="sg4_reason_definition_invalid" text="Рецепт недействителен"/>
+        <text name="sg4_reason_ingredient_invalid" text="Этот ингредиент здесь не разрешён"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Количество вне допустимого диапазона"/>
+        <text name="sg4_reason_total_incomplete" text="Количества не составляют весь рецепт"/>
+        <text name="sg4_reason_required_role_missing" text="Не хватает обязательного ингредиента"/>
+        <text name="sg4_reason_intent_unsupported" text="Этот тип рецепта не поддерживает такое использование"/>
     </texts>
 </l10n>

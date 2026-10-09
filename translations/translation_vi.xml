@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Không khả dụng với bạn"/>
         <text name="sg3_reason_profile_mismatch" text="Hồ sơ chất lượng không khớp"/>
         <text name="sg3_reason_composition_unknown" text="Không rõ thành phần"/>
+        <text name="sg4_reason_library_loading" text="Đang tải thư viện công thức"/>
+        <text name="sg4_reason_library_unavailable" text="Thư viện công thức không khả dụng"/>
+        <text name="sg4_reason_library_not_owned" text="Thư viện công thức này thuộc về trang trại khác"/>
+        <text name="sg4_reason_library_retired" text="Thư viện công thức này không còn được dùng"/>
+        <text name="sg4_reason_library_full" text="Thư viện công thức đã đầy"/>
+        <text name="sg4_reason_no_profile" text="Không có loại công thức được hỗ trợ"/>
+        <text name="sg4_reason_profile_absent" text="Loại của công thức này không khả dụng"/>
+        <text name="sg4_reason_profile_unavailable" text="Loại công thức không thể dùng công thức này"/>
+        <text name="sg4_reason_recipe_unknown" text="Không tìm thấy công thức"/>
+        <text name="sg4_reason_recipe_retired" text="Công thức này đã bị xóa"/>
+        <text name="sg4_reason_recipe_stale" text="Công thức này đã thay đổi, hãy làm mới và thử lại"/>
+        <text name="sg4_reason_definition_invalid" text="Công thức không hợp lệ"/>
+        <text name="sg4_reason_ingredient_invalid" text="Nguyên liệu này không được phép ở đây"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Một lượng nằm ngoài phạm vi cho phép"/>
+        <text name="sg4_reason_total_incomplete" text="Các lượng không tạo thành công thức đầy đủ"/>
+        <text name="sg4_reason_required_role_missing" text="Thiếu một nguyên liệu bắt buộc"/>
+        <text name="sg4_reason_intent_unsupported" text="Loại công thức này không hỗ trợ cách dùng đó"/>
     </texts>
 </l10n>

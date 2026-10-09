@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Ikke tilgængelig for dig"/>
         <text name="sg3_reason_profile_mismatch" text="Kvalitetsprofiler stemmer ikke overens"/>
         <text name="sg3_reason_composition_unknown" text="Sammensætning ukendt"/>
+        <text name="sg4_reason_library_loading" text="Opskriftsbiblioteket indlæses"/>
+        <text name="sg4_reason_library_unavailable" text="Opskriftsbiblioteket er ikke tilgængeligt"/>
+        <text name="sg4_reason_library_not_owned" text="Dette opskriftsbibliotek tilhører en anden gård"/>
+        <text name="sg4_reason_library_retired" text="Dette opskriftsbibliotek bruges ikke længere"/>
+        <text name="sg4_reason_library_full" text="Opskriftsbiblioteket er fuldt"/>
+        <text name="sg4_reason_no_profile" text="Ingen understøttet opskriftstype er tilgængelig"/>
+        <text name="sg4_reason_profile_absent" text="Denne opskrifts type er ikke tilgængelig"/>
+        <text name="sg4_reason_profile_unavailable" text="Opskriftstypen kan ikke bruge denne opskrift"/>
+        <text name="sg4_reason_recipe_unknown" text="Opskrift ikke fundet"/>
+        <text name="sg4_reason_recipe_retired" text="Denne opskrift er fjernet"/>
+        <text name="sg4_reason_recipe_stale" text="Denne opskrift er ændret, opdater og prøv igen"/>
+        <text name="sg4_reason_definition_invalid" text="Opskriften er ugyldig"/>
+        <text name="sg4_reason_ingredient_invalid" text="En ingrediens er ikke tilladt her"/>
+        <text name="sg4_reason_value_out_of_bounds" text="En mængde er uden for det tilladte område"/>
+        <text name="sg4_reason_total_incomplete" text="Mængderne udgør ikke hele opskriften"/>
+        <text name="sg4_reason_required_role_missing" text="En påkrævet ingrediens mangler"/>
+        <text name="sg4_reason_intent_unsupported" text="Denne opskriftstype understøtter ikke den brug"/>
     </texts>
 </l10n>

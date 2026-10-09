@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="对你不可用"/>
         <text name="sg3_reason_profile_mismatch" text="品质配置不匹配"/>
         <text name="sg3_reason_composition_unknown" text="成分未知"/>
+        <text name="sg4_reason_library_loading" text="正在加载配方库"/>
+        <text name="sg4_reason_library_unavailable" text="配方库不可用"/>
+        <text name="sg4_reason_library_not_owned" text="此配方库属于其他农场"/>
+        <text name="sg4_reason_library_retired" text="此配方库已停用"/>
+        <text name="sg4_reason_library_full" text="配方库已满"/>
+        <text name="sg4_reason_no_profile" text="没有可用的受支持配方类型"/>
+        <text name="sg4_reason_profile_absent" text="此配方的类型不可用"/>
+        <text name="sg4_reason_profile_unavailable" text="该配方类型无法使用此配方"/>
+        <text name="sg4_reason_recipe_unknown" text="未找到配方"/>
+        <text name="sg4_reason_recipe_retired" text="此配方已移除"/>
+        <text name="sg4_reason_recipe_stale" text="此配方已更改，请刷新后重试"/>
+        <text name="sg4_reason_definition_invalid" text="配方无效"/>
+        <text name="sg4_reason_ingredient_invalid" text="此处不允许使用该原料"/>
+        <text name="sg4_reason_value_out_of_bounds" text="数量超出允许范围"/>
+        <text name="sg4_reason_total_incomplete" text="各数量之和不构成完整配方"/>
+        <text name="sg4_reason_required_role_missing" text="缺少必需的原料"/>
+        <text name="sg4_reason_intent_unsupported" text="此配方类型不支持该用途"/>
     </texts>
 </l10n>

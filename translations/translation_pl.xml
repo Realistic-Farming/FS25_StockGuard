@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Niedostępne dla ciebie"/>
         <text name="sg3_reason_profile_mismatch" text="Profile jakości nie pasują"/>
         <text name="sg3_reason_composition_unknown" text="Skład nieznany"/>
+        <text name="sg4_reason_library_loading" text="Wczytywanie biblioteki receptur"/>
+        <text name="sg4_reason_library_unavailable" text="Biblioteka receptur jest niedostępna"/>
+        <text name="sg4_reason_library_not_owned" text="Ta biblioteka receptur należy do innego gospodarstwa"/>
+        <text name="sg4_reason_library_retired" text="Ta biblioteka receptur nie jest już używana"/>
+        <text name="sg4_reason_library_full" text="Biblioteka receptur jest pełna"/>
+        <text name="sg4_reason_no_profile" text="Brak obsługiwanego typu receptury"/>
+        <text name="sg4_reason_profile_absent" text="Typ tej receptury jest niedostępny"/>
+        <text name="sg4_reason_profile_unavailable" text="Ten typ receptury nie może użyć tej receptury"/>
+        <text name="sg4_reason_recipe_unknown" text="Nie znaleziono receptury"/>
+        <text name="sg4_reason_recipe_retired" text="Ta receptura została usunięta"/>
+        <text name="sg4_reason_recipe_stale" text="Ta receptura się zmieniła, odśwież i spróbuj ponownie"/>
+        <text name="sg4_reason_definition_invalid" text="Receptura jest nieprawidłowa"/>
+        <text name="sg4_reason_ingredient_invalid" text="Ten składnik nie jest tu dozwolony"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Ilość jest poza dozwolonym zakresem"/>
+        <text name="sg4_reason_total_incomplete" text="Ilości nie składają się na całą recepturę"/>
+        <text name="sg4_reason_required_role_missing" text="Brakuje wymaganego składnika"/>
+        <text name="sg4_reason_intent_unsupported" text="Ten typ receptury nie obsługuje takiego użycia"/>
     </texts>
 </l10n>

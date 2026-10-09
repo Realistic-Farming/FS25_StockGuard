@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Indisponibil pentru tine"/>
         <text name="sg3_reason_profile_mismatch" text="Profilurile de calitate nu se potrivesc"/>
         <text name="sg3_reason_composition_unknown" text="Compoziție necunoscută"/>
+        <text name="sg4_reason_library_loading" text="Se încarcă biblioteca de rețete"/>
+        <text name="sg4_reason_library_unavailable" text="Biblioteca de rețete nu este disponibilă"/>
+        <text name="sg4_reason_library_not_owned" text="Această bibliotecă de rețete aparține altei ferme"/>
+        <text name="sg4_reason_library_retired" text="Această bibliotecă de rețete nu mai este folosită"/>
+        <text name="sg4_reason_library_full" text="Biblioteca de rețete este plină"/>
+        <text name="sg4_reason_no_profile" text="Nu există niciun tip de rețetă acceptat disponibil"/>
+        <text name="sg4_reason_profile_absent" text="Tipul acestei rețete nu este disponibil"/>
+        <text name="sg4_reason_profile_unavailable" text="Tipul de rețetă nu poate folosi această rețetă"/>
+        <text name="sg4_reason_recipe_unknown" text="Rețeta nu a fost găsită"/>
+        <text name="sg4_reason_recipe_retired" text="Această rețetă a fost eliminată"/>
+        <text name="sg4_reason_recipe_stale" text="Această rețetă s-a schimbat, reîmprospătează și încearcă din nou"/>
+        <text name="sg4_reason_definition_invalid" text="Rețeta nu este validă"/>
+        <text name="sg4_reason_ingredient_invalid" text="Un ingredient nu este permis aici"/>
+        <text name="sg4_reason_value_out_of_bounds" text="O cantitate este în afara intervalului permis"/>
+        <text name="sg4_reason_total_incomplete" text="Cantitățile nu alcătuiesc întreaga rețetă"/>
+        <text name="sg4_reason_required_role_missing" text="Lipsește un ingredient obligatoriu"/>
+        <text name="sg4_reason_intent_unsupported" text="Acest tip de rețetă nu acceptă această utilizare"/>
     </texts>
 </l10n>
