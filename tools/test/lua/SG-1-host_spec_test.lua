@@ -265,12 +265,13 @@ do
     client:clearView("FARM_CHANGED")
     T.eq("J12 clearView revokes usability with the reason", tostring(client.client.usable) .. "/" .. client.client.reason, "false/FARM_CHANGED")
     -- Route selection.
-    local registered = nil
+    -- NS-7 keeps its scoped modules by id (SG-4 Part 1: stockGuard and stockGuard.recipes, SG-1 :342).
+    local registered = {}
     local ns = { getScopedCapabilities = function(self) return { bootstrapVersion = 1, protocolVersions = { 1 }, ready = true, reasonCode = "READY" } end,
-        registerScopedModule = function(self, id, spec) registered = { id = id, spec = spec } return true end, unregisterScopedModule = function(self, id) registered = nil return true end, markDirty = function() end }
+        registerScopedModule = function(self, id, spec) registered[id] = spec return true end, unregisterScopedModule = function(self, id) registered[id] = nil return true end, markDirty = function() end }
     local t2 = SGTransport.new(views, commands)
-    T.eq("J13 a ready NS-7 is selected and the module registered", t2:selectRoute({ networkSync = ns }) .. "/" .. registered.id, "NS7/stockGuard")
-    T.eq("J14 the registered buildView is a plain function of (context, previous, forceFull)", registered.spec.buildView(ctx(), nil, true).state, "READY")
+    T.eq("J13 a ready NS-7 is selected and both scoped modules registered", t2:selectRoute({ networkSync = ns }) .. "/" .. tostring(registered.stockGuard ~= nil) .. "/" .. tostring(registered["stockGuard.recipes"] ~= nil), "NS7/true/true")
+    T.eq("J14 the registered buildView is a plain function of (context, previous, forceFull)", registered.stockGuard.buildView(ctx(), nil, true).state, "READY")
     local t3 = SGTransport.new(views, commands)
     T.eq("J15 a waiting NS-7 keeps waiting, never a unilateral fallback", tostring(t3:selectRoute({ networkSync = { getScopedCapabilities = function() return { bootstrapVersion = 1, protocolVersions = { 1 }, ready = false, waiting = true, reasonCode = "WAITING_MISSION_LOAD" } end, registerScopedModule = function() end } })), "nil")
     local t4 = SGTransport.new(views, commands)
@@ -278,7 +279,7 @@ do
     local t5 = SGTransport.new(views, commands)
     T.eq("J16b a present NS-7 that refuses the registration is UNAVAILABLE, never fallback", t5:selectRoute({ networkSync = { getScopedCapabilities = function() return { bootstrapVersion = 1, protocolVersions = { 1 }, ready = true } end, registerScopedModule = function() return false, "MODULE_LIMIT" end } }) .. "/" .. t5.routeReason, "UNAVAILABLE/NS7_REGISTRATION_REFUSED:MODULE_LIMIT")
     t2:teardown()
-    T.eq("J17 teardown unregisters the scoped module", tostring(registered), "nil")
+    T.eq("J17 teardown unregisters both scoped modules", tostring(next(registered)), "nil")
     -- Events.
     local ev = SGViewRequestEvent.new({ route = "STOCK", selectionKind = "SITE", siteId = "yard" }, { pageCursor = "c1.2" })
     local s = NewStream()

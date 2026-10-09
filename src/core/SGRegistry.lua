@@ -9,7 +9,8 @@
 -- or transmitted.
 --
 -- Registrations: registerCarrierAdapter, registerProperty, registerConsumer,
--- registerManagementOwner, registerSaveSection, registerCarrierPending.
+-- registerManagementOwner, registerSaveSection, registerCarrierPending,
+-- registerRecipeLibraryView.
 -- Specs are trusted initialization-time integration code; validation here
 -- catches missing callbacks and bad shapes, not hostile Lua.
 -- =========================================================
@@ -24,6 +25,7 @@ G.KIND_CONSUMER = "CONSUMER"
 G.KIND_MANAGEMENT = "MANAGEMENT_OWNER"
 G.KIND_SAVE_SECTION = "SAVE_SECTION"
 G.KIND_CARRIER_PENDING = "CARRIER_PENDING"
+G.KIND_LIBRARY_VIEW = "RECIPE_LIBRARY_VIEW"
 
 G.OPERATION_KINDS = { BIRTH = true, TRANSFER = true, MIX = true, CONVERT = true, REMOVE = true, REBIND = true }
 G.TARGET_KINDS = { CARRIER = true, STOCK = true, PROCESS = true, LIBRARY = true }
@@ -262,6 +264,29 @@ function G:registerCarrierPending(ownerId, spec)
     if not optFn(spec.disclosePending) then return nil, "OPTIONAL_CALLBACKS" end
     if self:count(G.KIND_CARRIER_PENDING) > 0 then return nil, "ONE_COLLECTION" end
     return issue(self, G.KIND_CARRIER_PENDING, ownerId, spec)
+end
+
+-- ---------------------------------------------------------
+-- registerRecipeLibraryView(ownerId, spec)
+-- ---------------------------------------------------------
+--- The RECIPE_LIBRARY route's one owner (SG-1 :289, "the distinct SG-4 projection and decoder").
+--- spec = { version, schemaVersion, buildView, validateRows }: the server builds the route's rows with
+--- buildView(actor, normalizedSelection) -> { state, reason?, libraryId?, dataRevision?, rows? }, and
+--- both sides check them with validateRows(rows) -> true or false, reason before a view is published or
+--- applied, so a client registers the owner too. schemaVersion is the route's own application schema.
+function G:registerRecipeLibraryView(ownerId, spec)
+    if not nonempty(ownerId, 64) then return nil, "INVALID_ID" end
+    if type(spec) ~= "table" then return nil, "INVALID_SPEC" end
+    if not positiveInt(spec.version) or not positiveInt(spec.schemaVersion) then return nil, "VERSION" end
+    if not isFn(spec.buildView) or not isFn(spec.validateRows) then return nil, "CALLBACKS" end
+    if self:count(G.KIND_LIBRARY_VIEW) > 0 then return nil, "LIBRARY_VIEW_PRESENT" end
+    return issue(self, G.KIND_LIBRARY_VIEW, ownerId, spec)
+end
+
+--- The live RECIPE_LIBRARY owner's lease, or nil.
+function G:libraryView()
+    for _, lease in self:each(G.KIND_LIBRARY_VIEW) do return lease end
+    return nil
 end
 
 -- ---------------------------------------------------------
