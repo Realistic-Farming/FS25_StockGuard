@@ -148,6 +148,8 @@ function H:install()
     A.resetBaleRestores()
     -- SG2-5e-c: and so are the round mirrors (noted at a live round finish).
     A.resetRoundMirrors()
+    -- SG2-5g: and the straw blower mirrors (noted at a load).
+    if SGStrawBlower ~= nil then SGStrawBlower.reset() end
     -- SG2-4b: the line bracket on the engine global (process-wide, dispatching to this host).
     if SGGroundObserver ~= nil then
         local okLine, whyLine = SGGroundObserver.install()
@@ -181,6 +183,8 @@ function H:teardown()
     if SGNativeAdapters ~= nil and type(SGNativeAdapters.tedderBuffers) == "table" then
         for k in pairs(SGNativeAdapters.tedderBuffers) do SGNativeAdapters.tedderBuffers[k] = nil end
     end
+    -- SG2-5g: the straw blower mirrors hold the mission's vehicles and bales.
+    if SGStrawBlower ~= nil then SGStrawBlower.reset() end
     -- SG2-5c: and the Mower's drop-area buffers.
     if SGNativeAdapters ~= nil and type(SGNativeAdapters.mowerBuffers) == "table" then
         for k in pairs(SGNativeAdapters.mowerBuffers) do SGNativeAdapters.mowerBuffers[k] = nil end
@@ -328,6 +332,8 @@ function H:observeVehicle(vehicle)
     -- prerequisite of Dischargeable.lua:22-24, Leveler.lua:6-8 and Baler.lua:141-143).
     if SGHarvestCapture ~= nil then SGHarvestCapture.observeVehicle(vehicle) end
     if SGGroundObserver ~= nil then SGGroundObserver.observeVehicle(vehicle) end
+    -- SG2-5g: a straw blower's trigger callback and delete listener (instance copies).
+    if SGStrawBlower ~= nil then SGStrawBlower.observeVehicle(vehicle) end
     if vehicle.spec_fillUnit == nil then return false end
     if vehicle.spec_dischargeable ~= nil then
         SGDischargeCapture.install(vehicle, H.dispatchDischargeOpen, H.dispatchDischargeClose)
@@ -443,6 +449,14 @@ function H:onBaleDeleted(bale)
     local binding = A.baleBinding(bale)
     if binding == nil then return end
     local cid = SGRecords.carrierKeyString(binding.carrierKey)
+    -- SG2-5g: a straw blower's last discharge deletes its mirrored bale inside the transfer that holds it
+    -- (StrawBlower.lua:159-169): the delete is that transfer's, settled with the bale empty.
+    local holding = SGStrawBlower ~= nil and SGStrawBlower.holdingTransfer(self, bale) or nil
+    if holding ~= nil then
+        holding.deleted = holding.deleted or {}
+        holding.deleted[cid] = bale
+        return
+    end
     local cap = self.handle.captureOperation(self.nativeLease, "REMOVE", { { carrierId = cid } })
     if cap == nil then return end
     local before = cap.before.carriers[cid]
@@ -519,6 +533,8 @@ function H:onVehicleRemoved(vehicle)
     -- SG2-5e-c: a round chamber's mirror goes with its carrier (Baler:onDelete drops or deletes the
     -- mounted bale, Baler.lua:585-602; the dropped bale is new contents, as before 5e-c).
     A.retireRoundMirrorsOf(vehicle)
+    -- SG2-5g: and a straw blower's mirrors with the blower.
+    if SGStrawBlower ~= nil then SGStrawBlower.retireMirrorsOf(vehicle) end
     -- SG2-5b: a live Tedder remainder is destruction too (SG-2 :136), retired through a REMOVE.
     if SGGroundObserver ~= nil and type(SGGroundObserver.retireTedderBuffers) == "function" then
         SGGroundObserver.retireTedderBuffers(self, vehicle)
@@ -684,7 +700,11 @@ function H:transferParticipants(list)
         if p.binding == nil then return nil, nil, "UNSUPPORTED_CARRIER" end
         local c, why = self.handle.refreshCarrier(self.nativeLease, p.binding, H.REASON)
         if c == nil then return nil, nil, "REFRESH:" .. tostring(why) end
-        p.carrierId = SGRecords.carrierKeyString(p.binding.carrierKey)
+        -- The carrier SG-1 refreshed is the canonical one: an alias (a straw blower's mirrored unit,
+        -- SG2-5g) names its bale, so the capture and the after-state read are the bale's. For an ordinary
+        -- binding these are the binding's own key and binding.
+        p.carrierId = c.carrierId or SGRecords.carrierKeyString(p.binding.carrierKey)
+        if type(c.binding) == "table" then p.binding = SGValues.copy(c.binding) end
         if participants[p.carrierId] == nil then
             participants[p.carrierId] = p
             capture[#capture + 1] = { carrierId = p.carrierId }
@@ -943,8 +963,14 @@ function H:settleTransfer(frame, ok, t)
     local spec = self.nativeLease ~= nil and self.nativeLease.spec or nil
     local after = {}
     for cid, p in pairs(t.participants) do
-        local native = spec ~= nil and spec.resolveCarrier(p.binding) or nil
-        local ns = native ~= nil and spec.readNativeState(p.binding, native) or nil
+        local ns
+        if t.deleted ~= nil and t.deleted[cid] ~= nil then
+            -- SG2-5g: a mirrored bale native deleted inside this transfer (StrawBlower.lua:159-169) is empty.
+            ns = { amount = 0, unit = A.UNIT, storeKind = A.BALE_STORE }
+        else
+            local native = spec ~= nil and spec.resolveCarrier(p.binding) or nil
+            ns = native ~= nil and spec.readNativeState(p.binding, native) or nil
+        end
         if ns == nil then after = nil break end
         after[cid] = ns
     end
@@ -953,6 +979,7 @@ function H:settleTransfer(frame, ok, t)
         t.outcome, t.outcomeReason = "ABANDONED", refuse
         self.lastSettlement = { callRef = t.callRef, outcome = t.outcome, reason = refuse }
         self.handle.abandonOperation(t.capture.handle, refuse, after)
+        self:retireDeletedParticipants(t)
         return nil
     end
     local net = {}
@@ -974,6 +1001,18 @@ function H:settleTransfer(frame, ok, t)
         end
     end
     local legs, S, D, matched = transferLegs(net)
+    -- SG2-5g: what a deleted mirrored bale held beyond the accepted litres, up to native's own 0.01 L
+    -- threshold (StrawBlower.lua:159) plus the transfer tolerance, is native's trim, named as such; a
+    -- larger unmatched source stays UNMATCHED_SOURCE.
+    local trimmed = 0
+    if t.deleted ~= nil and SGStrawBlower ~= nil then
+        for _, leg in ipairs(legs) do
+            if leg.result == "LOSS" and t.deleted[leg.source.carrierId] ~= nil and leg.sourceAmount <= SGStrawBlower.TRIM_BOUND + H.TRANSFER_EPSILON then
+                leg.reason = SGStrawBlower.TRIM_REASON
+                trimmed = trimmed + leg.sourceAmount
+            end
+        end
+    end
     -- SG-2 :90: the result names the material and the requested quantity beside what
     -- each side actually did.
     local fillTypeName = nil
@@ -986,12 +1025,24 @@ function H:settleTransfer(frame, ok, t)
         allocations = legs,
         outcomeEvidence = { nativePath = t.nativePath, callRef = t.callRef, fillTypeName = fillTypeName, requestedAmount = t.requested,
                             sourceTotal = S, destinationTotal = D, matched = matched, loss = S - matched, unexplainedGain = D - matched,
-                            stationFailure = stationFailure },
+                            stationFailure = stationFailure, baleDeleted = t.deleted ~= nil or nil, trimmed = trimmed > 0 and trimmed or nil },
     }
     t.outcome, t.outcomeReason = self.handle.settleOperation(t.capture.handle, report)
     self.lastSettlement = { callRef = t.callRef, outcome = t.outcome, reason = t.outcomeReason, report = report }
+    self:retireDeletedParticipants(t)
     if t.outcome == "NO_OP" or t.outcome == "COMMITTED" then return consumed end
     return nil
+end
+
+--- [SG2-5g] After a transfer that held a mirrored bale native deleted inside it: the bale's carrier is
+--- withdrawn (BALE_DELETED, as onBaleDeleted would) and its mirror retires, once, after the settle.
+function H:retireDeletedParticipants(t)
+    if t == nil or t.deleted == nil then return end
+    for cid, bale in pairs(t.deleted) do
+        self.dirty[cid] = nil
+        pcall(self.handle.withdrawCarrier, self.nativeLease, cid, "BALE_DELETED")
+        if SGStrawBlower ~= nil then SGStrawBlower.retire(A.strawBlowerMirrorOfBale(bale), "LAST_DISCHARGE") end
+    end
 end
 
 --- The source fill unit's state after the native call, as SG-1 reads carriers.
@@ -1192,6 +1243,8 @@ function H.installClassHooks(classes)
     -- SG2-5f: and the ForageWagon's buffer, restored after its onLoad (it registers no onPostLoad).
     if SGFieldToolBufferSave ~= nil then SGFieldToolBufferSave.installClassHooks({ Tedder = classes.Tedder, Mower = classes.Mower, Baler = classes.Baler,
         ForageWagon = classes.ForageWagon }) end
+    -- SG2-5g: the straw blower's load, on this map load's StrawBlower class.
+    if SGStrawBlower ~= nil then SGStrawBlower.installClassHooks({ StrawBlower = classes.StrawBlower }) end
     -- SG2-4a: the native save boundary (SavegameController's start and result, called by
     -- name through the class) and the Combine drain deferral, installed after the drain
     -- bracket above so the deferral is its outermost wrapper.
