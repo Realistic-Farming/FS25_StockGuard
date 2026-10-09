@@ -300,8 +300,17 @@ group("R", function()
     T.eq("R8 the arguments carry the resolved action's schema, never the client's: a SAVE with RETIRE's arguments is a SAVE without a definition",
         outcome(forged) .. " | " .. recipes(libView(m)), "REFUSED/DEFINITION_INVALID | Dairy ration:2:AVAILABLE::retired,Second:1:AVAILABLE:")
     local host = { farmId = 1, userId = "host", actorState = "RESOLVED" }
+    -- A client's definition carries fields the schema does not name, at the top level and in an ingredient.
+    local extra = ration("Extra", nil, nil, nil, function(d) d.secret = "x" d.ingredients[1].note = "y" end)
+    local saved = quoteExecute(m, "SAVE_RECIPE", { definition = extra })
+    local stored = m.stockGuard.readRecipe(host, "r4", 1)
+    local published
+    for _, row in ipairs(rowsOf(libView(m), "RECIPE")) do if row.recipeId == "r4" then published = row.definition end end
+    T.eq("R10 a field the schema does not name is neither stored nor published, at the top level or in an ingredient",
+        outcome(saved) .. " | " .. tostring(stored.definition and stored.definition.secret) .. "/" .. tostring(stored.definition and stored.definition.ingredients[1].note)
+        .. " " .. tostring(published and published.secret) .. "/" .. tostring(published and published.ingredients[1].note), "APPLIED/ | nil/nil nil/nil")
     T.eq("R9 listRecipes lists the farm's recipes, filtered by profile when one is named",
-        #m.stockGuard.listRecipes(host).recipes .. "/" .. #m.stockGuard.listRecipes(host, PROFILE_ID).recipes .. "/" .. #m.stockGuard.listRecipes(host, "OTHER").recipes, "2/2/0")
+        #m.stockGuard.listRecipes(host).recipes .. "/" .. #m.stockGuard.listRecipes(host, PROFILE_ID).recipes .. "/" .. #m.stockGuard.listRecipes(host, "OTHER").recipes, "3/3/0")
     FSBaseMission.delete(m)
 end)
 

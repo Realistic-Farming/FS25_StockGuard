@@ -115,6 +115,30 @@ end
 -- ---------------------------------------------------------
 -- SG4_RECIPE_DEFINITION_1 (:383)
 -- ---------------------------------------------------------
+--- SG4_RECIPE_DEFINITION_1 rebuilt from its named fields only (:383's fixed shape): an unnamed field, at the
+--- top level or inside an ingredient, a dilution or a default batch, is not carried. A non-table entry is kept
+--- as it was, so the checks below still refuse it. Returns nil for a non-table.
+function S.canonicalDefinition(d)
+    if type(d) ~= "table" then return nil end
+    local out = { definitionSchemaVersion = d.definitionSchemaVersion, profileId = d.profileId, profileVersion = d.profileVersion,
+                  policyVersion = d.policyVersion, label = d.label, intent = d.intent }
+    local b = d.basis
+    out.basis = type(b) == "table" and { kind = b.kind, unit = b.unit, total = b.total } or b
+    if type(d.ingredients) == "table" then
+        out.ingredients = {}
+        for i, ing in ipairs(d.ingredients) do
+            out.ingredients[i] = type(ing) == "table" and { ingredientId = ing.ingredientId, roleId = ing.roleId, unit = ing.unit, value = ing.value } or ing
+        end
+    else
+        out.ingredients = d.ingredients
+    end
+    local dil = d.dilution
+    out.dilution = type(dil) == "table" and { diluentId = dil.diluentId, strength = dil.strength } or dil
+    local bt = d.defaultBatchAmount
+    out.defaultBatchAmount = type(bt) == "table" and { value = bt.value, unit = bt.unit } or bt
+    return out
+end
+
 --- The definition's own shape, with no profile: what a client checks on a RECIPE row.
 function S.validateDefinitionShape(d)
     local R = S.REASON

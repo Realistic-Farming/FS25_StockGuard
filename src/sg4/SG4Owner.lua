@@ -14,7 +14,9 @@
 -- answers.
 --
 --   SG4_SAVE_RECIPE_1   = { definition = SG4_RECIPE_DEFINITION_1, recipeId?, recipeRevision? }
---                         (an edit names the recipe and the revision it was made from)
+--                         (an edit names the recipe and the revision it was made from). The definition is
+--                         rebuilt from its named fields (SG4Schema.canonicalDefinition) before it is checked,
+--                         quoted or saved, so a field the schema does not name is never stored or published.
 --   SG4_RETIRE_RECIPE_1 = { recipeId, recipeRevision }
 --
 -- A quote creates nothing and reserves nothing. The private ownerQuoteRef keeps the library revision it
@@ -100,7 +102,8 @@ local function check(m, b, args)
     local lib = libraryOf(m, b)
     if lib == nil or lib.retired then return false, S.REASON.RETIRED end
     if args.argumentSchemaId == S.SAVE_ARGUMENTS then
-        if type(args.definition) ~= "table" then return false, S.REASON.DEFINITION_INVALID end
+        local definition = S.canonicalDefinition(args.definition)
+        if definition == nil then return false, S.REASON.DEFINITION_INVALID end
         if args.recipeId ~= nil then
             local r = nonempty(args.recipeId, 128) and lib.recipes[args.recipeId] or nil
             if r == nil then return false, S.REASON.RECIPE_UNKNOWN end
@@ -109,9 +112,9 @@ local function check(m, b, args)
         elseif args.recipeRevision ~= nil then
             return false, S.REASON.DEFINITION_INVALID
         end
-        local ok, why = m.profiles:validate(args.definition)
+        local ok, why = m.profiles:validate(definition)
         if not ok then return false, why end
-        if viewTokensAfter(m, b.libraryId, args.recipeId, args.definition) > SGViews.PAGE_TOKEN_BUDGET then return false, S.REASON.FULL end
+        if viewTokensAfter(m, b.libraryId, args.recipeId, definition) > SGViews.PAGE_TOKEN_BUDGET then return false, S.REASON.FULL end
         return true
     elseif args.argumentSchemaId == S.RETIRE_ARGUMENTS then
         local r = nonempty(args.recipeId, 128) and lib.recipes[args.recipeId] or nil
@@ -153,7 +156,7 @@ end
 function O.execute(m, b, actor, args, ref)
     local lib = libraryOf(m, b)
     if args.argumentSchemaId == S.SAVE_ARGUMENTS then
-        m.library:saveRecipe(b.libraryId, args.recipeId, args.definition)
+        m.library:saveRecipe(b.libraryId, args.recipeId, S.canonicalDefinition(args.definition))
     elseif args.argumentSchemaId == S.RETIRE_ARGUMENTS then
         m.library:retireRecipe(b.libraryId, args.recipeId)
     else

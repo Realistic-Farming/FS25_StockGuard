@@ -41,7 +41,7 @@
         <text name="sg4_reason_definition_invalid" text="Receptura není platná"/>
         <text name="sg4_reason_ingredient_invalid" text="Tato složka zde není povolena"/>
         <text name="sg4_reason_value_out_of_bounds" text="Množství je mimo povolený rozsah"/>
-        <text name="sg4_reason_total_incomplete" text="Množství nedávají celou recepturu"/>
+        <text name="sg4_reason_total_incomplete" text="Množství nedávají dohromady celou recepturu"/>
         <text name="sg4_reason_required_role_missing" text="Chybí povinná složka"/>
         <text name="sg4_reason_intent_unsupported" text="Tento typ receptury toto použití nepodporuje"/>
     </texts>
