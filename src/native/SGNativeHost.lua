@@ -186,8 +186,9 @@ function H:teardown()
         for k in pairs(SGNativeAdapters.mowerBuffers) do SGNativeAdapters.mowerBuffers[k] = nil end
     end
     -- SG2-5d-b: the Baler's carriers and open ticks go with the mission too.
+    -- SG2-5f: and the ForageWagon buffers.
     if SGNativeAdapters ~= nil then
-        for _, t in ipairs({ SGNativeAdapters.balerPickups, SGNativeAdapters.balerOverflows }) do
+        for _, t in ipairs({ SGNativeAdapters.balerPickups, SGNativeAdapters.balerOverflows, SGNativeAdapters.forageBuffers }) do
             if type(t) == "table" then for k in pairs(t) do t[k] = nil end end
         end
     end
@@ -529,6 +530,10 @@ function H:onVehicleRemoved(vehicle)
     -- SG2-5d-b: a live Baler overflow is destruction too, and an open tick closes.
     if SGGroundObserver ~= nil and type(SGGroundObserver.retireBalerCarriers) == "function" then
         SGGroundObserver.retireBalerCarriers(self, vehicle)
+    end
+    -- SG2-5f: so is a live ForageWagon remainder.
+    if SGGroundObserver ~= nil and type(SGGroundObserver.retireForageBuffers) == "function" then
+        SGGroundObserver.retireForageBuffers(self, vehicle)
     end
     local cs = type(vehicle) == "table" and vehicle.spec_combine or nil
     if cs ~= nil then
@@ -1184,7 +1189,9 @@ function H.installClassHooks(classes)
     if SGCombineBufferSave ~= nil then SGCombineBufferSave.installClassHooks({ Combine = classes.Combine }) end
     -- SG2-5bc-save: so do the Tedder's and the Mower's remainders, on this map load's class tables
     -- (their savegame paths through the module's Vehicle.init append, on every map load).
-    if SGFieldToolBufferSave ~= nil then SGFieldToolBufferSave.installClassHooks({ Tedder = classes.Tedder, Mower = classes.Mower, Baler = classes.Baler }) end
+    -- SG2-5f: and the ForageWagon's buffer, restored after its onLoad (it registers no onPostLoad).
+    if SGFieldToolBufferSave ~= nil then SGFieldToolBufferSave.installClassHooks({ Tedder = classes.Tedder, Mower = classes.Mower, Baler = classes.Baler,
+        ForageWagon = classes.ForageWagon }) end
     -- SG2-4a: the native save boundary (SavegameController's start and result, called by
     -- name through the class) and the Combine drain deferral, installed after the drain
     -- bracket above so the deferral is its outermost wrapper.
@@ -1192,8 +1199,9 @@ function H.installClassHooks(classes)
     -- SG2-4b: the Shovel and Leveler work listeners and the class half of the Leveler callback.
     -- SG2-5d-b: and the Baler's three listeners.
     -- SG2-5c: and the meadow preparation read of the Mower's witness, on this map load's util.
+    -- SG2-5f: and the ForageWagon's fill listener.
     if SGGroundObserver ~= nil then SGGroundObserver.installClassHooks({ Leveler = classes.Leveler, Shovel = classes.Shovel, Dischargeable = classes.Dischargeable, Baler = classes.Baler,
-        FSDensityMapUtil = classes.FSDensityMapUtil }) end
+        FSDensityMapUtil = classes.FSDensityMapUtil, ForageWagon = classes.ForageWagon }) end
     -- SG2-4b2: the WHEEL frame on WheelDestruction's class slot, read from the live class at
     -- each mission's install (the class is re-sourced with every map load).
     if SGGroundBrush ~= nil then SGGroundBrush.installClassHooks({ WheelDestruction = classes.WheelDestruction }) end

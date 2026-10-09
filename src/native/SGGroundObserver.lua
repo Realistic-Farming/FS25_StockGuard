@@ -74,8 +74,8 @@
 --   * one raw unit is the smallest quantity the sampler can see, so a whole-unit
 --     difference is never absorbed.
 --
--- ANY OTHER LINE CALL (a forage pickup before SG2-5 frames it, a foreign writer, a
--- primitive a frame did not admit) is observed and the TRACKED cells it changed are
+-- ANY OTHER LINE CALL (a foreign writer, a primitive a frame did not admit) is observed
+-- and the TRACKED cells it changed are
 -- reconciled through SG-1's generic path: a decrease scales the cell's stock, an emptied
 -- cell retires, and a gain enters with unknown coverage (the stock's basis grows, its known
 -- amount does not). It is not attributed. An untracked cell stays untracked: StockGuard
@@ -125,7 +125,7 @@ G.WINDROWER = "WINDROWER"
 -- SG2-5b: a Tedder work area's one processing call (Tedder.lua:279-350); its buffer persists.
 G.TEDDER = "TEDDER"
 -- SG2-5d-b: a square Baler's pickups and its add within one work-area tick (Baler.lua:1863-2009);
--- "The Baler" below.
+-- "The Baler" below. SG2-5f: a ForageWagon's pickup call and its fill; "The ForageWagon" below.
 -- SG-2 :652's NATIVE_HAY_CONVERT_V1 admits one converting pair. An input already of its target's
 -- type is a plain transfer; any other converter pair is unadmitted (Bob's 5b ruling, Q2).
 G.HAY_CONVERT_BASIS = "NATIVE_HAY_CONVERT_V1"
@@ -440,6 +440,9 @@ function G.admitPrimitive(gf, call)
     -- decided after the line, when it is known what it removed: G.balerBalance).
     if gf.balerAdd then return "BALER_ADD_FRAME" end
     if gf.baler ~= nil and call.maxDelta > 0 then return "NOT_A_PICKUP" end
+    -- SG2-5f: a ForageWagon call admits its pickups only; its fill's frame admits no line.
+    if gf.forageFill ~= nil then return "FORAGE_FILL_FRAME" end
+    if gf.forage ~= nil and call.maxDelta > 0 then return "NOT_A_PICKUP" end
     -- SG2-5b: a Tedder pickup feeds its converter's target (Tedder.lua:47-65, :286-292); a type
     -- with no converter is not one of the Tedder's own pickups.
     if gf.tedder ~= nil and call.maxDelta < 0 then
@@ -534,6 +537,8 @@ function G.afterLine(host, pre, ok, returned)
     end
     G.stats.observed = G.stats.observed + 1
     pre.changes = G.diff(pre.before, after)
+    -- SG2-5f: a FORAGE frame's lines are captured together when its call returns (G.forageSettle).
+    if pre.frame ~= nil and ok and pre.frame.forage ~= nil then return G.forageLine(host, pre) end
     if pre.frame ~= nil and ok then
         if pre.frame.area ~= nil then G.areaBalance(host, pre) end
         if pre.frame.tedder ~= nil then G.tedderBalance(host, pre) end
@@ -717,7 +722,8 @@ function G.openFrame(host, vehicle, opts)
     end
     -- A WINDROWER frame opens with no unit: its area carrier binds at the first pickup. A TEDDER
     -- frame's buffer binds at its first pickup too, or is already bound from an earlier call.
-    if #units == 0 and opts.area == nil and opts.tedder == nil and opts.baler == nil and opts.mower == nil and opts.mowerDrop == nil then return nil end
+    if #units == 0 and opts.area == nil and opts.tedder == nil and opts.baler == nil and opts.mower == nil and opts.mowerDrop == nil
+        and opts.forage == nil and opts.forageFill == nil then return nil end
     local frame = SGOperationContext.open(host.context, vehicle, G.FRAME)
     if frame == nil then return nil end
     host.nextDischarge = host.nextDischarge + 1
@@ -725,6 +731,7 @@ function G.openFrame(host, vehicle, opts)
         kind = opts.kind, vehicle = vehicle, units = units, expectType = opts.expectType, dropsOnly = opts.dropsOnly == true,
         requested = opts.requested, sequence = 0, pending = nil, operations = {}, refused = {}, area = opts.area, tedder = opts.tedder,
         baler = opts.baler, balerAdd = opts.balerAdd == true, mower = opts.mower, mowerDrop = opts.mowerDrop,
+        forage = opts.forage, forageFill = opts.forageFill,
         callRef = "ground:" .. string.lower(opts.kind) .. ":" .. tostring(host.epoch) .. ":" .. tostring(host.nextDischarge),
     }
     return frame
@@ -1957,34 +1964,8 @@ end
 --- The account of a target over the tick's batches: Soil's published read of each sealed share,
 --- an UNAVAILABLE read or a share that cannot be sealed counted unknown at its share.
 function G.balerAccount(host, tick, target)
-    local F = tick.vehicle.spec_baler.fillScale
-    local store = host.sources.collectionSeals ~= nil and host.sources.collectionSeals() or nil
-    local shares = (store ~= nil and SGCollectionSeal ~= nil) and SGCollectionSeal.sealTarget(store, tick.batches, F, target) or {}
-    local acc = { carrierLitres = 0, knownCarrierLitres = 0, unknownCarrierLitres = 0, refusedCarrierLitres = 0, knownWeightedPctSum = 0 }
-    local sealed, read = 0, 0
-    for _, sh in ipairs(shares) do
-        local cov = nil
-        if sh.receipt ~= nil then
-            sealed = sealed + 1
-            cov = SGSoilCondition ~= nil and SGSoilCondition.readCollected(sh.receipt.snapshotId, sh.receipt) or nil
-        end
-        if type(cov) == "table" and (cov.status == "ok" or cov.status == "refusal") and finite(cov.carrierLitres)
-           and math.abs(cov.carrierLitres - sh.A_b) <= 1e-9 * math.max(1, sh.A_b) then
-            read = read + 1
-            acc.carrierLitres = acc.carrierLitres + cov.carrierLitres
-            acc.knownCarrierLitres = acc.knownCarrierLitres + cov.knownCarrierLitres
-            acc.unknownCarrierLitres = acc.unknownCarrierLitres + cov.unknownCarrierLitres
-            acc.refusedCarrierLitres = acc.refusedCarrierLitres + cov.refusedCarrierLitres
-            acc.knownWeightedPctSum = acc.knownWeightedPctSum + cov.knownWeightedPctSum
-        else
-            acc.carrierLitres = acc.carrierLitres + sh.A_b
-            acc.unknownCarrierLitres = acc.unknownCarrierLitres + sh.A_b
-        end
-    end
-    if #shares == 0 then
-        acc.carrierLitres, acc.unknownCarrierLitres = target, target
-    end
-    return acc, { shares = #shares, sealed = sealed, read = read }
+    -- SG2-5f: the read is shared with the ForageWagon's seal (G.collectedAccount, "The ForageWagon").
+    return G.collectedAccount(host, tick.batches, tick.vehicle.spec_baler.fillScale, target)
 end
 
 --- The native state of a fill unit, read now.
@@ -2298,6 +2279,564 @@ local function balerFill(original, self, fillUnitIndex, fillLevelDelta, fillType
     return unpack(r, 1, n)
 end
 G.balerStart, G.balerEnd, G.balerFill = balerStart, balerEnd, balerFill
+
+-- ---------------------------------------------------------
+-- The ForageWagon (SG2-5f; Bob's 5f intake, his R-15 of 2026-10-09 and its appended reading)
+-- ---------------------------------------------------------
+-- ForageWagon:processForageWagonArea (ForageWagon.lua:138-203) runs on the captured pointer. With no
+-- forced type it tries each supported type until one removes something (:142-153); with one it
+-- removes that type and then the grass/hay twin (:154-161). The server's additive branch multiplies
+-- the call's litres by one factor and debits the additive unit (:163-184). Only then do the call's
+-- produced litres join the ONE buffer, workAreaParameters.litersToFill (:188-189), and the forced type
+-- renames it (:190-191). onEndWorkAreaProcessing (:281-295), after a tick that picked something up and
+-- past the start-fill delay, calls fillForageWagon (:216-228): the whole buffer to the fill unit as
+-- lastFillType, the remainder kept, a remainder under 0.01 L trimmed to 0.
+--
+-- THE PICKUP (Bob's R-15, rulings 1, 2 and 5). Each processForageWagonArea call is one FORAGE frame
+-- (the bracket on the captured pointer). Its pickup lines are observed and admitted as any frame's
+-- are, each line's Soil delivery naming its collection, but nothing settles per line: native adds the
+-- call's litres only after every line and the additive (:188-189). The frame keeps each line's moved
+-- cells, merged per cell (the first before-state, the last after-state), and at the call's close
+-- captures ONCE: the cells at their before-states and the buffer as SG-1 holds it (brought to native
+-- at the call's open, or bound then at the level native held when the call began). It settles against
+-- native: P, the call's step in litersToFill, and R, the cells' observed loss. Each cell's loss r_i goes
+-- to the buffer as r_i x P / R (the Baler's Q1 rule), the gain declared in nativeGain; a source side
+-- that lost more than P beyond the quantization tolerance moves its matched part and loses the rest.
+-- The additive debit is a report on another unit: it replays at the frame's close as SG-1's generic
+-- decrease of that unit and never joins the crop (:249, :667), and the evidence names R, P and that
+-- debit U.
+--
+-- THE FOLD (:288, :653; ruling 3 as Bob corrected it). No leg carries a conversion basis. The
+-- profile catalogue names this pickup NATIVE_FORAGE_COALESCE_V1 (:653; SG-3 :264): "Combine only where
+-- native physically combines those portions", which is each owner's combine, not a transform (a basis
+-- would send the whole destination to the owners' transforms, and Soil's carries only the hay basis).
+-- So both inputs' observations are kept as they are, and the outcomeEvidence declares the fold: the
+-- fold and coalesce profile names, the raw litres per input type, the representative lastFillType.
+--
+-- THE RETARGET (:298; ruling 4). A remainder of another name the call renames (:190-191): within
+-- GRASS_WINDROW and DRYGRASS_WINDROW it is the fold, carried by a leg from the buffer to itself at its
+-- own litres, so SG-1's new generation (a material change) keeps its record; outside the pair no form
+-- is declared, so before the capture SG-1's reconcile replaces its stock under
+-- FORAGE_RETARGET_UNPROVED at its own litres (the Tedder's form; the call's produced litres withheld
+-- from that one read): its litres kept, its history unknown, never this call's contribution.
+--
+-- THE SEAL (:344; ruling 5 and the appended reading). One batch per removing line (Soil returns one
+-- collection per delivered pickup, and a sealed allocation names one snapshot), each line's share of P
+-- its raw litres' share of R (one factor per call, :179, so the split is exact), and one
+-- SGCollectionSeal.sealTarget per call at target P. The account Soil's readCollectedCondition returns
+-- is split over the cell legs by each leg's litres (acc x d_i / P, Soil's own accountFor rule) and
+-- named per leg in outcomeEvidence["soil.groundCondition"].collectedAccounts, so Soil's combine adopts
+-- each and the buffer's account is the sealed one.
+--
+-- THE FILL (:298, :344; the intake's path b). The class listener ForageWagon.onEndWorkAreaProcessing
+-- (raised by name once per tick, WorkArea.lua:206; :292 is the only native caller of fillForageWagon)
+-- runs inside a FORAGE_FILL frame when the tick picked something up (:283) and the buffer is bound.
+-- The frame holds the fill's own report; after the original, A is that report's accepted delta and ONE
+-- TRANSFER moves it from the buffer to the unit, both captured at SG-1's pre-fill records. A remainder
+-- the fill trimmed (:225-227) is a LOSS leg (FORAGE_TRIM) of the same operation. A unit holding another
+-- type is emptied by FillUnit before the add (its nested -math.huge add): those old contents are a LOSS
+-- (FORAGE_UNIT_DISCARD, :667), the unit receives its whole new level, and the litres native's count
+-- leaves in the buffer beyond what it physically kept stay unexplained to SG-1. The wagon turning
+-- itself off on a full unit is native's, observed only. A buffer the fill emptied is withdrawn.
+--
+-- SOIL (ruling 6). Each pickup line is admitted with Soil like any frame's line; Soil's own ForageWagon
+-- frame then stands aside through its admission-count rule (stoodAside) and its collection seals
+-- nothing. With Soil absent nothing is admitted and every share is unknown carrier litres.
+--
+-- A CLIENT runs neither bracket (both check the server); it learns the fill unit and lastFillType
+-- through native sync (:94-121).
+
+G.FORAGE = "FORAGE"
+G.FORAGE_FILL = "FORAGE_FILL"
+G.FORAGE_FOLD_BASIS = "NATIVE_FORAGE_WINDROW_FOLD"
+G.FORAGE_COALESCE_PROFILE = "NATIVE_FORAGE_COALESCE_V1"
+G.FORAGE_RETARGET_REASON = "FORAGE_RETARGET_UNPROVED"
+G.FORAGE_TRIM_REASON = "FORAGE_TRIM"
+G.FORAGE_DISCARD_REASON = "FORAGE_UNIT_DISCARD"
+G.FORAGE_SHORTFALL_REASON = "FORAGE_PICKUP_SHORTFALL"
+
+--- Does StockGuard frame this ForageWagon? The server's, with its fill unit and its buffer.
+function G.forageFramed(vehicle)
+    local spec = type(vehicle) == "table" and vehicle.spec_forageWagon or nil
+    return type(spec) == "table" and vehicle.isServer == true and type(spec.fillUnitIndex) == "number"
+        and type(spec.workAreaParameters) == "table" and G.isFinite(spec.workAreaParameters.litersToFill)
+end
+
+--- Is a rename between these two names the declared fold (:288)?
+function G.foragePair(a, b)
+    return (a == G.HAY_FROM and b == G.HAY_TO) or (a == G.HAY_TO and b == G.HAY_FROM)
+end
+
+--- The buffer's carrier id and entry for this wagon, a stale entry (another vehicle under the key)
+--- dropped first.
+function G.forageEntry(host, vehicle)
+    local binding = A.forageBufferBinding(vehicle)
+    if binding == nil then return nil end
+    local cid = SGRecords.carrierKeyString(binding.carrierKey)
+    local entry = A.forageBuffers[cid]
+    if entry ~= nil and entry.vehicle ~= vehicle then
+        pcall(host.handle.withdrawCarrier, host.nativeLease, cid, "FORAGE_BUFFER_STALE")
+        A.forageBuffers[cid] = nil
+        entry = nil
+    end
+    return binding, cid, entry
+end
+
+--- [SG2-5f] The entry a remainder a save restored into this wagon resolves through
+--- (SGFieldToolBufferSave, after ForageWagon.onLoad, before the restore barrier). It binds no carrier:
+--- SG-1's restore join resolves the saved binding through it and reattaches the saved stock.
+function G.seedForageBuffer(vehicle)
+    local binding = A.forageBufferBinding(vehicle)
+    if binding == nil then return false end
+    A.forageBuffers[SGRecords.carrierKeyString(binding.carrierKey)] = { vehicle = vehicle }
+    return true
+end
+
+--- Open the FORAGE frame over one processForageWagonArea call. A bound buffer is brought to native
+--- first (a change no frame observed is the store's); native's level and name are the call's before.
+function G.openForage(host, vehicle)
+    if not host.ready or host.nativeLease == nil or not G.forageFramed(vehicle) then return nil end
+    local binding, cid, entry = G.forageEntry(host, vehicle)
+    if binding == nil then return nil end
+    local f = { vehicle = vehicle, binding = binding, carrierId = cid, bound = false, cells = {}, order = {}, lines = {} }
+    if entry ~= nil then
+        local c, why = host.handle.refreshCarrier(host.nativeLease, binding, SGNativeHost.REASON)
+        if c == nil and why ~= nil then f.refreshFailed = why else f.bound = true end
+    end
+    f.level, f.fillTypeName = A.forageBufferNative(vehicle)
+    return G.openFrame(host, vehicle, { kind = G.FORAGE, units = {}, forage = f })
+end
+
+--- After a pickup line of a FORAGE frame: its moved cells join the call's, merged per cell, and its
+--- raw litres and its Soil call record join the call's lines. Nothing is captured until the call ends.
+function G.forageLine(host, pre)
+    local f, sampler, call = pre.frame.forage, pre.sampler, pre.call
+    if #pre.changes == 0 then return end
+    local moved = 0
+    for _, ch in ipairs(pre.changes) do
+        local b = G.cellState(sampler, ch.x, ch.z, ch.before)
+        local a = G.cellState(sampler, ch.x, ch.z, ch.after)
+        moved = moved + ((a.amount or 0) - (b.amount or 0))
+    end
+    if -moved <= G.EPSILON or (f.sampler ~= nil and f.sampler ~= sampler) then
+        count(pre.frame.refused, "NOT_A_PICKUP")
+        G.reconcileChanges(host, sampler, pre.changes)
+        return
+    end
+    f.sampler = sampler
+    for _, ch in ipairs(pre.changes) do
+        local c = f.cells[ch.key]
+        if c == nil then
+            f.cells[ch.key] = { key = ch.key, x = ch.x, z = ch.z, before = ch.before, after = ch.after, fillTypeName = call.fillTypeName }
+            f.order[#f.order + 1] = ch.key
+        else
+            c.after = ch.after
+        end
+    end
+    f.lines[#f.lines + 1] = { call = call, fillTypeName = call.fillTypeName, raw = -moved }
+end
+
+--- The additive debit U a FORAGE frame holds: the additive unit's own reports (:180), which replay at
+--- the close as that unit's generic decrease.
+function G.forageAdditive(frame, vehicle)
+    local spec = vehicle.spec_forageWagon
+    local index = type(spec.additives) == "table" and spec.additives.fillUnitIndex or nil
+    local U = 0
+    if index == nil then return U end
+    for _, obs in ipairs(frame.observations or {}) do
+        if obs.source == "FILL_UNIT" and obs.vehicle == vehicle and obs.fillUnitIndex == index and type(obs.accepted) == "number" and obs.accepted < 0 then
+            U = U - obs.accepted
+        end
+    end
+    return U
+end
+
+--- The account of `target` carrier litres over a call's or a tick's batches (each { collection,
+--- produced }) at scale F: Soil's published read of each sealed share, an UNAVAILABLE read or a share
+--- that cannot be sealed counted unknown at its share.
+function G.collectedAccount(host, batches, F, target)
+    local store = host.sources.collectionSeals ~= nil and host.sources.collectionSeals() or nil
+    local shares = (store ~= nil and SGCollectionSeal ~= nil) and SGCollectionSeal.sealTarget(store, batches, F, target) or {}
+    local acc = { carrierLitres = 0, knownCarrierLitres = 0, unknownCarrierLitres = 0, refusedCarrierLitres = 0, knownWeightedPctSum = 0 }
+    local sealed, read = 0, 0
+    for _, sh in ipairs(shares) do
+        local cov = nil
+        if sh.receipt ~= nil then
+            sealed = sealed + 1
+            cov = SGSoilCondition ~= nil and SGSoilCondition.readCollected(sh.receipt.snapshotId, sh.receipt) or nil
+        end
+        if type(cov) == "table" and (cov.status == "ok" or cov.status == "refusal") and finite(cov.carrierLitres)
+           and math.abs(cov.carrierLitres - sh.A_b) <= 1e-9 * math.max(1, sh.A_b) then
+            read = read + 1
+            acc.carrierLitres = acc.carrierLitres + cov.carrierLitres
+            acc.knownCarrierLitres = acc.knownCarrierLitres + cov.knownCarrierLitres
+            acc.unknownCarrierLitres = acc.unknownCarrierLitres + cov.unknownCarrierLitres
+            acc.refusedCarrierLitres = acc.refusedCarrierLitres + cov.refusedCarrierLitres
+            acc.knownWeightedPctSum = acc.knownWeightedPctSum + cov.knownWeightedPctSum
+        else
+            acc.carrierLitres = acc.carrierLitres + sh.A_b
+            acc.unknownCarrierLitres = acc.unknownCarrierLitres + sh.A_b
+        end
+    end
+    if #shares == 0 then
+        acc.carrierLitres, acc.unknownCarrierLitres = target, target
+    end
+    return acc, { shares = #shares, sealed = sealed, read = read }
+end
+
+--- Settle the call's one operation at its close (header, THE PICKUP).
+function G.forageSettle(host, frame, ok)
+    local gf = frame.ground
+    local f = gf.forage
+    if #f.lines == 0 then return end
+    local sampler = f.sampler
+    local changes = {}
+    for _, key in ipairs(f.order) do
+        local c = f.cells[key]
+        changes[#changes + 1] = { key = key, x = c.x, z = c.z, before = c.before, after = c.after }
+    end
+    local function unattributed(reason)
+        count(gf.refused, reason)
+        count(G.stats.refused, reason)
+        G.reconcileChanges(host, sampler, changes)
+    end
+    if not ok then return unattributed("NATIVE_ERROR") end
+    if f.refreshFailed ~= nil then return unattributed("BUFFER_REFRESH:" .. tostring(f.refreshFailed)) end
+    local vehicle = f.vehicle
+    local levelAfter, nameAfter = A.forageBufferNative(vehicle)
+    local P = (G.isFinite(levelAfter) and G.isFinite(f.level)) and (levelAfter - f.level) or nil
+    if P == nil or P <= G.EPSILON then return unattributed("NOTHING_PRODUCED") end
+    if not f.bound then
+        A.forageBuffers[f.carrierId] = { vehicle = vehicle }
+        local c, why = host.handle.bindCarrier(host.nativeLease, f.binding, A.forageBufferState(vehicle, f.level, f.fillTypeName))
+        if c == nil then
+            A.forageBuffers[f.carrierId] = nil
+            return unattributed("BUFFER_BIND:" .. tostring(why))
+        end
+        f.bound = true
+    end
+    -- The retarget outside the pair (ruling 4): no declared form, so before the capture SG-1's reconcile
+    -- replaces the remainder's stock under FORAGE_RETARGET_UNPROVED, at the remainder's own litres under
+    -- the new name (this call's produced litres withheld from that one read), as the Tedder's retarget
+    -- does (:958-969). The remainder is then a new generation with no history and no record, so the
+    -- call's legs join it and Soil's combine counts it unknown. Left on the buffer's stock instead, the
+    -- record would cover only the call's litres, and the next transfer would scale its account to the
+    -- whole stock (Soil's accountFor).
+    if f.level > G.EPSILON and f.fillTypeName ~= nil and nameAfter ~= nil and f.fillTypeName ~= nameAfter
+        and not G.foragePair(f.fillTypeName, nameAfter) then
+        local entry = A.forageBuffers[f.carrierId]
+        entry.withheld = P
+        local okR, c, why = pcall(host.handle.refreshCarrier, host.nativeLease, f.binding, G.FORAGE_RETARGET_REASON)
+        entry.withheld = nil
+        if not okR or (c == nil and why ~= nil) then return unattributed("RETARGET_REFRESH:" .. tostring(okR and why or c)) end
+        f.retargeted = { from = f.fillTypeName, to = nameAfter, remainder = f.level, reason = G.FORAGE_RETARGET_REASON }
+    end
+    local captureList, participants = { { carrierId = f.carrierId } }, {}
+    for _, ch in ipairs(changes) do
+        -- Each moved cell is recorded at its before-state first, as any capture does.
+        local cid, why = G.recordCell(host, sampler, ch.x, ch.z, G.cellState(sampler, ch.x, ch.z, ch.before), true)
+        if cid == nil then return unattributed("GROUND_BIND:" .. tostring(why)) end
+        participants[cid] = { after = G.cellState(sampler, ch.x, ch.z, ch.after), fillTypeName = f.cells[ch.key].fillTypeName }
+        captureList[#captureList + 1] = { carrierId = cid }
+    end
+    local cap, whyC = host.handle.captureOperation(host.nativeLease, "TRANSFER", captureList)
+    if cap == nil then return unattributed("CAPTURE:" .. tostring(whyC)) end
+    gf.sequence = gf.sequence + 1
+    local callRef = gf.callRef .. ":" .. tostring(gf.sequence)
+    local before = cap.before.carriers
+    local b = before[f.carrierId]
+    local B = b ~= nil and b.amount or 0
+    local bName = b ~= nil and b.materialRef ~= nil and b.materialRef.fillTypeName or nil
+    local ns = G.readNow(host, f.binding)
+    local after = { [f.carrierId] = ns }
+    local refuse = ns == nil and "AFTER_STATE_UNREADABLE" or nil
+    -- Each cell only loses, and only its own line's material.
+    local cells, R = {}, 0
+    for cid, p in pairs(participants) do
+        after[cid] = p.after
+        local cb = before[cid]
+        local n = (p.after.amount or 0) - (cb ~= nil and cb.amount or 0)
+        if n > G.EPSILON then refuse = refuse or "GROUND_INCREASE" end
+        if cb ~= nil and cb.amount > 0 and (cb.materialRef == nil or cb.materialRef.fillTypeName ~= p.fillTypeName) then refuse = refuse or "GROUND_MATERIAL" end
+        if p.after.amount > 0 and (p.after.materialRef == nil or p.after.materialRef.fillTypeName ~= p.fillTypeName) then refuse = refuse or "GROUND_MATERIAL" end
+        if n < -G.EPSILON then
+            cells[#cells + 1] = { cid = cid, amount = -n }
+            R = R - n
+        end
+    end
+    if refuse == nil and R <= G.EPSILON then refuse = "NO_REMOVAL" end
+    local U = G.forageAdditive(frame, vehicle)
+    local inputs, lineEvidence, Rl = {}, {}, 0
+    for _, l in ipairs(f.lines) do
+        inputs[l.fillTypeName] = (inputs[l.fillTypeName] or 0) + l.raw
+        lineEvidence[#lineEvidence + 1] = { fillTypeName = l.fillTypeName, raw = l.raw }
+        Rl = Rl + l.raw
+    end
+    local tol = G.tolerance(f.lines[1].call.fillType, R, P)
+    local evidence = { nativePath = "GROUND_FORAGE_PICKUP", callRef = callRef, fillTypeName = nameAfter, raw = R, produced = P,
+                       bufferBefore = B, bufferAfter = ns ~= nil and ns.amount or nil, additiveDebit = U, lines = lineEvidence,
+                       cells = #cells, tolerance = tol }
+    if refuse ~= nil then
+        host.handle.abandonOperation(cap.handle, refuse, after)
+        local result = { callRef = callRef, outcome = "ABANDONED", reason = refuse, evidence = evidence }
+        gf.operations[#gf.operations + 1] = result
+        host.lastSettlement = { callRef = callRef, outcome = "ABANDONED", reason = refuse, report = { outcomeEvidence = evidence } }
+        G.withdrawEmpty(host, sampler, changes)
+        return
+    end
+    table.sort(cells, function(p, q) return p.cid < q.cid end)
+    -- The legs (Bob's ruling 1): r_i -> r_i x P / R, the remainder on the last; a source side that lost
+    -- more than P beyond the tolerance moves its matched part and loses the rest.
+    local gain = P + tol >= R
+    local legs, named, given = {}, {}, 0
+    for i, c in ipairs(cells) do
+        local d = (i < #cells) and (c.amount * P / R) or (P - given)
+        given = given + d
+        local src = gain and c.amount or d
+        legs[#legs + 1] = { source = { carrierId = c.cid }, sourceAmount = src, sourceUnit = A.UNIT,
+                            destination = { carrierId = f.carrierId }, destinationAmount = d, destinationUnit = A.UNIT, result = "TRANSFERRED" }
+        named[#named + 1] = { allocation = #legs, litres = d }
+        if not gain and c.amount - src > G.EPSILON then
+            legs[#legs + 1] = { source = { carrierId = c.cid }, sourceAmount = c.amount - src, sourceUnit = A.UNIT,
+                                destination = { retire = true }, result = "LOSS", reason = G.FORAGE_SHORTFALL_REASON }
+        end
+    end
+    evidence.nativeGain = { factor = P / R, boost = P - R }
+    if not gain then evidence.loss = R - P end
+    -- The retarget within the pair (ruling 4): the rename is the fold, and the buffer's own leg carries
+    -- the remainder's record through SG-1's new generation (a material change). Outside the pair the
+    -- stock was replaced before the capture (above).
+    local folded = false
+    for name in pairs(inputs) do if name ~= nameAfter then folded = true end end
+    if B > G.EPSILON and bName ~= nil and nameAfter ~= nil and bName ~= nameAfter and G.foragePair(bName, nameAfter) then
+        legs[#legs + 1] = { source = { carrierId = f.carrierId }, sourceAmount = B, sourceUnit = A.UNIT,
+                            destination = { carrierId = f.carrierId }, destinationAmount = B, destinationUnit = A.UNIT, result = "TRANSFERRED" }
+        evidence.retarget = { from = bName, to = nameAfter, remainder = B, form = G.FORAGE_FOLD_BASIS }
+        folded = true
+    elseif f.retargeted ~= nil then
+        evidence.retarget = f.retargeted
+    end
+    if folded then evidence.fold = { basis = G.FORAGE_FOLD_BASIS, coalesce = G.FORAGE_COALESCE_PROFILE, representative = nameAfter, inputs = inputs } end
+    -- The seal (ruling 5): one batch per removing line, P split by raw litres; the account split over
+    -- the cell legs by litres (the appended reading).
+    local batches = {}
+    for _, l in ipairs(f.lines) do batches[#batches + 1] = { collection = l.call.soilCollection, produced = P * l.raw / Rl } end
+    local acc, seal = G.collectedAccount(host, batches, 1, P)
+    evidence.seal = seal
+    local accounts = {}
+    for _, nm in ipairs(named) do
+        local share, part = nm.litres / P, {}
+        for k, v in pairs(acc) do part[k] = v * share end
+        accounts[#accounts + 1] = { allocation = nm.allocation, account = part }
+    end
+    evidence[G.SOIL_PROPERTY] = { collectedAccounts = accounts }
+    local report = { participantsAfter = after, allocations = legs, outcomeEvidence = evidence }
+    local outcome, reason = host.handle.settleOperation(cap.handle, report)
+    local result = { callRef = callRef, outcome = outcome, reason = reason, evidence = evidence, report = report }
+    gf.operations[#gf.operations + 1] = result
+    host.lastSettlement = { callRef = callRef, outcome = outcome, reason = reason, report = report }
+    G.withdrawEmpty(host, sampler, changes)
+end
+
+--- Close the FORAGE frame: the call's operation settles, then the frame's reports replay.
+function G.closeForage(host, frame, ok)
+    local okS, err = pcall(G.forageSettle, host, frame, ok)
+    if not okS then logOnce("forageSettle", "forage wagon pickup failed to settle (" .. tostring(err) .. ")") end
+    G.closeFrame(host, frame, ok)
+    host.lastForageFrame = frame.ground
+end
+
+--- The bracket on a ForageWagon's captured pickup pointer (SGWorkAreaInstaller).
+function G.forageBracket(realFn, _workArea)
+    return function(vehicle, workArea, ...)
+        local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+        local frame = nil
+        if host ~= nil and g_server ~= nil then
+            local okOpen, result = pcall(G.openForage, host, vehicle)
+            if okOpen then frame = result else logOnce("forageOpen", "forage wagon frame failed to open (" .. tostring(result) .. ")") end
+        end
+        local n, r = packn(pcall(realFn, vehicle, workArea, ...))
+        if frame ~= nil then
+            local okClose, err = pcall(G.closeForage, host, frame, r[1])
+            if not okClose then logOnce("forageClose", "forage wagon frame failed to close (" .. tostring(err) .. ")") end
+        end
+        if not r[1] then error(r[2], 0) end
+        return unpack(r, 2, n)
+    end
+end
+
+--- Open the FORAGE_FILL frame around ForageWagon.onEndWorkAreaProcessing when native will fill: the
+--- server, a tick that picked something up (:283), a bound buffer. Both records are brought to native
+--- first, so the capture after the fill reads them as they were before it.
+function G.openForageFill(host, vehicle)
+    if not host.ready or host.nativeLease == nil or not G.forageFramed(vehicle) then return nil end
+    local spec = vehicle.spec_forageWagon
+    if not ((spec.workAreaParameters.lastPickupLiters or 0) > 0) then return nil end
+    local binding, cid, entry = G.forageEntry(host, vehicle)
+    if binding == nil or entry == nil then return nil end
+    local unitBinding = A.fillUnitBindingFor(vehicle, spec.fillUnitIndex)
+    if unitBinding == nil then return nil end
+    for _, bnd in ipairs({ binding, unitBinding }) do
+        local c, why = host.handle.refreshCarrier(host.nativeLease, bnd, SGNativeHost.REASON)
+        if c == nil and why ~= nil then
+            count(G.stats.refused, "FORAGE_FILL_REFRESH:" .. tostring(why))
+            return nil
+        end
+    end
+    local fill = { vehicle = vehicle, binding = binding, carrierId = cid, unitBinding = unitBinding,
+                   unitId = SGRecords.carrierKeyString(unitBinding.carrierKey), fillUnitIndex = spec.fillUnitIndex,
+                   level = spec.workAreaParameters.litersToFill }
+    return G.openFrame(host, vehicle, { kind = G.FORAGE_FILL, units = {}, forageFill = fill })
+end
+
+--- Settle the fill after the original listener (header, THE FILL).
+function G.forageFillSettle(host, frame, ok)
+    local gf = frame.ground
+    local fill = gf.forageFill
+    if not ok then count(gf.refused, "NATIVE_ERROR") return end
+    local vehicle = fill.vehicle
+    local reports = {}
+    for _, obs in ipairs(frame.observations) do
+        if obs.source == "FILL_UNIT" and obs.vehicle == vehicle and obs.fillUnitIndex == fill.fillUnitIndex
+           and obs.cause == SGFillUnitObserver.CAUSE_ADD and type(obs.accepted) == "number" then
+            reports[#reports + 1] = obs
+        end
+    end
+    -- Nothing filled (the start-fill delay, :285-289, or a unit that took nothing) and nothing trimmed:
+    -- no operation. A capture abandoned here would qualify two stocks nothing touched.
+    if #reports == 0 and A.forageBufferNative(vehicle) == fill.level then return end
+    local cap, whyC = host.handle.captureOperation(host.nativeLease, "TRANSFER", { { carrierId = fill.carrierId }, { carrierId = fill.unitId } })
+    if cap == nil then count(gf.refused, "FILL_CAPTURE:" .. tostring(whyC)) return end
+    local before = cap.before.carriers
+    local wb, ub = before[fill.carrierId], before[fill.unitId]
+    local W = wb ~= nil and wb.amount or 0
+    local name = wb ~= nil and wb.materialRef ~= nil and wb.materialRef.fillTypeName or nil
+    local U0 = ub ~= nil and ub.amount or 0
+    local ns, nu = G.readNow(host, fill.binding), G.readNow(host, fill.unitBinding)
+    local after = { [fill.carrierId] = ns, [fill.unitId] = nu }
+    gf.sequence = gf.sequence + 1
+    local callRef = gf.callRef .. ":" .. tostring(gf.sequence)
+    local evidence = { nativePath = "FORAGE_FILL", callRef = callRef, fillTypeName = name, bufferBefore = W, unitBefore = U0 }
+    local function done(outcome, reason, report)
+        for _, obs in ipairs(reports) do obs.groundConsumed = true end
+        gf.operations[#gf.operations + 1] = { callRef = callRef, outcome = outcome, reason = reason, evidence = evidence, report = report }
+        host.lastSettlement = { callRef = callRef, outcome = outcome, reason = reason, report = report or { outcomeEvidence = evidence } }
+    end
+    local refuse = (ns == nil or nu == nil) and "AFTER_STATE_UNREADABLE" or nil
+    if refuse ~= nil then
+        host.handle.abandonOperation(cap.handle, refuse, after)
+        return done("ABANDONED", refuse, nil)
+    end
+    local Wr, U1 = ns.amount, nu.amount
+    local held = U0 > G.EPSILON and ub.materialRef ~= nil and ub.materialRef.fillTypeName ~= name
+    -- A: the fill call's own accepted delta (SGFillUnitObserver); the nested empty of a held type is
+    -- a report of that type, so only the buffer's type counts.
+    local Aret = 0
+    for _, obs in ipairs(reports) do
+        local n = fillTypeNameOf(obs.fillType)
+        if n ~= nil and n == name then Aret = Aret + obs.accepted end
+    end
+    local received = held and U1 or Aret
+    local trim = W - received - Wr
+    evidence.accepted, evidence.received, evidence.remainder = Aret, received, Wr
+    evidence.unitAfter = U1
+    if held then evidence.discarded = U0 end
+    if trim > G.EPSILON then evidence.trim = trim end
+    -- A fill unit's level is FillUnit's own float, not a density-map count: the two figures agree to
+    -- rounding (FillUnit.lua addFillUnitFillLevel returns the new level less the old).
+    if not held and not G.nearly(Aret, U1 - U0) then refuse = "UNIT_DELTA_MISMATCH" end
+    if refuse == nil and received > G.EPSILON and (nu.materialRef == nil or nu.materialRef.fillTypeName ~= name) then refuse = "UNIT_MATERIAL" end
+    if refuse == nil and received < -G.EPSILON then refuse = "UNIT_DECREASE" end
+    if refuse ~= nil then
+        host.handle.abandonOperation(cap.handle, refuse, after)
+        return done("ABANDONED", refuse, nil)
+    end
+    local legs = {}
+    if received > G.EPSILON then
+        legs[#legs + 1] = { source = { carrierId = fill.carrierId }, sourceAmount = received, sourceUnit = A.UNIT,
+                            destination = { carrierId = fill.unitId }, destinationAmount = received, destinationUnit = A.UNIT, result = "TRANSFERRED" }
+    end
+    if held then
+        legs[#legs + 1] = { source = { carrierId = fill.unitId }, sourceAmount = U0, sourceUnit = A.UNIT, destination = { retire = true },
+                            result = "LOSS", reason = G.FORAGE_DISCARD_REASON }
+    end
+    if trim > G.EPSILON then
+        legs[#legs + 1] = { source = { carrierId = fill.carrierId }, sourceAmount = trim, sourceUnit = A.UNIT, destination = { retire = true },
+                            result = "LOSS", reason = G.FORAGE_TRIM_REASON }
+    end
+    if #legs == 0 then
+        host.handle.abandonOperation(cap.handle, "NO_FILL", after)
+        return done("ABANDONED", "NO_FILL", nil)
+    end
+    evidence.unitFull = Wr > G.EPSILON or nil
+    local report = { participantsAfter = after, allocations = legs, outcomeEvidence = evidence }
+    local outcome, reason = host.handle.settleOperation(cap.handle, report)
+    done(outcome, reason, report)
+end
+
+--- Close the FORAGE_FILL frame: the fill settles, the unconsumed reports replay, and a buffer the fill
+--- emptied is withdrawn (the next pickup binds a new one).
+function G.closeForageFill(host, frame, ok)
+    local fill = frame.ground.forageFill
+    local okS, err = pcall(G.forageFillSettle, host, frame, ok)
+    if not okS then logOnce("forageFill", "forage wagon fill failed to settle (" .. tostring(err) .. ")") end
+    G.closeFrame(host, frame, ok)
+    host.lastForageFill = frame.ground
+    local level = A.forageBufferNative(fill.vehicle)
+    if level == 0 and A.forageBuffers[fill.carrierId] ~= nil then
+        host.handle.refreshCarrier(host.nativeLease, fill.binding, SGNativeHost.REASON)
+        pcall(host.handle.withdrawCarrier, host.nativeLease, fill.carrierId, "FORAGE_BUFFER_EMPTY")
+        A.forageBuffers[fill.carrierId] = nil
+    end
+end
+
+--- The class listener ForageWagon.onEndWorkAreaProcessing (path b of :370).
+function G.forageEnd(original, self, ...)
+    local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+    local frame = nil
+    if host ~= nil and g_server ~= nil then
+        local okOpen, result = pcall(G.openForageFill, host, self)
+        if okOpen then frame = result else logOnce("forageFillOpen", "forage wagon fill frame failed to open (" .. tostring(result) .. ")") end
+    end
+    local n, r = packn(pcall(original, self, ...))
+    if frame ~= nil then
+        local okClose, err = pcall(G.closeForageFill, host, frame, r[1])
+        if not okClose then logOnce("forageFillClose", "forage wagon fill frame failed to close (" .. tostring(err) .. ")") end
+    end
+    if not r[1] then error(r[2], 0) end
+    return unpack(r, 2, n)
+end
+
+--- A vehicle with a live ForageWagon remainder is going: the remainder is destruction (SG-2 :136),
+--- retired through a REMOVE before the carrier is withdrawn, never by a bare withdraw.
+function G.retireForageBuffers(host, vehicle)
+    for cid, entry in pairs(A.forageBuffers) do
+        if entry.vehicle == vehicle then
+            local cap, why = host.handle.captureOperation(host.nativeLease, "REMOVE", { { carrierId = cid } })
+            if cap ~= nil then
+                -- The amount is the capture's own (SG-1's carrier as it stands), never a native read:
+                -- the vehicle is already out of the vehicle list (VehicleSystem.removeVehicle).
+                local b = cap.before ~= nil and cap.before.carriers ~= nil and cap.before.carriers[cid] or nil
+                local amount = b ~= nil and b.stock ~= nil and (b.amount or 0) or 0
+                if amount > 0 then
+                    local after = { amount = 0, unit = A.UNIT, storeKind = "vehicle_buffer" }
+                    local report = { participantsAfter = { [cid] = after },
+                                     outcomeEvidence = { nativePath = "FORAGE_BUFFER_DESTRUCTION", remainder = amount },
+                                     allocations = { { source = { carrierId = cid }, sourceAmount = amount, sourceUnit = A.UNIT,
+                                                       destination = { retire = true }, result = "DESTRUCTION", reason = "VEHICLE_REMOVED" } } }
+                    local outcome, reason = host.handle.settleOperation(cap.handle, report)
+                    host.lastSettlement = { callRef = "forage:destruction:" .. cid, outcome = outcome, reason = reason, report = report }
+                else
+                    host.handle.abandonOperation(cap.handle, "EMPTY", nil)
+                end
+            else
+                count(G.stats.refused, "DESTRUCTION_CAPTURE:" .. tostring(why))
+            end
+            pcall(host.handle.withdrawCarrier, host.nativeLease, cid, "VEHICLE_REMOVED")
+            A.forageBuffers[cid] = nil
+        end
+    end
+end
 
 -- ---------------------------------------------------------
 -- SG2 bale family 2b: the square bale's birth (SG-2 :473, :483) and the reload (:477)
@@ -2838,6 +3377,8 @@ function G.installClassHooks(classes)
     installed = wrapClass(classes.Baler, "onLoadFinished", balerLoadFinished) or installed
     -- SG2-5e-c: the round unload's scope, around the drop and the chamber's clear (:919-935).
     installed = wrapClass(classes.Baler, "onUpdateTick", G.balerUpdateTick) or installed
+    -- SG2-5f: the ForageWagon's fill, on the live class of this map load (path b of SG-2 :370).
+    installed = wrapClass(classes.ForageWagon, "onEndWorkAreaProcessing", G.forageEnd) or installed
     -- SG2-5c: the meadow preparation read the Mower's witness needs (SGCutState.installPrep).
     if SGCutState ~= nil and classes.FSDensityMapUtil ~= nil then
         installed = SGCutState.installPrep(classes.FSDensityMapUtil) or installed
@@ -2858,6 +3399,10 @@ function G.observeVehicle(vehicle)
     end
     if vehicle.spec_baler ~= nil and SGWorkAreaInstaller ~= nil then
         SGWorkAreaInstaller.install(vehicle, "spec_baler", "processBalerArea", G.balerBracket)
+    end
+    -- SG2-5f: the ForageWagon's pickup, on the captured pointer (path a of SG-2 :370).
+    if vehicle.spec_forageWagon ~= nil and SGWorkAreaInstaller ~= nil then
+        SGWorkAreaInstaller.install(vehicle, "spec_forageWagon", "processForageWagonArea", G.forageBracket)
     end
     -- SG2 bale family 2b: a Baler the load listener did not reach still gets its finish wraps.
     if vehicle.spec_baler ~= nil then G.installBalerFinish(vehicle) end

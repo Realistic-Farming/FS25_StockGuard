@@ -130,7 +130,7 @@ local function installNativeKernel(mission)
     SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem,
         Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil, SavegameController = SavegameController,
         Dischargeable = Dischargeable, Leveler = Leveler, Shovel = Shovel, WheelDestruction = WheelDestruction, Baler = Baler,
-        Tedder = Tedder, Mower = Mower, Bale = Bale })
+        Tedder = Tedder, Mower = Mower, Bale = Bale, ForageWagon = ForageWagon })
     local host = SGNativeHost.new(mission.stockGuard, {
         placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
         vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,
@@ -162,6 +162,8 @@ local function installNativeKernel(mission)
         -- SG2-5d-b: every Baler tick retires a pickup stock, and an overflow retires at each overwrite.
         sg.operations:setRetiredClass("balerPickup", SGNativeAdapters.isBalerPickupKey)
         sg.operations:setRetiredClass("balerOverflow", SGNativeAdapters.isBalerOverflowKey)
+        -- SG2-5f: a ForageWagon buffer's stock retires at almost every fill (Bob's 5f R-15).
+        sg.operations:setRetiredClass("forageBuffer", SGNativeAdapters.isForageBufferKey)
         -- SG2 bale family, part 2a: every deleted world bale retires a stock; a farm's bales keep their own budget.
         sg.operations:setRetiredClass("bale", SGNativeAdapters.isBaleKey)
     end
