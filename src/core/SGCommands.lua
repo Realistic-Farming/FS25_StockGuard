@@ -253,6 +253,16 @@ function C.fingerprint(req)
         quoteToken = req.quoteToken, arguments = req.arguments }) or ""
 end
 
+--- The arguments an owner's quote, validate and execute receive (SG-1 :536, normalizedArgs): the
+--- request's own, stamped with the resolved action's argumentSchemaId. An owner with several QUOTED
+--- actions on one target (SG-4's library) knows which one it answers, and a client cannot hand one
+--- action's arguments to another.
+local function normalizedArgs(req, action)
+    local a = copy(req.arguments or {})
+    a.argumentSchemaId = action.argumentSchemaId
+    return a
+end
+
 function C:_dispatch(session, actor, req)
     local lease, binding, action, why = self:resolveAction(req, actor)
     if lease == nil then return result(session, req, why == "UNAUTHORIZED" and "REFUSED" or "UNAVAILABLE", why) end
@@ -273,7 +283,7 @@ function C:_dispatch(session, actor, req)
         if action.admission ~= "QUOTED" then return result(session, req, "REFUSED", "NOT_QUOTABLE") end
         local t = now(self)
         if t == nil then return result(session, req, "UNAVAILABLE", "TIME_UNAVAILABLE") end
-        local ok, quote, reason = pcall(lease.spec.quoteAction, binding, copy(actor), copy(req.arguments or {}))
+        local ok, quote, reason = pcall(lease.spec.quoteAction, binding, copy(actor), normalizedArgs(req, action))
         if not ok then return result(session, req, "UNAVAILABLE", "OWNER_ERROR") end
         if type(quote) ~= "table" or type(quote.offer) ~= "table" then return result(session, req, "REFUSED", tostring(reason or "QUOTE_REFUSED")) end
         local offer, whyO = C.validateOffer(quote.offer)
@@ -301,14 +311,14 @@ function C:_dispatch(session, actor, req)
             session.quote = nil
             return result(session, req, "STALE_QUOTE", "QUOTE_MISMATCH")
         end
-        local okV, still, reason = pcall(lease.spec.validateQuote, binding, copy(actor), copy(req.arguments or {}), q.ownerQuoteRef, copy(q.readSet))
+        local okV, still, reason = pcall(lease.spec.validateQuote, binding, copy(actor), normalizedArgs(req, action), q.ownerQuoteRef, copy(q.readSet))
         if not okV or still ~= true then
             session.quote = nil
             return result(session, req, "STALE_QUOTE", tostring(okV and (reason or "QUOTE_INVALID") or "OWNER_ERROR"))
         end
         q.consumed = true
         local dispatchIdentity = { commandSessionId = session.commandSessionId, sequence = tostring(req.sequence), quoteToken = q.token }
-        local ok, outcome, detail = pcall(lease.spec.executeAction, binding, copy(actor), copy(req.arguments or {}), q.ownerQuoteRef, dispatchIdentity)
+        local ok, outcome, detail = pcall(lease.spec.executeAction, binding, copy(actor), normalizedArgs(req, action), q.ownerQuoteRef, dispatchIdentity)
         session.quote = nil
         if not ok then
             -- After dispatch an exception is not proof that nothing happened.

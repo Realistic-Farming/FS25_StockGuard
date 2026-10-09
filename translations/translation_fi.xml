@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Ei saatavilla sinulle"/>
         <text name="sg3_reason_profile_mismatch" text="Laatuprofiilit eivät täsmää"/>
         <text name="sg3_reason_composition_unknown" text="Koostumus tuntematon"/>
+        <text name="sg4_reason_library_loading" text="Reseptikirjastoa ladataan"/>
+        <text name="sg4_reason_library_unavailable" text="Reseptikirjasto ei ole käytettävissä"/>
+        <text name="sg4_reason_library_not_owned" text="Tämä reseptikirjasto kuuluu toiselle tilalle"/>
+        <text name="sg4_reason_library_retired" text="Tämä reseptikirjasto ei ole enää käytössä"/>
+        <text name="sg4_reason_library_full" text="Reseptikirjasto on täynnä"/>
+        <text name="sg4_reason_no_profile" text="Tuettua reseptityyppiä ei ole saatavilla"/>
+        <text name="sg4_reason_profile_absent" text="Tämän reseptin tyyppi ei ole saatavilla"/>
+        <text name="sg4_reason_profile_unavailable" text="Reseptityyppi ei voi käyttää tätä reseptiä"/>
+        <text name="sg4_reason_recipe_unknown" text="Reseptiä ei löytynyt"/>
+        <text name="sg4_reason_recipe_retired" text="Tämä resepti on poistettu"/>
+        <text name="sg4_reason_recipe_stale" text="Tämä resepti on muuttunut, päivitä ja yritä uudelleen"/>
+        <text name="sg4_reason_definition_invalid" text="Resepti ei ole kelvollinen"/>
+        <text name="sg4_reason_ingredient_invalid" text="Ainesosa ei ole sallittu tässä"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Määrä on sallitun alueen ulkopuolella"/>
+        <text name="sg4_reason_total_incomplete" text="Määrät eivät muodosta koko reseptiä"/>
+        <text name="sg4_reason_required_role_missing" text="Pakollinen ainesosa puuttuu"/>
+        <text name="sg4_reason_intent_unsupported" text="Tämä reseptityyppi ei tue tätä käyttöä"/>
     </texts>
 </l10n>
