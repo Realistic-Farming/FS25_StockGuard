@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Niet beschikbaar voor jou"/>
         <text name="sg3_reason_profile_mismatch" text="Kwaliteitsprofielen komen niet overeen"/>
         <text name="sg3_reason_composition_unknown" text="Samenstelling onbekend"/>
+        <text name="sg4_reason_library_loading" text="Receptenbibliotheek wordt geladen"/>
+        <text name="sg4_reason_library_unavailable" text="Receptenbibliotheek is niet beschikbaar"/>
+        <text name="sg4_reason_library_not_owned" text="Deze receptenbibliotheek hoort bij een andere boerderij"/>
+        <text name="sg4_reason_library_retired" text="Deze receptenbibliotheek wordt niet meer gebruikt"/>
+        <text name="sg4_reason_library_full" text="De receptenbibliotheek is vol"/>
+        <text name="sg4_reason_no_profile" text="Geen ondersteund recepttype beschikbaar"/>
+        <text name="sg4_reason_profile_absent" text="Het recepttype van dit recept is niet beschikbaar"/>
+        <text name="sg4_reason_profile_unavailable" text="Het recepttype kan dit recept niet gebruiken"/>
+        <text name="sg4_reason_recipe_unknown" text="Recept niet gevonden"/>
+        <text name="sg4_reason_recipe_retired" text="Dit recept is verwijderd"/>
+        <text name="sg4_reason_recipe_stale" text="Dit recept is gewijzigd, vernieuw en probeer opnieuw"/>
+        <text name="sg4_reason_definition_invalid" text="Het recept is ongeldig"/>
+        <text name="sg4_reason_ingredient_invalid" text="Een ingrediënt is hier niet toegestaan"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Een hoeveelheid valt buiten het toegestane bereik"/>
+        <text name="sg4_reason_total_incomplete" text="De hoeveelheden vormen niet het hele recept"/>
+        <text name="sg4_reason_required_role_missing" text="Een verplicht ingrediënt ontbreekt"/>
+        <text name="sg4_reason_intent_unsupported" text="Dit recepttype ondersteunt dat gebruik niet"/>
     </texts>
 </l10n>

@@ -85,6 +85,13 @@ source(modDirectory .. "src/sg3/SG3Quality.lua")
 source(modDirectory .. "src/sg3/SG3Assessments.lua")
 source(modDirectory .. "src/sg3/SG3Condition.lua")   -- SG-3 Part 3: SOIL_BALE_CONDITION_V1, the bale condition join
 source(modDirectory .. "src/sg3/SG3.lua")
+-- SG-4 Part 2a: the recipe library member (the store, the preparation profile registry, the LIBRARY owner and
+-- the RECIPE_LIBRARY view's rows). The native mixer profile is Part 2b.
+source(modDirectory .. "src/sg4/SG4Schema.lua")
+source(modDirectory .. "src/sg4/SG4Profiles.lua")
+source(modDirectory .. "src/sg4/SG4Library.lua")
+source(modDirectory .. "src/sg4/SG4Owner.lua")
+source(modDirectory .. "src/sg4/SG4.lua")
 
 -- EP-1 chemical station: role slots, the operator address, the WIP transfer route
 -- and the sale gate. These four shipped in the zip but were never sourced, so the
@@ -151,6 +158,12 @@ local function installNativeKernel(mission)
         local member, whySG3 = SG3.install(mission.stockGuard)
         if member == nil then print("[StockGuard] SG-3: not installed: " .. tostring(whySG3)) end
     end
+    -- SG-4 Part 2a: the recipe library member, server only, before the restore barrier so a saved library
+    -- finds its section.
+    if SG4 ~= nil then
+        local member4, whySG4 = SG4.install(mission.stockGuard, stockGuardOf(mission))
+        if member4 == nil then print("[StockGuard] SG-4: not installed: " .. tostring(whySG4)) end
+    end
     -- SG2-4a: the ground section and SG2's own save participant, then the boundary goes live.
     local sg = stockGuardOf(mission)
     -- SG2-5a: a Windrower work area's per-call retirements keep a budget of their own, so they
@@ -181,6 +194,8 @@ do
             local sg = stockGuardOf(mission)
             if sg ~= nil then
                 pcall(sg.onLoadMission00Finished, sg)
+                -- SG-4 Part 2a: a client decodes the recipe library's rows with the server's own check.
+                if SG4 ~= nil and not sg:isServer() then pcall(SG4.installClient, mission.stockGuard) end
                 local ok, err = pcall(installNativeKernel, mission)
                 if not ok then print("[StockGuard] native kernel install failed: " .. tostring(err)) end
             end
@@ -190,6 +205,7 @@ do
         SGClassHook.prepend(FSBaseMission, "delete", StockGuardHooks.ID, function(mission)
             if SGNativeHost ~= nil and SGNativeHost.current ~= nil then pcall(SGNativeHost.current.teardown, SGNativeHost.current) end
             if SG3 ~= nil then pcall(SG3.teardown, mission.stockGuard) end
+            if SG4 ~= nil then pcall(SG4.teardown, mission.stockGuard) end
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.delete, sg) end
         end, StockGuard)

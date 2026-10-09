@@ -27,5 +27,22 @@
         <text name="sg3_reason_disclosure_denied" text="Tidak tersedia untuk Anda"/>
         <text name="sg3_reason_profile_mismatch" text="Profil kualitas tidak cocok"/>
         <text name="sg3_reason_composition_unknown" text="Komposisi tidak diketahui"/>
+        <text name="sg4_reason_library_loading" text="Memuat pustaka resep"/>
+        <text name="sg4_reason_library_unavailable" text="Pustaka resep tidak tersedia"/>
+        <text name="sg4_reason_library_not_owned" text="Pustaka resep ini milik pertanian lain"/>
+        <text name="sg4_reason_library_retired" text="Pustaka resep ini tidak digunakan lagi"/>
+        <text name="sg4_reason_library_full" text="Pustaka resep penuh"/>
+        <text name="sg4_reason_no_profile" text="Tidak ada jenis resep yang didukung"/>
+        <text name="sg4_reason_profile_absent" text="Jenis resep ini tidak tersedia"/>
+        <text name="sg4_reason_profile_unavailable" text="Jenis resep tidak dapat memakai resep ini"/>
+        <text name="sg4_reason_recipe_unknown" text="Resep tidak ditemukan"/>
+        <text name="sg4_reason_recipe_retired" text="Resep ini telah dihapus"/>
+        <text name="sg4_reason_recipe_stale" text="Resep ini telah berubah, muat ulang dan coba lagi"/>
+        <text name="sg4_reason_definition_invalid" text="Resep tidak valid"/>
+        <text name="sg4_reason_ingredient_invalid" text="Bahan tidak diizinkan di sini"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Jumlah di luar rentang yang diizinkan"/>
+        <text name="sg4_reason_total_incomplete" text="Jumlahnya tidak membentuk resep lengkap"/>
+        <text name="sg4_reason_required_role_missing" text="Bahan wajib tidak ada"/>
+        <text name="sg4_reason_intent_unsupported" text="Jenis resep ini tidak mendukung penggunaan tersebut"/>
     </texts>
 </l10n>

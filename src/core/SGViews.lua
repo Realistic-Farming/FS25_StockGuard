@@ -140,6 +140,14 @@ end
 -- ---------------------------------------------------------
 -- Capabilities
 -- ---------------------------------------------------------
+--- The library owner's own readiness, when it reports one (SG-4 :369: schema and readiness on the capability).
+local function libraryReadiness(lease)
+    if type(lease.spec.readiness) ~= "function" then return nil end
+    local ok, r = pcall(lease.spec.readiness)
+    if not ok or type(r) ~= "table" or type(r.state) ~= "string" then return { state = "ERROR", reasonCode = "READINESS_ERROR" } end
+    return { state = r.state, reasonCode = r.reasonCode }
+end
+
 function W:getCapabilities()
     local adapters, properties, owners = {}, {}, {}
     for id, lease in self.registry:each(SGRegistry.KIND_CARRIER_ADAPTER) do adapters[#adapters + 1] = { adapterId = id, version = lease.spec.version, carrierKinds = copy(lease.spec.carrierKinds) } end
@@ -161,7 +169,7 @@ function W:getCapabilities()
         siteSchema = (self.sites ~= nil and self.sites.available) and SGSiteBinding.SCHEMA or nil,
         siteReasonCode = self.sites ~= nil and self.sites.reasonCode or "NOT_BOUND",
         quoteSchema = quoteReady and "SG_QUOTE_1" or nil,
-        recipeLibrary = libraryLease ~= nil and { ownerId = libraryLease.ownerId, schemaVersion = libraryLease.spec.schemaVersion } or nil,
+        recipeLibrary = libraryLease ~= nil and { ownerId = libraryLease.ownerId, schemaVersion = libraryLease.spec.schemaVersion, readiness = libraryReadiness(libraryLease) } or nil,
         recipeLibraryReasonCode = libraryLease == nil and "RECIPE_LIBRARY_OWNER_ABSENT" or nil,
         carrierPendingSchema = pendingReady and SGOperations.PENDING_SCHEMA or nil,
         adapters = adapters, properties = properties, managementOwners = owners,
@@ -470,6 +478,11 @@ function W:libraryView(actor, normalized, options, view)
     view.dataRevision = res.dataRevision
     view.viewKey = SGValues.canonicalKey({ binding = cursorBinding(self, actor, normalized, options), libraryId = res.libraryId, access = self.viewEpoch })
     view.rows = copy(res.rows)
+    -- The LIBRARY row's actions are SG-1's ACTION children from the registered LIBRARY owners (SG-4 :381:
+    -- "Its actions include SAVE_RECIPE when admitted"), as a STOCK row's are.
+    for _, row in ipairs(view.rows) do
+        if row.rowKind == "LIBRARY" then row.actions = actionsFor(self, "LIBRARY", row.libraryId, actor) end
+    end
     return { state = "READY", reason = nil, view = view }
 end
 
