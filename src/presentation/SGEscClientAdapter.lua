@@ -49,6 +49,39 @@ function A.hostOf(mission)
     return nil
 end
 
+-- [REPAIR-365 major3] This guest's own UI state.
+-- SG-5 :45 says the guest does not add APIs or expose private native internals, and the
+-- published handle is shared by every consumer, so focus, last selection and command UI
+-- state live in THIS module instead of on mission.stockGuard. The table is keyed weakly by
+-- the handle, which is per-mission, so state is isolated per mission and per farm or
+-- context exactly as before and a collected mission takes its entry with it.
+local _uiState = setmetatable({}, { __mode = "k" })
+
+--- This module's UI state for a host handle. nil host yields nil, never a shared default.
+local function uiFor(host)
+    if host == nil then return nil end
+    local u = _uiState[host]
+    if u == nil then
+        u = {}
+        _uiState[host] = u
+    end
+    return u
+end
+
+--- Store a focus state in this module. No-op without a handle, so no shared default.
+local function setFocus(host, st)
+    local u = uiFor(host)
+    if u ~= nil then u.focus = st end
+end
+
+--- Drop this module's UI state. Used by the per-mission reset; never touches the handle.
+function A.clearUiState(mission)
+    local host = A.hostOf(mission)
+    if host ~= nil then
+        _uiState[host] = nil
+    end
+end
+
 --- WorkplaceTriggers site handle (WT8). Never invents site ids.
 function A.siteProvider(mission)
     mission = mission or g_currentMission
@@ -59,6 +92,195 @@ function A.siteProvider(mission)
         return wt
     end
     return nil
+end
+
+--- One stable consumer id for this guest's whole client-controller lifetime, per the
+--- brief's catalogue lifecycle. Never per view, per farm or per paint.
+A.SITE_CONSUMER_ID = "stockGuard.sg5"
+
+--- Which parts of the published WT8 catalogue lifecycle this provider actually offers.
+--- Absent methods are reported, never worked around.
+--- @return boolean ok, string|nil reason
+function A.siteLifecycle(mission)
+    local wt = A.siteProvider(mission)
+    if wt == nil then return false, "SITE_PROVIDER_ABSENT" end
+    if type(wt.getSite) ~= "function" then return false, "SITE_GET_ABSENT" end
+    if type(wt.subscribeSiteChanges) ~= "function" then return false, "SITE_SUBSCRIBE_ABSENT" end
+    if type(wt.unsubscribeSiteChanges) ~= "function" then return false, "SITE_UNSUBSCRIBE_ABSENT" end
+    return true, nil
+end
+
+--- This guest's own site lifecycle state. Lives in this module, like every other piece of
+--- its UI state, and never on the published handle.
+local function siteState(host)
+    local u = uiFor(host)
+    if u == nil then return nil end
+    if type(u.site) ~= "table" then
+        u.site = { bound = false, boundTo = nil, catalogueStale = false,
+                   selectedStale = false, offeredRevision = nil }
+    end
+    return u.site
+end
+
+--- The invalidation callback. This is ALL it does.
+--- It marks state stale and returns: no provider read, no request, no render, and the
+--- notice payload is compared transiently and then dropped rather than stored or shown.
+local function onSiteNotice(host, siteId, _revision, _kind, _ownerFarmId)
+    local st = siteState(host)
+    if st == nil then return end
+    st.catalogueStale = true
+    local u = uiFor(host)
+    local sel = u ~= nil and u.lastSelection or nil
+    local selId = nil
+    if type(sel) == "table" and sel.selectionKind == "SITE" and type(sel.siteId) == "string" then
+        selId = sel.siteId
+    end
+    if selId == nil then return end
+    -- Names the selected site, or cannot be matched at all: the selected page is stale.
+    if type(siteId) ~= "string" or siteId == selId then
+        st.selectedStale = true
+    end
+end
+
+--- Bind the one consumer id. Idempotent, so a repeated show cannot leak a second binding.
+--- @return boolean bound, string|nil reason
+function A.bindSiteChanges(mission)
+    local host = A.hostOf(mission)
+    if host == nil then return false, "NO_HOST" end
+    local st = siteState(host)
+    if st == nil then return false, "NO_STATE" end
+    local wt = A.siteProvider(mission)
+
+    -- [NOTE-375] A bound flag is not enough: the provider handle can be REPLACED, and the
+    -- replacement guarantees no callback of its own. If this is a different object then our
+    -- subscription lives on the old one, so drop that id there first.
+    -- [REPAIR-377] This release runs BEFORE the replacement is validated, and on
+    -- disappearance as well as on a change of identity. It used to sit below the
+    -- A.siteLifecycle check, so a complete provider replaced by nil, or by one missing
+    -- getSite, returned on that check and left this consumer id subscribed on the old
+    -- object while the state still claimed to be bound to it.
+    if st.bound and (wt == nil or st.boundTo ~= wt) then
+        if st.boundTo ~= nil and type(st.boundTo.unsubscribeSiteChanges) == "function" then
+            pcall(function() st.boundTo.unsubscribeSiteChanges(A.SITE_CONSUMER_ID) end)
+        end
+        st.bound, st.boundTo = false, nil
+        -- A new provider has told us nothing yet, so treat what we hold as unverified.
+        st.catalogueStale, st.selectedStale = true, true
+    end
+
+    -- Only now is the replacement judged. A bad facade is reported as it always was; no
+    -- fallback subscription is invented for it.
+    local ok, why = A.siteLifecycle(mission)
+    if not ok then return false, why end
+    -- Same object, still bound: idempotent, so a repeated show cannot leak a second binding.
+    if st.bound then return true, nil end
+
+    local okCall, accepted = pcall(function()
+        return wt.subscribeSiteChanges(A.SITE_CONSUMER_ID, function(siteId, revision, kind, ownerFarmId)
+            onSiteNotice(host, siteId, revision, kind, ownerFarmId)
+        end)
+    end)
+    if not okCall or accepted ~= true then return false, "SITE_SUBSCRIBE_REFUSED" end
+    st.bound = true
+    st.boundTo = wt
+    -- A fresh binding has not verified anything yet, so the catalogue starts stale.
+    st.catalogueStale = true
+    return true, nil
+end
+
+--- Unbind THIS consumer id only. Idempotent and safe with no provider present.
+function A.unbindSiteChanges(mission)
+    local host = A.hostOf(mission)
+    if host == nil then return false end
+    local st = siteState(host)
+    if st == nil or not st.bound then return false end
+    -- [NOTE-375] Unsubscribe from the object we actually bound to, not merely whatever
+    -- resolves now, so a replaced provider cannot leave this consumer id behind on the old
+    -- one. Falls back to the current provider when we never recorded the binding target.
+    local wt = st.boundTo or A.siteProvider(mission)
+    if wt ~= nil and type(wt.unsubscribeSiteChanges) == "function" then
+        pcall(function() wt.unsubscribeSiteChanges(A.SITE_CONSUMER_ID) end)
+    end
+    st.bound, st.boundTo = false, nil
+    return true
+end
+
+--- True while the picker is showing state it has not re-verified since a notice.
+function A.siteStale(mission)
+    local st = siteState(A.hostOf(mission))
+    if st == nil then return false, false end
+    return st.catalogueStale == true, st.selectedStale == true
+end
+
+--- Remember the provider revision of the entry the picker offered, so a later change can be
+--- noticed. The brief keeps this for that purpose only; it never rides a selection.
+function A.noteOfferedSiteRevision(mission, revision)
+    local st = siteState(A.hostOf(mission))
+    if st ~= nil then st.offeredRevision = revision end
+end
+
+--- Drop every piece of picker state. Used on farm or local-actor invalidation and on
+--- teardown, so another farm's site names can never be painted from a cached list.
+function A.clearSiteState(mission)
+    local host = A.hostOf(mission)
+    if host == nil then return end
+    local u = uiFor(host)
+    if u ~= nil then u.site = nil end
+end
+
+--- Re-read the selected site from the OWN-FARM public replica and say what it found.
+--- Called from the existing show or light refresh, never from the notice callback.
+--- @return string status  OK | CHANGED | GONE | WAITING | UNSUPPORTED | NOT_SITE | NO_HOST
+function A.verifySelectedSite(mission)
+    local host = A.hostOf(mission)
+    if host == nil then return "NO_HOST" end
+    local st = siteState(host)
+    local u = uiFor(host)
+    local sel = u ~= nil and u.lastSelection or nil
+    if type(sel) ~= "table" or sel.selectionKind ~= "SITE" or type(sel.siteId) ~= "string" then
+        if st ~= nil then st.catalogueStale = false st.selectedStale = false end
+        return "NOT_SITE"
+    end
+    local wt = A.siteProvider(mission)
+    if wt == nil or type(wt.getSite) ~= "function" then return "UNSUPPORTED" end
+
+    -- Membership first, from the own-farm ACTIVE list. nil context is the local actor's
+    -- replica (WorkplaceSiteService.lua :847-856), never the server store.
+    local okList, sites, listWhy = pcall(function() return wt.getSitesForFarm(nil) end)
+    if not okList then return "WAITING" end
+    if sites == nil then
+        -- A ready capability that still answers NOT_READY is waiting, not an empty list.
+        return "WAITING"
+    end
+    if type(sites) ~= "table" then return "WAITING" end
+    local listed, listedRevision = false, nil
+    for _, s in ipairs(sites) do
+        if type(s) == "table" and s.siteId == sel.siteId then
+            listed, listedRevision = true, s.revision
+            break
+        end
+    end
+
+    -- Then the single authoritative record the brief names.
+    local okOne, site, oneWhy = pcall(function() return wt.getSite(sel.siteId, nil) end)
+    if not okOne then return "WAITING" end
+    if site == nil then
+        if tostring(oneWhy or "") == "NOT_READY" then return "WAITING" end
+        return "GONE"
+    end
+    if type(site) ~= "table" then return "WAITING" end
+    if not listed then return "GONE" end
+
+    local rev = site.revision ~= nil and site.revision or listedRevision
+    local changed = st ~= nil and st.offeredRevision ~= nil and rev ~= nil
+        and tostring(rev) ~= tostring(st.offeredRevision)
+    if st ~= nil then
+        -- A verified read is what clears the stale marks, nothing else.
+        st.catalogueStale = false
+        st.selectedStale = false
+        st.offeredRevision = rev
+    end
+    return changed and "CHANGED" or "OK"
 end
 
 local function copySelection(sel)
@@ -230,12 +452,25 @@ end
 function A.getFocusState(mission)
     local host = A.hostOf(mission)
     if host == nil then return nil end
-    return host._sg5FocusState
+    local u = uiFor(host)
+    return u ~= nil and u.focus or nil
 end
 
 local function clearFocusState(host, reason)
     if host == nil then return end
-    host._sg5FocusState = nil
+    local u = uiFor(host)
+    if u ~= nil then u.focus = nil end
+end
+
+--- [REPAIR-371] Put a previously captured focus state back, for the guest's own
+--- snapshot-and-restore on a refused entry. The mirror of A.getFocusState, which the
+--- snapshot already uses to capture it. Exists so the guest never has to reach for the
+--- published handle to restore what this module owns.
+function A.restoreFocusState(mission, st)
+    local host = A.hostOf(mission)
+    if host == nil then return false end
+    setFocus(host, st)
+    return true
 end
 
 --- Resolve navigation address from a live owner via its protected getNavigationCarrierId.
@@ -271,7 +506,8 @@ end
 function A.validatePhysicalFocus(mission)
     local host = A.hostOf(mission)
     if host == nil then return true, nil end
-    local st = host._sg5FocusState
+    local u = uiFor(host)
+    local st = u ~= nil and u.focus or nil
     if type(st) ~= "table" then return true, nil end
 
     if st.mode == "PENDING" then
@@ -363,23 +599,23 @@ function A.openHostModule(mission, opts)
         end
         if addr == nil then
             -- Live owner, address not yet available: PENDING. Do not request an unvalidated carrier.
-            host._sg5FocusState = {
+            setFocus(host, {
                 mode = "PENDING",
                 ownerObject = focus.ownerObject,
                 carrierId = nil,
                 expectedCarrierId = focus.carrierId,
                 adopted = false,
-            }
+            })
             local ok, why = A.requestSelection(mission, { route = "STOCK", selectionKind = "FARM" }, {})
             return ok, why or nil
         end
-        host._sg5FocusState = {
+        setFocus(host, {
             mode = "FOCUSED",
             carrierId = focus.carrierId,
             ownerObject = focus.ownerObject,
             expectedCarrierId = focus.carrierId,
             adopted = true,
-        }
+        })
         local ok, why = A.requestSelection(mission, { route = "STOCK", selectionKind = "FARM" }, {
             navigationCarrierId = focus.carrierId,
         })
@@ -390,13 +626,13 @@ function A.openHostModule(mission, opts)
     if not A.isOwnerObjectLive(focus.ownerObject) then
         return false, "FOCUS_UNAVAILABLE"
     end
-    host._sg5FocusState = {
+    setFocus(host, {
         mode = "PENDING",
         ownerObject = focus.ownerObject,
         carrierId = nil,
         expectedCarrierId = nil,
         adopted = false,
-    }
+    })
     local ok, why = A.requestSelection(mission, { route = "STOCK", selectionKind = "FARM" }, {})
     return ok, why or nil
 end
@@ -413,7 +649,8 @@ end
 function A.tryAdoptPendingAddress(mission, resolveAddressFn)
     local host = A.hostOf(mission)
     if host == nil then return false, "NO_HOST" end
-    local st = host._sg5FocusState
+    local u = uiFor(host)
+    local st = u ~= nil and u.focus or nil
     if type(st) ~= "table" or st.mode ~= "PENDING" or st.ownerObject == nil then
         return false, "NOT_PENDING"
     end
@@ -461,7 +698,8 @@ function A.requestSelection(mission, selection, readOptions)
     local okCall, aRes, bRes = pcall(host.requestView, norm, opts)
     if not okCall then return false, "REQUEST_ERROR" end
     if aRes == false then return false, tostring(bRes or "REQUEST_FALSE") end
-    host._sg5LastSelection = copySelection(norm)
+    local u = uiFor(host)
+    if u ~= nil then u.lastSelection = copySelection(norm) end
     return true, nil
 end
 
@@ -471,10 +709,11 @@ end
 
 function A.lastSelection(mission)
     local host = A.hostOf(mission)
-    if host == nil or type(host._sg5LastSelection) ~= "table" then
+    local u = uiFor(host)
+    if u == nil or type(u.lastSelection) ~= "table" then
         return { route = "STOCK", selectionKind = "FARM" }
     end
-    return copySelection(host._sg5LastSelection)
+    return copySelection(u.lastSelection)
 end
 
 local function sanitizeUnit(unit)
@@ -869,11 +1108,6 @@ function A.projectRows(view)
     return out, nil, meta
 end
 
-local function expectedKeyOf(host)
-    if host == nil or host.transport == nil or host.transport.client == nil then return nil end
-    return host.transport.client.expectedKey
-end
-
 function A.getPaintState(mission)
     local empty = {
         state = "UNAVAILABLE", reasonKey = "NO_HOST", usable = false,
@@ -925,16 +1159,15 @@ function A.getPaintState(mission)
             reasonKey = "MALFORMED_VIEW"
             hostUsable = false
         else
-            local expected = expectedKeyOf(host)
-            local got = snap.view.selectionKey
-            if expected ~= nil and (type(got) ~= "string" or got == "" or got ~= expected) then
-                -- Missing/nonstring/wrong selectionKey while expected: do not paint private rows.
-                selectionMismatch = true
-                state = "WAITING"
-                reasonKey = "SELECTION_MISMATCH"
-                hostUsable = false
-                rows = {}
-            else
+            -- [REPAIR-365 major3] The expected-key check read host.transport.client, which
+            -- the published handle does not expose (src/StockGuard.lua), so it never ran in
+            -- production. It is also redundant: SG-1's own transport drops a late
+            -- publication for another selection at SGTransport.lua:227, from the expectedKey
+            -- it sets at :263 off the client's own request. The guest has no published way
+            -- to compute that key and must not reach past the handle for it.
+            -- selectionMismatch stays declared and reported so the paint contract is
+            -- unchanged; nothing sets it here now, which is what production already did.
+            do
                 rows, rowProblem, meta = A.projectRows(snap.view)
                 meta = meta or {}
                 if rowProblem == "NO_ROWS" or rowProblem == "NO_VIEW" then
@@ -990,13 +1223,12 @@ function A.getPaintState(mission)
 end
 
 function A.invalidateLocal(mission, reason)
+    -- [REPAIR-365 major3] Clears only this guest's own offer state. This used to call
+    -- host.transport.clearView, which the published handle does not expose, so it cleared
+    -- nothing in production; and had the host ever resolved to the member it would have
+    -- cleared EVERY route (SGTransport.lua:239-254), against SG-5 :101 which has the
+    -- library shown unavailable while stock is unaffected.
     A.invalidateOffers(mission, reason or "INVALIDATED")
-    local host = A.hostOf(mission)
-    if host == nil or host.transport == nil then return end
-    local why = reason or "UI_INVALIDATE"
-    if type(host.transport.clearView) == "function" then
-        pcall(host.transport.clearView, host.transport, why)
-    end
 end
 
 
@@ -1007,8 +1239,10 @@ end
 
 local function commandState(host)
     if host == nil then return nil end
-    if type(host._sg5CommandState) ~= "table" then
-        host._sg5CommandState = {
+    local u = uiFor(host)
+    if u == nil then return nil end
+    if type(u.command) ~= "table" then
+        u.command = {
             outstanding = nil,
             unusedQuote = nil,
             routeBanner = nil,
@@ -1016,7 +1250,7 @@ local function commandState(host)
             quoteDeadlineRealMs = nil,
         }
     end
-    return host._sg5CommandState
+    return u.command
 end
 
 local function clearUnusedQuote(host, reason)
@@ -1086,9 +1320,12 @@ local function realNowMs()
         local ok, t = pcall(getTimeSec)
         if ok and type(t) == "number" then return math.floor(t * 1000) end
     end
-    if type(os) == "table" and type(os.clock) == "function" then
-        return math.floor(os.clock() * 1000)
-    end
+    -- [REPAIR-371] The standard-library clock fallback that used to sit here is removed.
+    -- That library's time functions are not available in the FS25 Lua sandbox, which the
+    -- repo's own lint rule states, and this file is added by THIS PR, so it was our defect
+    -- rather than inherited debt. With no authorized clock the honest answer is the zero
+    -- below: a quote deadline is then not counted down at all, instead of being counted
+    -- against a clock the sandbox does not provide.
     return 0
 end
 
@@ -1102,17 +1339,34 @@ local function adoptResultSequence(host, res)
             st.clientCommandSessionId = res.commandSessionId
         end
     end
-    -- Refresh transport.client.credentials when present so next send sees result sequence.
-    if host.transport ~= nil and host.transport.client ~= nil then
-        local c = host.transport.client
-        local sid = res.commandSessionId
-        if type(sid) ~= "string" or sid == "" then
-            sid = c.credentials and c.credentials.commandSessionId or nil
-        end
-        if type(sid) == "string" and sid ~= "" then
-            c.credentials = { commandSessionId = sid, nextSequence = tostring(res.nextSequence) }
-        end
+    -- [REPAIR-365 major3] The transport credential refresh is gone. It wrote
+    -- host.transport.client.credentials, which the published handle does not expose, so it
+    -- never happened in production; had the host resolved to the member it would have
+    -- replaced SG-1's per-view credentials (SGTransport.lua:235) against SG-5 :103, which
+    -- makes those credentials the host's to issue per view. This guest keeps only its own
+    -- copy in its own command state, written just above.
+end
+
+--- [REPAIR-365 major2] Is a command actually sendable right now?
+--- SG-5 :103 sends commands only with commandSessionId and nextSequence on the current
+--- view, and names "no action offered" as the fallback. This TESTS for a host capability;
+--- it does not add, implement or stand in for one. The published handle
+--- (src/StockGuard.lua) has no submitCommand, so today this refuses and the UI offers
+--- nothing. If a host ever publishes submitCommand, this starts answering true on its own.
+--- @return boolean ok, string|nil reason
+function A.canSubmit(mission)
+    local host = A.hostOf(mission)
+    if host == nil then return false, "NO_HOST" end
+    if type(host.submitCommand) ~= "function" then return false, "NO_SUBMIT" end
+    local creds = credentialsOf(host)
+    if type(creds) ~= "table" then return false, "NO_CREDENTIALS" end
+    if type(creds.commandSessionId) ~= "string" or creds.commandSessionId == "" then
+        return false, "NO_COMMAND_SESSION"
     end
+    if creds.nextSequence == nil or tostring(creds.nextSequence) == "" then
+        return false, "NO_NEXT_SEQUENCE"
+    end
+    return true, nil
 end
 
 --- Apply a correlated command result. Mismatched results are discarded.
@@ -1440,7 +1694,7 @@ local function argumentsReady(action, arguments)
         or schema == "SG4_RECOVER_PARTIAL_OUTPUT_1" or schema == "SG4_PUMP_OUT_PREPARATION_1"
         or schema == "SG4_SAVE_RECIPE_1" or schema == "SG4_RETIRE_RECIPE_1" then
         -- Presentation does not gather these yet; refuse empty. Non-empty args are
-        -- only for harnesses — UI keeps chips non-executable via projectActions.
+        -- only for harnesses. UI keeps chips non-executable via projectActions.
         if type(arguments) ~= "table" then return false, "ARGS_REQUIRED" end
         local n = 0
         for _ in pairs(arguments) do n = n + 1 end

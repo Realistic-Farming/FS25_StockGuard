@@ -105,7 +105,7 @@ local function addIngameMenuPage(frame, pageName, iconPath, uvs, position, predi
 end
 
 --- Ensure shared Esc door exists. Idempotent: skip create if already present.
----@param modDir string (DairyCoreModDirectory or g_currentModDirectory) of the calling joiner
+---@param modDir string (StockGuardModDirectory or g_currentModDirectory) of the calling joiner
 ---@param opts table|nil { profilesXml?, iconPath?, uvs? }
 ---@return boolean true if door exists after call
 function RfEscBootstrap.ensureDoor(modDir, opts)

@@ -34,6 +34,10 @@ local _hintSkip = 0
 local _paintRows = {}
 local _lastPaint = nil
 local _lastContainer = nil
+--- [REPAIR-377] Which mission the module-global controller state above belongs to. The
+--- adapter's state is per mission handle, but _selection, _registered and _lastContainer are
+--- one set shared by the module, so a stand-down for an OLDER mission must not clear them.
+local _ownerMission = nil
 -- Transport page trail: stack of pageCursor values that led HERE (empty = first host page).
 local _cursorTrail = {}
 local _requestedCursor = nil
@@ -1329,42 +1333,6 @@ local function paintSideInfo(container, paint)
     setText(body, table.concat(out, "\n\n"))
 end
 
---- A ONE-SHOT probe, because the Esc column showed "17.0 t" for a stock the save holds as
---- 20000 LITRE while Oat and Wheat, also 20000 LITRE, showed "20000 L". formatAmount is "%.0f %s" over a
---- unit token from SGRecords.AMOUNT_UNITS, which has no tonne and no metre, so those strings cannot have
---- come from this file and the open question is whose they are. This prints what the row actually carries
---- beside what the engine says about the same fill type. massPerLiter and unitShort are read defensively
---- with tostring: they are attributes of data/maps/maps_fillTypes.xml, not accessors I have proven on the
---- runtime descriptor, so a nil here is itself the answer.
-local _unitProbeDone = false
-
-local function unitProbe(rows)
-    if _unitProbeDone or type(rows) ~= "table" or #rows == 0 then return end
-    _unitProbeDone = true
-    local ftm = g_fillTypeManager
-    for i = 1, math.min(4, #rows) do
-        local r = rows[i]
-        local name = (type(r.materialRef) == "table") and r.materialRef.fillTypeName or nil
-        local mass, unitShort, title = "no-filltype", "no-filltype", "no-filltype"
-        if name ~= nil and ftm ~= nil and type(ftm.getFillTypeByName) == "function" then
-            local ok, ft = pcall(ftm.getFillTypeByName, ftm, name)
-            if ok and type(ft) == "table" then
-                mass = tostring(ft.massPerLiter)
-                unitShort = tostring(ft.unitShort)
-                title = tostring(ft.title)
-            else
-                mass, unitShort, title = "lookup-failed", "lookup-failed", "lookup-failed"
-            end
-        end
-        print(string.format(
-            "[StockGuard] unit-probe: row=%d fillType=%s amount=%s unit=%s capacity=%s capacityUnit=%s "
-            .. "capacityKnown=%s engineMassPerLiter=%s engineUnitShort=%s engineTitle=%s holder=%s",
-            i, tostring(name), tostring(r.amount), tostring(r.amountUnit), tostring(r.capacity),
-            tostring(r.capacityUnit), tostring(r.capacityKnown), mass, unitShort, title,
-            tostring(r.label)))
-    end
-end
-
 --- True while the ONLY thing wrong is that this client's own request has not been answered
 --- yet. Both reasons are the client clearing its own replica to make room for the reply it
 --- asked for, one per route, so neither is the host saying no. Any other reason - including
@@ -1433,7 +1401,6 @@ local function paintTable(container, paint)
         end
         paintHeaders(container)
         wireChipPaint(container)
-        unitProbe(_paintRows)
 
         -- Every row goes onto the scrolling sheet. The eight static slots stay blank and
         -- hidden, so no row is ever counted but unreachable again.
@@ -1532,6 +1499,28 @@ local function handleFarmTransition(farmId)
     end
     if changed and SGEscClientAdapter ~= nil then
         SGEscClientAdapter.invalidateLocal(g_currentMission, "FARM_CHANGED")
+        -- [REPAIR-371 / NOTE-373] A farm or local-actor change drops THIS guest's and THIS
+        -- adapter's own state, and nothing else. uiFor is keyed by the mission handle, so
+        -- without this the focus state, the last selection and the command UI state all
+        -- survived the change: requestCursor pulls navigationCarrierId out of a FOCUSED
+        -- focus state whenever _selection is FARM (see requestCursor below), so the first
+        -- request on the NEW farm could carry the OLD farm's carrier id, and the picker
+        -- could still name the old farm's site. An old intent and context leak, not a
+        -- security bypass; the server still refuses and revalidates either way.
+        -- No host transport, truth or credential is touched here.
+        if type(SGEscClientAdapter.unbindSiteChanges) == "function" then
+            pcall(SGEscClientAdapter.unbindSiteChanges, g_currentMission)
+        end
+        if type(SGEscClientAdapter.clearUiState) == "function" then
+            pcall(SGEscClientAdapter.clearUiState, g_currentMission)
+        elseif type(SGEscClientAdapter.clearSiteState) == "function" then
+            pcall(SGEscClientAdapter.clearSiteState, g_currentMission)
+        end
+        -- The guest's own authoritative selection goes back to the farm floor too, so the
+        -- next request is the new farm's FARM floor rather than an inherited SITE intent.
+        _selection = { route = "STOCK", selectionKind = "FARM" }
+        _selectionIndex = 1
+        _stationWaiting = false
         _pendingRequest = false
         resetPagingLocal()
         resetTransportTrail()
@@ -1899,32 +1888,12 @@ local function requestTransportPrev()
 end
 
 
-local function closeTabletFirst()
-    -- Established close route: FarmTablet main publishes manager as getfenv(0).g_FarmTablet
-    -- (FarmTabletManager:closeTablet -> UI). mission.farmTablet is FarmTabletFocus (no close).
-    local mgr = rawget(_G, "g_FarmTablet")
-    if mgr == nil and type(getfenv) == "function" then
-        local okEnv, env0 = pcall(getfenv, 0)
-        if okEnv and type(env0) == "table" then
-            mgr = env0.g_FarmTablet
-        end
-    end
-    if mgr ~= nil and type(mgr.closeTablet) == "function" then
-        pcall(mgr.closeTablet, mgr)
-        return
-    end
-    -- Fallback: Focus charge-target UI when manager handle absent (same UI closeTablet).
-    local focus = g_currentMission and g_currentMission.farmTablet
-    if focus ~= nil and focus._chargeTarget ~= nil and type(focus._chargeTarget.closeTablet) == "function" then
-        pcall(focus._chargeTarget.closeTablet, focus._chargeTarget)
-    end
-end
-
 --- Open Esc RF stock door. Returns ok, reason. No focus/request mutation here.
 --- Success = real page present + selectModule/selectPanel returned true + active module is stockGuard.
 --- RfPdaMenuPage.show returns nil on success (RfPdaMenuPage.lua); inspect state, do not treat nil as failure.
 local function openEscStockDoor()
-    closeTabletFirst()
+    -- [REPAIR-365 G4] closeTabletFirst removed. Host brief v2.15 :91-93 forbids
+    -- closing, modifying or depending on FarmTablet. The STOCK page stands alone.
     -- Bootstrap/register before selecting a module that needs the door.
     SgRfPdaGuest.tryRegister()
 
@@ -1989,6 +1958,177 @@ local function openEscStockDoor()
     return true, nil
 end
 
+
+-- [REPAIR-365 G1] The named-site picker the host brief requires, on chip slot 1.
+--
+-- Where it went and why: host brief v2.15 :402 and the "Current named-site picker" section
+-- require STOCK at SITE chosen from WT8's current ACTIVE own-farm catalogue. Both door
+-- selectors are already taken by live features: rfFwSelSelector is the ONLY route that
+-- switches Products/Storages (onSelectionStep has no caller in any of the 11 door copies,
+-- and comma/period pages rows, not views), and rfFwModeSelector carries the
+-- SET_OUTPUT_MODE catalogue. The door XML is a shared invariant this repair must not
+-- change. Chip slot 1 was explicitly cleared and unused and the host already dispatches it
+-- (RfPdaMenuPage:onClickRfFwAct1 -> onActionActivate(1)), so the picker costs no other
+-- route and adds no element.
+--
+-- The catalogue is NOT new: listSelectionOptions already builds SITE rows from the real
+-- WT8 facade, and this only reads them. An unavailable catalogue shows the adapter's own
+-- honest label and the chip is disabled: there is no global, unowned or all-site fallback.
+local function sitePickEntries()
+    local entries = {
+        { kind = "FARM", label = tr("sg5_sel_farm", "Farm"),
+          selection = { route = "STOCK", selectionKind = "FARM" } },
+    }
+    local blocked = nil
+    if SGEscClientAdapter == nil or type(SGEscClientAdapter.listSelectionOptions) ~= "function" then
+        return entries, "ADAPTER_ABSENT"
+    end
+    local ok, opts = pcall(SGEscClientAdapter.listSelectionOptions, g_currentMission)
+    if not ok or type(opts) ~= "table" then return entries, "OPTIONS_ERROR" end
+    for _, o in ipairs(opts) do
+        if type(o) == "table" and o.kind == "SITE" then
+            if o.available == true and type(o.siteId) == "string" and o.siteId ~= "" then
+                entries[#entries + 1] = {
+                    kind = "SITE",
+                    label = tostring(o.label or o.siteId),
+                    siteId = o.siteId,
+                    revision = o.siteRevision,
+                    selection = { route = "STOCK", selectionKind = "SITE", siteId = o.siteId },
+                }
+            elseif blocked == nil then
+                -- The adapter's own honest row: waiting, absent, malformed or empty.
+                blocked = { label = tostring(o.label or "Site"), reason = tostring(o.reasonCode or "UNAVAILABLE") }
+            end
+        end
+    end
+    return entries, (#entries > 1) and nil or (blocked and blocked.reason or "SITE_LIST_EMPTY"), blocked
+end
+
+--- Index of the live selection within the entry list. Falls back to FARM, never guesses a site.
+local function sitePickIndex(entries)
+    local sel = nil
+    if SGEscClientAdapter ~= nil and type(SGEscClientAdapter.lastSelection) == "function" then
+        local ok, s = pcall(SGEscClientAdapter.lastSelection, g_currentMission)
+        if ok then sel = s end
+    end
+    if type(sel) ~= "table" then return 1 end
+    if sel.selectionKind ~= "SITE" or type(sel.siteId) ~= "string" then return 1 end
+    for i = 2, #entries do
+        if entries[i].siteId == sel.siteId then return i end
+    end
+    return 1
+end
+
+--- Paint chip slot 1 as the picker. Disabled with the provider's own reason when there is
+--- nothing to pick, so the chip never moves a word without changing the view.
+local function paintSitePicker(container)
+    local entries, _why, blocked = sitePickEntries()
+    if #entries <= 1 then
+        local label = blocked and blocked.label or tr("sg5_pick_site_none", "Sites: none")
+        setPivotBtn(container, "rfFwAct1", label, false, false)
+        return
+    end
+    local i = sitePickIndex(entries)
+    local cur = entries[i]
+    local label
+    if cur.kind == "FARM" then
+        label = string.format(tr("sg5_pick_farm", "Place: Farm (%d)"), #entries - 1)
+    else
+        label = string.format(tr("sg5_pick_site", "Place: %s"), cur.label)
+    end
+    -- [REPAIR-371] A notice marks the cached catalogue, and sometimes the selected site,
+    -- stale. The brief has the open page and the picker show at once as being rechecked
+    -- rather than current, so the label says so. The control stays pressable: moving away,
+    -- to the farm floor included, must not be blocked by a recheck.
+    if type(SGEscClientAdapter.siteStale) == "function" then
+        local catStale, selStale = SGEscClientAdapter.siteStale(g_currentMission)
+        if selStale or catStale then
+            label = string.format(tr("sg5_pick_rechecking", "%s (rechecking)"), label)
+        end
+    end
+    setPivotBtn(container, "rfFwAct1", label, true, cur.kind == "SITE")
+end
+
+--- [REPAIR-371] Re-verify a stale selection and act on it, at the next existing show or
+--- light refresh. This is never called from the provider's notice callback: the callback
+--- only marks state, and this is the re-read the brief puts at the next ordinary paint.
+local function settleStaleSite()
+    if SGEscClientAdapter == nil or type(SGEscClientAdapter.siteStale) ~= "function" then
+        return false
+    end
+    local catStale, selStale = SGEscClientAdapter.siteStale(g_currentMission)
+    if not catStale and not selStale then return false end
+    local status = SGEscClientAdapter.verifySelectedSite(g_currentMission)
+    if status == "GONE" then
+        -- No longer listed as ACTIVE on the own-farm replica: clear the SITE intention and
+        -- unused offers, then the explicit FARM fallback. The reply is what paints next.
+        pcall(SGEscClientAdapter.clearPhysicalFocusIntent, g_currentMission, "SITE_GONE")
+        local okFarm = SGEscClientAdapter.requestSelection(g_currentMission,
+            { route = "STOCK", selectionKind = "FARM" }, {})
+        if okFarm == true then
+            -- [NOTE-373] same single authoritative state, so the fallback actually sticks
+            _selection = { route = "STOCK", selectionKind = "FARM" }
+            _selectionIndex = 1
+        end
+        _focusSlot = 1
+        _actionChipOffset = 0
+        return true
+    end
+    if status == "CHANGED" then
+        -- Listed with a different revision: the existing keyed SITE re-request, same opaque
+        -- id. No revision rides the request; SGViewRequestEvent carries none.
+        local sel = SGEscClientAdapter.lastSelection(g_currentMission)
+        if type(sel) == "table" and sel.selectionKind == "SITE" and type(sel.siteId) == "string" then
+            SGEscClientAdapter.requestSelection(g_currentMission,
+                { route = "STOCK", selectionKind = "SITE", siteId = sel.siteId }, {})
+            _focusSlot = 1
+            _actionChipOffset = 0
+            return true
+        end
+    end
+    return false
+end
+
+--- Step to the next place and request it. One SITE at a time, from the live catalogue only.
+local function stepSitePick()
+    local entries = sitePickEntries()
+    if #entries <= 1 then return false end
+    local i = sitePickIndex(entries) + 1
+    if i > #entries then i = 1 end
+    local nextSel = entries[i].selection
+    if SGEscClientAdapter == nil or type(SGEscClientAdapter.requestSelection) ~= "function" then
+        return false
+    end
+    -- Host brief: a deliberate SITE choice, like choosing the unfocused FARM, clears any
+    -- pending or focused chemical-station intention and unused STOCK offers BEFORE the
+    -- request. clearPhysicalFocusIntent is the adapter's published entry point for that.
+    if type(SGEscClientAdapter.clearPhysicalFocusIntent) == "function" then
+        pcall(SGEscClientAdapter.clearPhysicalFocusIntent, g_currentMission,
+              entries[i].kind == "SITE" and "SITE_PICK" or "FARM_PICK")
+    end
+    local ok = SGEscClientAdapter.requestSelection(g_currentMission, nextSel, {})
+    if ok ~= true then return false end
+    -- [NOTE-373] Commit the ACCEPTED pick to the one authoritative guest selection, the
+    -- same state onSelectionIndex commits. requestCursor sends _selection on every
+    -- subsequent non-light refresh, page and reopen, so without this a picked site was
+    -- silently lost back to the FARM default on the next ordinary paint. Committed only on
+    -- acceptance, so a refusal leaves the previous selection exactly as it was.
+    _selection = {
+        route = nextSel.route,
+        selectionKind = nextSel.selectionKind,
+        siteId = nextSel.siteId,
+    }
+    clearPrivateDisplay("SELECTION_CHANGED")
+    -- [REPAIR-371] Keep the provider revision of the entry just offered, so a later change
+    -- can be noticed. It is kept for that and nothing else, and never rides a selection.
+    if type(SGEscClientAdapter.noteOfferedSiteRevision) == "function" then
+        pcall(SGEscClientAdapter.noteOfferedSiteRevision, g_currentMission, entries[i].revision)
+    end
+    _focusSlot = 1
+    _actionChipOffset = 0
+    if _lastContainer ~= nil then refreshSnapshot(_lastContainer, true, false) end
+    return true
+end
 
 --- The Farm/Site selector is REMOVED from the stock page, on call (22:16).
 ---
@@ -2122,11 +2262,13 @@ local function restoreEntryContext(snap)
         end
     end
     -- Restore prior focus intent; drop any half-applied chemical focus from a refused entry.
-    if SGEscClientAdapter ~= nil then
-        local host = g_currentMission and g_currentMission.stockGuard
-        if host ~= nil then
-            host._sg5FocusState = snap.focusState
-        end
+    -- [REPAIR-371] This used to write host._sg5FocusState straight onto mission.stockGuard,
+    -- the published handle every consumer shares. That is the same defect Bob major3 raised
+    -- against the adapter, in snapshot-restore form, and the finding covers ANY shared
+    -- handle. The adapter owns this state now, so the restore goes through its published
+    -- entry point, the mirror of the getFocusState this snapshot captured it with.
+    if SGEscClientAdapter ~= nil and type(SGEscClientAdapter.restoreFocusState) == "function" then
+        pcall(SGEscClientAdapter.restoreFocusState, g_currentMission, snap.focusState)
     end
 end
 
@@ -2328,8 +2470,15 @@ function SgRfPdaGuest.onShow(container, lightOnly)
         return
     end
     _lastContainer = container
+    _ownerMission = g_currentMission
     local farmId = localFarmId()
     local farmChanged = handleFarmTransition(farmId)
+    -- [REPAIR-371] One stable consumer id, bound idempotently for this controller's
+    -- lifetime, and the stale re-read at this existing entry rather than on a timer.
+    if SGEscClientAdapter ~= nil and type(SGEscClientAdapter.bindSiteChanges) == "function" then
+        pcall(SGEscClientAdapter.bindSiteChanges, g_currentMission)
+        pcall(settleStaleSite)
+    end
     refreshSnapshot(container, lightOnly, farmChanged)
 end
 
@@ -2342,6 +2491,11 @@ function SgRfPdaGuest.onHide()
     end
     _lastContainer = nil
     _lastPaint = nil
+    -- [REPAIR-371] Unbind THIS consumer id at controller teardown, so a hidden page holds
+    -- no subscription and a later show rebinds cleanly.
+    if SGEscClientAdapter ~= nil and type(SGEscClientAdapter.unbindSiteChanges) == "function" then
+        pcall(SGEscClientAdapter.unbindSiteChanges, g_currentMission)
+    end
 end
 
 function SgRfPdaGuest.tryRegister()
@@ -2390,6 +2544,7 @@ function SgRfPdaGuest.tryRegister()
         })
         if accepted then
             _registered = true
+            _ownerMission = g_currentMission
         else
             return false
         end
@@ -2434,14 +2589,14 @@ paintCommandChrome = function(container)
     if type(cmd) == "table" and type(cmd.banner) == "table" then
         local b = cmd.banner
         if b.kind == "SENT_AWAITING" then
-            text = tr("sg5_cmd_sent_awaiting", "Sent — waiting for owner...")
+            text = tr("sg5_cmd_sent_awaiting", "Sent. Waiting for owner...")
         elseif b.kind == "ACCEPTED_PENDING" then
-            text = tr("sg5_cmd_accepted_pending", "Accepted — work still in progress...")
+            text = tr("sg5_cmd_accepted_pending", "Accepted. Work still in progress...")
         elseif b.kind == "QUOTE" then
             showQuote = true
             local remain = cmd.remainingMs
             local sec = remain ~= nil and math.floor((remain / 1000) + 0.5) or 0
-            text = string.format(tr("sg5_cmd_quote_banner", "Quoted offer — confirm within %ds"), sec)
+            text = string.format(tr("sg5_cmd_quote_banner", "Quoted offer: confirm within %ds"), sec)
         elseif b.kind == "TERMINAL" then
             local outcome = tostring(b.outcome or "")
             text = string.format(tr("sg5_cmd_terminal", "Result: %s"), outcome)
@@ -2501,7 +2656,28 @@ paintCommandChrome = function(container)
     -- publishes more than one, because a chip with nowhere to step is furniture too. Slot 3 carries
     -- the action on show and runs it. One chip used to do both and the step won, which is the defect
     -- this replaces: a row with two or more actions could never run any of them.
-    clearPivotBtn(container, "rfFwAct1")
+    -- [REPAIR-365 G1] Slot 1 is the named-site picker, not furniture.
+    paintSitePicker(container)
+
+    -- [REPAIR-365 major2] No action is offered at all unless a command can actually be
+    -- sent: published submitCommand plus this view's own commandSessionId and nextSequence.
+    -- Offering a chip that can only answer NO_SUBMIT is the defect being removed, so the
+    -- chips go and the reason is shown instead.
+    local canSend, sendWhy = false, "NO_SUBMIT"
+    if SGEscClientAdapter ~= nil and type(SGEscClientAdapter.canSubmit) == "function" then
+        canSend, sendWhy = SGEscClientAdapter.canSubmit(g_currentMission)
+    end
+    if not canSend then
+        clearPivotBtn(container, "rfFwAct2")
+        clearPivotBtn(container, "rfFwAct3")
+        local banner = findDescendant(container, "rfFwCmdBanner")
+        if banner ~= nil then
+            setText(banner, string.format(
+                tr("sg5_cmd_no_submit", "Actions unavailable here: %s"), tostring(sendWhy or "NO_SUBMIT")))
+            setVis(banner, true)
+        end
+        return
+    end
     if total > 1 then
         setPivotBtn(container, "rfFwAct2",
             string.format(tr("sg6_act_next", "Next action (%d/%d)"), _actionChipOffset + 1, total),
@@ -2651,11 +2827,12 @@ function SgRfPdaGuest.onActionActivate(index)
     -- If STOCK is not the active panel, this is not our click.
     if not isActivePanel() then return false end
     local focusedNow = focusedRow(currentPageStart())
-    local actionsNow = (type(focusedNow) == "table" and type(focusedNow.actions) == "table")
-        and focusedNow.actions or {}
-    -- Slot 1 is empty, so a press on it is not ours. Until the page selector arrived, slots 1 and 2
-    -- were STORAGES and BUYERS with the latched one acting as Back.
-    if idx == 1 then return false end
+    -- [REPAIR-365 G1] Slot 1 is the named-site picker. Mouse and controller both arrive here.
+    if idx == 1 then return stepSitePick() end
+    -- [REPAIR-365 major2] Every other entry point refuses while submission is unavailable,
+    -- so a keyboard press cannot do what the hidden chip cannot.
+    if SGEscClientAdapter == nil or type(SGEscClientAdapter.canSubmit) ~= "function" then return false end
+    if SGEscClientAdapter.canSubmit(g_currentMission) ~= true then return false end
     if SGEscClientAdapter == nil then return false end
     local focused = focusedNow
     if type(focused) ~= "table" or type(focused.actions) ~= "table" then return false end
@@ -2738,9 +2915,6 @@ function SgRfPdaGuest.resetForTests()
     _plannerRows = {}
     _viewRows = {}
     _stationCache = nil
-    -- The unit probe is one shot per LOAD, so without this a test could only ever observe it
-    -- from the very first show in a run and the one-shot property itself would be untestable.
-    _unitProbeDone = false
     _whereCache = {}
     _actionChipOffset = 0
     _modePickIndex = 1
@@ -2752,6 +2926,7 @@ function SgRfPdaGuest.resetForTests()
     resetPagingLocal()
     resetTransportTrail()
     _lastContainer = nil
+    _ownerMission = nil
     _selection = { route = "STOCK", selectionKind = "FARM" }
     _selectionIndex = 1
     _selectionOptions = nil
@@ -2760,7 +2935,57 @@ function SgRfPdaGuest.resetForTests()
     _entryHold = false
 end
 
-function SgRfPdaGuest.reset()
+--- [NOTE-378] A mission BEGINS. This is deliberately NOT reset: main.lua calls this from its
+--- loadMission00Finished record, where the module-global controller has to be re-armed
+--- whoever held it before, because the mission that is starting is the one that must register
+--- into its own door. reset's ownership guard exists to protect the CURRENT mission from an
+--- older mission's delete; applying it here would leave _registered true from the old mission
+--- and tryRegister's own gate would then skip the new registration entirely.
+--- @param mission table|nil the mission that is beginning; g_currentMission when absent
+function SgRfPdaGuest.rearm(mission)
+    local mi = mission or g_currentMission
+    -- The incoming mission's own per-handle state, same as the stand-down does.
+    if SGEscClientAdapter ~= nil then
+        if type(SGEscClientAdapter.unbindSiteChanges) == "function" then
+            pcall(SGEscClientAdapter.unbindSiteChanges, mi)
+        end
+        if type(SGEscClientAdapter.clearUiState) == "function" then
+            pcall(SGEscClientAdapter.clearUiState, mi)
+        elseif type(SGEscClientAdapter.clearSiteState) == "function" then
+            pcall(SGEscClientAdapter.clearSiteState, mi)
+        end
+    end
+    -- Unconditional. _reset0 leaves the owner unset, so the first real claim, a successful
+    -- tryRegister or the show that adopts a container, records the new mission as owner.
+    return SgRfPdaGuest._reset0()
+end
+
+--- [REPAIR-371] Mission teardown drops the subscription and the picker snapshot with it.
+--- @param mission table|nil the mission being stood down; g_currentMission when absent
+function SgRfPdaGuest.reset(mission)
+    local m = mission or g_currentMission
+    -- The supplied mission's own adapter state is always released. This is per mission
+    -- handle, so it is correct to do for an older mission without touching the current one.
+    if SGEscClientAdapter ~= nil then
+        if type(SGEscClientAdapter.unbindSiteChanges) == "function" then
+            pcall(SGEscClientAdapter.unbindSiteChanges, m)
+        end
+        if type(SGEscClientAdapter.clearUiState) == "function" then
+            pcall(SGEscClientAdapter.clearUiState, m)
+        elseif type(SGEscClientAdapter.clearSiteState) == "function" then
+            pcall(SGEscClientAdapter.clearSiteState, m)
+        end
+    end
+    -- [REPAIR-377] The module-global controller state is reset only by the mission that owns
+    -- it. This used to be unconditional, so deleting an older mission discarded the CURRENT
+    -- mission's SITE selection, registration and container. With no owner recorded the state
+    -- is still at its default, so resetting is harmless and the single-mission case is
+    -- unchanged; deleting the current mission still stands the guest down in full.
+    if _ownerMission ~= nil and _ownerMission ~= m then return nil end
+    return SgRfPdaGuest._reset0()
+end
+
+function SgRfPdaGuest._reset0()
     SgRfPdaGuest.resetForTests()
 end
 
