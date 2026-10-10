@@ -53,6 +53,12 @@
 -- its litres with none: Soil reads that as material of unknown condition. Soil reads the record
 -- through its own property and decides the cells (Soil #1074); StockGuard never reads a Soil cell.
 --
+-- THE FORAGEWAGON (SG2-5f; Bob's 5f intake and R-15, ruling 6). A FORAGE frame's pickup lines are
+-- admitted like any frame's line, and each delivery's collection is kept on its call for the call's
+-- seal, as a Baler pickup's is: Soil returns one for any collection machine's pickup
+-- (GroundConditionAdmission.isCollector). Soil's own ForageWagon frame then stands aside through its
+-- admission-count rule (GroundNativeObserver, stoodAside). A FORAGE_FILL frame draws no line.
+--
 -- THE MOWER (SG2-5c; Bob's 5c ruling, Q1 and Q2, on Soil #1082). A MOWER frame admits its cut
 -- before the native call, as one MOWER_CUT primitive whose footprint is the work area's start,
 -- width and height corners and whose identity is the work area table native passes, and closes it
@@ -140,7 +146,7 @@ function S.admitLine(host, call)
     end
     local G = SGGroundObserver
     if gf.kind ~= G.TIP and gf.kind ~= G.WORK and gf.kind ~= G.DROP and gf.kind ~= G.WINDROWER and gf.kind ~= G.TEDDER and gf.kind ~= G.BALER
-       and gf.kind ~= G.MOWER and gf.kind ~= G.MOWER_DROP then return nil end
+       and gf.kind ~= G.MOWER and gf.kind ~= G.MOWER_DROP and gf.kind ~= G.FORAGE then return nil end
     -- SG2-5d-b: a Baler's add frame draws no line of its own.
     if gf.balerAdd then return nil end
     -- SG2-5c: the Mower's lines are Soil's to receive only while the cut is StockGuard's (header).
@@ -296,7 +302,8 @@ function S.deliverLine(lease, ok, returned, lineOffset)
     end
     S.stats.delivered = S.stats.delivered + 1
     -- SG2-5d-b: a Baler pickup's delivery names its collection (Soil 5d-soil): the tick's batch.
-    if ok and lease.frame ~= nil and lease.frame.baler ~= nil and type(result) == "table" and type(result.collection) == "table" then
+    -- SG2-5f: so does a ForageWagon pickup's: its line's batch in the call's seal.
+    if ok and lease.frame ~= nil and (lease.frame.baler ~= nil or lease.frame.forage ~= nil) and type(result) == "table" and type(result.collection) == "table" then
         lease.call.soilCollection = result.collection
     end
     return result

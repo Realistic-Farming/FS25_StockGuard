@@ -65,8 +65,9 @@
 -- buffers through a REMOVE (SGGroundObserver.retireTedderBuffers, retireMowerBuffers).
 --
 -- A KIND IS ONE DESCRIPTOR in F.KINDS (its class name, spec table, collect, write, read,
--- restore and schema paths); the hooks and the schema install are generic over it, so a
--- later buffer save (the Baler overflow, the ForageWagon) adds a descriptor.
+-- restore and schema paths, and the load event its restore follows: onPostLoad unless it names
+-- another); the hooks and the schema install are generic over it, so a later buffer save adds a
+-- descriptor. The Baler overflow (SG2-5e-a) and the ForageWagon (SG2-5f, after onLoad) did.
 
 SGFieldToolBufferSave = SGFieldToolBufferSave or {}
 local F = SGFieldToolBufferSave
@@ -557,6 +558,107 @@ function F.applyBaleTokens(vehicle, created)
 end
 
 -- ---------------------------------------------------------
+-- The ForageWagon: its one buffer (SG2-5f; SG-2 :144's ForageWagon half and :364)
+-- ---------------------------------------------------------
+--- ForageWagon defines no saveToXMLFile, and its onLoad zeroes workAreaParameters.litersToFill
+--- (ForageWagon.lua:82): native discards a remainder at every reload. It is saved here only while it
+--- holds litres, with its binding (:144): the fill unit's index and identity (its supported fill type
+--- names), litersToFill, lastFillType by canonical name, and the buffer token (the StockGuard carrier
+--- key, when StockGuard had bound it). It is put back right after the original ForageWagon.onLoad,
+--- which receives the savegame (Vehicle.lua:866) and has read its own fill units (:65-66), FillUnit
+--- having loaded first; ForageWagon registers no onPostLoad (:38-51), so this descriptor's load event
+--- is onLoad. The restore validates the layout, the fill unit, the type and the values; on success it
+--- sets the native fields back and, when the token is this wagon's buffer key, seeds the entry, so
+--- SG-1's restore at the barrier reattaches the saved stock and its account (:364; DESIGN-CHECK row 190).
+local FORAGE = { name = "forageWagon", className = "ForageWagon", specTable = "spec_forageWagon", loadEvent = "onLoad" }
+F.KINDS[#F.KINDS + 1] = FORAGE
+
+--- The fill unit's identity: its supported fill type names, sorted and space-joined.
+local function forageUnitTypes(vehicle, index)
+    if type(vehicle.getFillUnitSupportedFillTypes) ~= "function" then return nil end
+    local ok, types = pcall(vehicle.getFillUnitSupportedFillTypes, vehicle, index)
+    if not ok or type(types) ~= "table" then return nil end
+    local names = {}
+    for ft, state in pairs(types) do
+        local n = state and fillTypeName(ft) or nil
+        if n ~= nil then names[#names + 1] = n end
+    end
+    table.sort(names)
+    return table.concat(names, " ")
+end
+
+function FORAGE.collect(vehicle)
+    local spec = vehicle.spec_forageWagon
+    local wap = type(spec.workAreaParameters) == "table" and spec.workAreaParameters or nil
+    local held = wap ~= nil and wap.litersToFill or nil
+    if not isNumber(held) or held <= 0 then return nil end
+    local A = SGNativeAdapters
+    local token = nil
+    if A ~= nil then
+        local b = A.forageBufferBinding(vehicle)
+        local key = b ~= nil and SGRecords.carrierKeyString(b.carrierKey) or nil
+        local e = key ~= nil and A.forageBuffers[key] or nil
+        if e ~= nil and e.vehicle == vehicle then token = key end
+    end
+    return { version = F.VERSION, configFileName = configOf(vehicle), areaCount = 1, fillUnitIndex = spec.fillUnitIndex,
+             fillTypes = forageUnitTypes(vehicle, spec.fillUnitIndex), litersToFill = held, lastFillType = fillTypeName(spec.lastFillType), token = token }
+end
+
+function FORAGE.write(xmlFile, base, data)
+    writeLayout(xmlFile, base, data)
+    if isNumber(data.fillUnitIndex) then xmlFile:setValue(base .. "#fillUnitIndex", data.fillUnitIndex) end
+    if data.fillTypes ~= nil then xmlFile:setValue(base .. "#fillTypes", data.fillTypes) end
+    xmlFile:setValue(base .. "#litersToFill", data.litersToFill)
+    if data.lastFillType ~= nil then xmlFile:setValue(base .. "#lastFillType", data.lastFillType) end
+    if data.token ~= nil then xmlFile:setValue(base .. "#token", data.token) end
+end
+
+function FORAGE.read(xmlFile, base)
+    local data = readLayout(xmlFile, base)
+    data.fillUnitIndex = xmlFile:getValue(base .. "#fillUnitIndex")
+    data.fillTypes = xmlFile:getValue(base .. "#fillTypes")
+    data.litersToFill = xmlFile:getValue(base .. "#litersToFill")
+    data.lastFillType = xmlFile:getValue(base .. "#lastFillType")
+    data.token = xmlFile:getValue(base .. "#token")
+    return data
+end
+
+--- Another configuration, a fill unit index naming no unit or another one, another set of supported
+--- types, an unknown type, a type the unit does not support, or bad values restore nothing (:144
+--- "validate the mapping").
+function FORAGE.restore(vehicle, data)
+    local spec = vehicle.spec_forageWagon
+    local why = layoutRefusal(vehicle, data, 1)
+    if why ~= nil then return 0, { why }, 0 end
+    local idx = data.fillUnitIndex
+    local unit = (isNumber(idx) and type(vehicle.getFillUnitByIndex) == "function") and vehicle:getFillUnitByIndex(idx) or nil
+    if idx ~= spec.fillUnitIndex or unit == nil then return 0, { "FILL_UNIT" }, 0 end
+    if data.fillTypes == nil or data.fillTypes ~= forageUnitTypes(vehicle, idx) then return 0, { "FILL_UNIT_TYPES" }, 0 end
+    local ft = fillTypeIndex(data.lastFillType)
+    if ft == nil then return 0, { "FILL_TYPE" }, 0 end
+    if type(vehicle.getFillUnitSupportsFillType) ~= "function" or not vehicle:getFillUnitSupportsFillType(idx, ft) then return 0, { "FILL_TYPE_UNSUPPORTED" }, 0 end
+    if not isNumber(data.litersToFill) or data.litersToFill <= 0 then return 0, { "AREA_VALUES" }, 0 end
+    local wap = spec.workAreaParameters
+    if type(wap) ~= "table" or wap.litersToFill ~= 0 then return 0, { "AREA_OCCUPIED" }, 0 end
+    wap.litersToFill = data.litersToFill
+    spec.lastFillType = ft
+    local seeded = 0
+    local A = SGNativeAdapters
+    local b = A ~= nil and A.forageBufferBinding(vehicle) or nil
+    if data.token ~= nil and b ~= nil and data.token == SGRecords.carrierKeyString(b.carrierKey) and SGGroundObserver ~= nil
+        and SGGroundObserver.seedForageBuffer(vehicle) then seeded = 1 end
+    return 1, {}, seeded
+end
+
+function FORAGE.registerPaths(schema, base, T)
+    schema:register(T.INT, base .. "#fillUnitIndex", "ForageWagon fill unit index (the binding)")
+    schema:register(T.STRING, base .. "#fillTypes", "ForageWagon fill unit supported fill types (its identity)")
+    schema:register(T.FLOAT, base .. "#litersToFill", "ForageWagon buffer (workAreaParameters.litersToFill)")
+    schema:register(T.STRING, base .. "#lastFillType", "ForageWagon lastFillType name")
+    schema:register(T.STRING, base .. "#token", "StockGuard: the buffer carrier key")
+end
+
+-- ---------------------------------------------------------
 -- The hooks, generic over a kind
 -- ---------------------------------------------------------
 --- Appended to the kind's class saveToXMLFile (Vehicle.lua:1212 hands it "<vehicle>.<specName>").
@@ -570,8 +672,9 @@ function F.onSave(kind, vehicle, xmlFile, key)
     F.stats.saved = F.stats.saved + 1
 end
 
---- Appended to the kind's class onPostLoad (queued at Vehicle.lua:903-906 through
---- raiseAsyncEvent with the savegame, nil for a vehicle that was not loaded from one).
+--- Appended to the kind's class load event, onPostLoad unless the kind names another (both queued
+--- through raiseAsyncEvent with the savegame, Vehicle.lua:866 and :903-906; nil for a vehicle that was
+--- not loaded from one).
 function F.onPostLoad(kind, vehicle, savegame, class)
     if g_server == nil or type(savegame) ~= "table" or savegame.xmlFile == nil or type(savegame.key) ~= "string" then return end
     if savegame.resetVehicles then return end
@@ -598,9 +701,10 @@ end
 --- Install one kind on its class table once (mechanism 3, read at call time). The class has
 --- no saveToXMLFile of its own; one another mod put there runs first.
 function F.installKind(kind, class)
-    if type(class) ~= "table" or type(class.onPostLoad) ~= "function" then return false end
+    local event = kind.loadEvent or "onPostLoad"
+    if type(class) ~= "table" or type(class[event]) ~= "function" then return false end
     if rawget(class, F.MARKER) ~= nil then return false end
-    local originalSave, originalPostLoad = class.saveToXMLFile, class.onPostLoad
+    local originalSave, originalPostLoad = class.saveToXMLFile, class[event]
     if originalSave ~= nil and type(originalSave) ~= "function" then return false end
     class.saveToXMLFile = function(self, xmlFile, key, ...)
         local n, r = 0, {}
@@ -609,17 +713,17 @@ function F.installKind(kind, class)
         if not ok then logOnce("saveHook:" .. kind.name, kind.name .. " save hook failed (" .. tostring(err) .. ")") end
         return unpack(r, 1, n)
     end
-    class.onPostLoad = function(self, savegame, ...)
+    class[event] = function(self, savegame, ...)
         local n, r = packn(originalPostLoad(self, savegame, ...))
         local ok, err = pcall(F.onPostLoad, kind, self, savegame, class)
         if not ok then logOnce("postLoadHook:" .. kind.name, kind.name .. " post-load hook failed (" .. tostring(err) .. ")") end
         return unpack(r, 1, n)
     end
-    rawset(class, F.MARKER, { saveToXMLFile = originalSave, onPostLoad = originalPostLoad })
+    rawset(class, F.MARKER, { saveToXMLFile = originalSave, [event] = originalPostLoad })
     return true
 end
 
---- Install every kind whose class is given ({ Tedder = ..., Mower = ... }). Returns the count.
+--- Install every kind whose class is given ({ Tedder = ..., Mower = ..., ForageWagon = ... }). Returns the count.
 function F.installClassHooks(classes)
     local n = 0
     for _, kind in ipairs(F.KINDS) do

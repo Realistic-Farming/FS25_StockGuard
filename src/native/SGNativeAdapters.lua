@@ -85,6 +85,10 @@ A.BALER_PICKUP_PROFILE = "NATIVE_BALER_PICKUP_V1"
 A.KIND_BALER_OVERFLOW = "balerOverflow"
 A.BALER_OVERFLOW_PROFILE = "NATIVE_BALER_OVERFLOW_V1"
 A.BALER_OVERFLOW_GROUP = "NATIVE_BALER_OVERFLOW_V1"
+-- SG2-5f: a ForageWagon's one vehicle-level buffer, workAreaParameters.litersToFill
+-- (ForageWagon.lua:189, :216-228): real material that waits across ticks (SG-2 :144, :298).
+A.KIND_FORAGE_BUFFER = "forageBuffer"
+A.FORAGE_BUFFER_PROFILE = "NATIVE_FORAGE_BUFFER_V1"
 A.STORAGE_PROFILE     = "NATIVE_STORAGE_SLOT_V1"
 A.FILLUNIT_PROFILE    = "NATIVE_FILL_UNIT_V1"
 A.PROFILE_VERSION     = 1
@@ -1049,6 +1053,101 @@ function A.balerOverflowKind(vehicles)
     return spec
 end
 
+-- ── ForageWagon buffer (SG2-5f) ──────────────────────────────────────────────
+--
+-- PERSISTENT AND NATIVE-BACKED (Bob's 5f intake and his R-15 of 2026-10-09; SG-2 :144, :298). Every
+-- pickup call of a ForageWagon adds what it produced, the additive's boost included, to ONE
+-- vehicle-level buffer, spec_forageWagon.workAreaParameters.litersToFill (ForageWagon.lua:189), and
+-- fillForageWagon adds that buffer to the fill unit, keeping what the unit did not take (:216-228).
+-- It outlives a tick during the start-fill delay (:283-288), when the unit is full (:220-224) and
+-- after a tick that picked nothing up (:283). One carrier per wagon, bound at the first pickup call
+-- that produced litres and live across ticks. Its native amount is litersToFill exactly; its material
+-- is native's lastFillType, which a pickup call renames after its litres join (:190-191), so a call's
+-- settle reads the buffer as native left it. Withdrawn when a fill empties it, retired as destruction
+-- when its vehicle goes (SG-2 :136), never enumerated. Native zeroes it at load (:82) and saves it
+-- nowhere, so its save is StockGuard's (SGFieldToolBufferSave, :144), as the Tedder buffer's.
+
+A.forageBuffers = A.forageBuffers or {}
+
+function A.forageBufferBinding(vehicle)
+    if type(vehicle) ~= "table" then return nil end
+    local ownerKey = persistentIdOf(vehicle)
+    if ownerKey == nil then return nil end
+    return bindingOf(A.NATIVE_ADAPTER_ID, ownerKey, A.KIND_FORAGE_BUFFER, A.FORAGE_BUFFER_PROFILE,
+        { kind = A.KIND_FORAGE_BUFFER, configFileName = type(vehicle.configFileName) == "string" and vehicle.configFileName or "" })
+end
+
+--- Is this carrier key a ForageWagon buffer of the native adapter?
+function A.isForageBufferKey(carrierKey)
+    return type(carrierKey) == "table" and carrierKey.adapterId == A.NATIVE_ADAPTER_ID and carrierKey.componentKey == A.KIND_FORAGE_BUFFER
+end
+
+--- The buffer's native state at `level` litres of `name`: readNativeState's, and the before-state a
+--- pickup call binds with (the level native held when the call began).
+function A.forageBufferState(vehicle, level, name)
+    return {
+        materialRef = level > 0 and name ~= nil and { kind = "FILL_TYPE", fillTypeName = name } or nil,
+        amount = level,
+        unit = A.UNIT,
+        ownerFarmId = ownerFarmOf(vehicle),
+        storeKind = "vehicle_buffer",
+        nativeUniqueId = persistentIdOf(vehicle),
+    }
+end
+
+--- The buffer's native level and the name of its lastFillType (nil for UNKNOWN), read now.
+function A.forageBufferNative(vehicle)
+    local spec = type(vehicle) == "table" and vehicle.spec_forageWagon or nil
+    local wap = type(spec) == "table" and spec.workAreaParameters or nil
+    if type(wap) ~= "table" then return nil, nil end
+    local unknown = FillType ~= nil and FillType.UNKNOWN or 0
+    local name = spec.lastFillType ~= nil and spec.lastFillType ~= unknown and fillTypeNameOf(spec.lastFillType) or nil
+    return wap.litersToFill, name
+end
+
+--- The ForageWagon buffer KIND of the native adapter.
+---@param vehicles function  () -> list of vehicles
+function A.forageBufferKind(vehicles)
+    local spec = {}
+
+    spec.resolveCarrier = function(binding)
+        if not isServer() then return nil, "CLIENT" end
+        if type(binding) ~= "table" or type(binding.carrierKey) ~= "table" then return nil, "BINDING" end
+        local d = binding.sourceDescriptor
+        if type(d) ~= "table" or d.kind ~= A.KIND_FORAGE_BUFFER or binding.carrierKey.componentKey ~= A.KIND_FORAGE_BUFFER then return nil, "DESCRIPTOR" end
+        local entry = A.forageBuffers[SGRecords.carrierKeyString(binding.carrierKey)]
+        if entry == nil then return nil, "NOT_BOUND" end
+        local vehicle = vehicleOf(vehicles, binding.carrierKey.nativeOwnerKey)
+        if vehicle == nil or vehicle ~= entry.vehicle or type(vehicle.spec_forageWagon) ~= "table" then return nil, "VEHICLE_ABSENT" end
+        return { vehicle = vehicle, entry = entry }
+    end
+
+    --- litersToFill exactly, as lastFillType; less the litres the FORAGE frame withholds while it
+    --- replaces a retargeted remainder's stock (entry.withheld, the call's own produced litres, set only
+    --- inside that one refresh, SGGroundObserver.forageSettle).
+    spec.readNativeState = function(binding, native)
+        if not isServer() then return nil, "CLIENT" end
+        if type(native) ~= "table" or type(native.vehicle) ~= "table" or type(native.entry) ~= "table" then return nil, "NATIVE" end
+        local level, name = A.forageBufferNative(native.vehicle)
+        local withheld = native.entry.withheld or 0
+        if type(level) ~= "number" or level ~= level or level == math.huge or type(withheld) ~= "number" or withheld ~= withheld then return nil, "LEVEL" end
+        level = level - withheld
+        if level < 0 then return nil, "LEVEL" end
+        if level > 0 and name == nil then return nil, "FILL_TYPE_UNNAMED" end
+        return A.forageBufferState(native.vehicle, level, name)
+    end
+
+    spec.enumerateCarriers = function() return {} end
+
+    spec.hasAccess = function(binding, actor)
+        local native = spec.resolveCarrier(binding)
+        if native == nil then return false end
+        return actorCanAccess(actor, native.vehicle)
+    end
+
+    return spec
+end
+
 -- ── World bales (SG2 bale family, part 2a) ──────────────────────────────────
 --
 -- ONE CARRIER PER WORLD BALE, KEYED BY ITS OWN NATIVE uniqueId (Bob's bale-family intake, Part 2a;
@@ -1424,12 +1523,13 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers, items)
         [A.KIND_MOWER_BUFFER] = A.mowerBufferKind(vehicles),
         [A.KIND_BALER_PICKUP] = A.balerPickupKind(vehicles),
         [A.KIND_BALER_OVERFLOW] = A.balerOverflowKind(vehicles),
+        [A.KIND_FORAGE_BUFFER] = A.forageBufferKind(vehicles),
         [A.KIND_BALE] = A.baleKind(items, vehicles),
     }
     local spec = {
         version        = A.ADAPTER_VERSION,
         carrierKinds   = { A.KIND_STORAGE, A.KIND_FILL_UNIT, A.KIND_DELAY_SLOT, A.KIND_STRAW_SLOT, A.KIND_GROUND, A.KIND_WINDROWER_AREA, A.KIND_TEDDER_BUFFER,
-                          A.KIND_MOWER_BUFFER, A.KIND_BALER_PICKUP, A.KIND_BALER_OVERFLOW, A.KIND_BALE },
+                          A.KIND_MOWER_BUFFER, A.KIND_BALER_PICKUP, A.KIND_BALER_OVERFLOW, A.KIND_FORAGE_BUFFER, A.KIND_BALE },
         materialGroups = { A.BALER_OVERFLOW_GROUP },
         kinds          = kinds,
         -- SG2-5e-c: a round Baler's mounted bale is an alias of its chamber (SG-2 :473).
@@ -1475,6 +1575,9 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers, items)
         -- entry is the save extension's (SG2-5e-a, SGFieldToolBufferSave); without it the entry is
         -- absent and resolveCarrier answers NOT_BOUND.
         if kind == A.KIND_BALER_OVERFLOW then return savedBinding end
+        -- SG2-5f: a ForageWagon buffer keeps its own binding: its restoration with litersToFill and its
+        -- entry is the save extension's (SGFieldToolBufferSave); without it resolveCarrier answers NOT_BOUND.
+        if kind == A.KIND_FORAGE_BUFFER then return savedBinding end
         -- A Baler pickup lives only inside one work-area tick: nothing to restore.
         if kind == A.KIND_BALER_PICKUP then return nil, "NOT_RESTORABLE" end
         -- A world bale keeps its own binding: the engine brings the same uniqueId back (Bale.lua:320).
@@ -1486,14 +1589,14 @@ function A.nativeAdapterSpec(placeables, vehicles, samplers, items)
     --- [MAINTENANCE row 206] The quantity as native saves it, for the kinds whose level the
     --- engine writes as an XMLValueType.FLOAT: a fill unit (FillUnit.lua:138, :438), a storage
     --- (Storage.lua:26), a Combine delay or straw slot (SGCombineBufferSave's own FLOAT path), a
-    --- Tedder or Mower buffer (SGFieldToolBufferSave's own FLOAT path, SG2-5bc-save) and a Baler
-    --- overflow (the same module's FLOAT path, SG2-5e-a).
+    --- Tedder or Mower buffer (SGFieldToolBufferSave's own FLOAT path, SG2-5bc-save), a Baler
+    --- overflow (the same module's FLOAT path, SG2-5e-a) and a ForageWagon buffer (the same, SG2-5f).
     --- SG-1's restore compares the saved and the reloaded level through it, so a level the
     --- writer rounded still reattaches, exactly. Other kinds give nil and compare as numbers.
     spec.restoredQuantityImage = function(binding, amount)
         local kind = kindOf(binding)
         if kind == A.KIND_FILL_UNIT or kind == A.KIND_STORAGE or kind == A.KIND_DELAY_SLOT or kind == A.KIND_STRAW_SLOT
-            or kind == A.KIND_TEDDER_BUFFER or kind == A.KIND_MOWER_BUFFER or kind == A.KIND_BALER_OVERFLOW
+            or kind == A.KIND_TEDDER_BUFFER or kind == A.KIND_MOWER_BUFFER or kind == A.KIND_BALER_OVERFLOW or kind == A.KIND_FORAGE_BUFFER
             -- A world bale's level is an XMLValueType.FLOAT in items.xml (Bale.lua:17, saved :417).
             or kind == A.KIND_BALE then
             return SGValues.nativeFloatImage(amount)
