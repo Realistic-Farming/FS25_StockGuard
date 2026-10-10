@@ -101,6 +101,18 @@ source(modDirectory .. "src/placeables/ChemicalStationAddress.lua")
 source(modDirectory .. "src/placeables/ChemicalStationWipRoute.lua")
 source(modDirectory .. "src/placeables/ChemicalStationSaleGate.lua")
 
+-- The Esc STOCK page's files. Development carries no Esc door for
+-- StockGuard, so these six are additions rather than a merge.
+source(modDirectory .. "src/gui/RfEscModules.lua")
+source(modDirectory .. "src/gui/RfPdaMenuPage.lua")
+source(modDirectory .. "src/gui/RfEscBootstrap.lua")
+source(modDirectory .. "src/presentation/SGEscClientAdapter.lua")
+-- The Stock field guide. Sourced before the guest so the class exists by the time the
+-- guest registers it at door-load time, which is the only moment a GUI can still be loaded from
+-- this mod directory.
+source(modDirectory .. "src/gui/SgGuideDialog.lua")
+source(modDirectory .. "src/gui/SgRfPdaGuest.lua")
+
 -- One controller for the process; the unload hook resets it per mission.
 StockGuardCapacity = StockGuardCapacity or SGCapacity.new()
 SGCapacity.installHooks(StockGuardCapacity)
@@ -197,6 +209,12 @@ do
                 local ok, err = pcall(installNativeKernel, mission)
                 if not ok then print("[StockGuard] native kernel install failed: " .. tostring(err)) end
             end
+            -- [REPAIR-365 major4] re-arm the SG5 Esc guest for THIS mission.
+            -- [NOTE-378] The mission-BEGIN path, so it re-arms unconditionally. The
+            -- owner-scoped stand-down used by the delete record would let an older mission's
+            -- registration latch survive, and this mission would never register its own door.
+            if StockGuardHooks.rearmSg5Esc ~= nil then pcall(StockGuardHooks.rearmSg5Esc, mission) end
+            if StockGuardHooks.tryRegisterSg5Esc ~= nil then pcall(StockGuardHooks.tryRegisterSg5Esc) end
         end, StockGuard)
     end
     if FSBaseMission ~= nil and FSBaseMission.delete ~= nil then
@@ -204,6 +222,11 @@ do
             if SGNativeHost ~= nil and SGNativeHost.current ~= nil then pcall(SGNativeHost.current.teardown, SGNativeHost.current) end
             if SG3 ~= nil then pcall(SG3.teardown, mission.stockGuard) end
             if SG4 ~= nil then pcall(SG4.teardown, mission.stockGuard) end
+            -- [REPAIR-365 major4] Stand the SG5 Esc guest down FIRST, while the published
+            -- handle still exists. SG-1's own delete clears mission.stockGuard, and the
+            -- guest's stand-down resolves its state through that handle, so running it
+            -- afterwards found nothing and leaked the site subscription.
+            if StockGuardHooks.resetSg5Esc ~= nil then pcall(StockGuardHooks.resetSg5Esc, mission) end
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.delete, sg) end
         end, StockGuard)
@@ -213,6 +236,8 @@ do
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.update, sg, dt) end
             if SGNativeHost ~= nil and SGNativeHost.current ~= nil and sg ~= nil then pcall(SGNativeHost.current.update, SGNativeHost.current, dt) end
+            -- [REPAIR-365 major4] bounded retry for the Esc guest, same budget as before.
+            if StockGuardHooks.tryRegisterSg5Esc ~= nil then pcall(StockGuardHooks.tryRegisterSg5Esc) end
         end, StockGuard)
     end
     if FSBaseMission ~= nil and FSBaseMission.onConnectionClosed ~= nil then
@@ -252,3 +277,74 @@ if addConsoleCommand ~= nil then
 end
 
 print("[StockGuard] loaded (SG-1 foundation " .. tostring(StockGuard.VERSION) .. "; SG-6 capacity core; extender, Realistic Livestock, Montana and realSilo bound; ProductionControl, Pumps N' Hoses, UnlimitedFillTypes and Distribution Redux refused, see SGCapacity.ADAPTERS)")
+
+--- SG5 Esc guest: register with the shared RF door when present (suite hosts build the door).
+--- BOUNDED, and it says what happened exactly once. The previous version ran from the update tick on every
+--- frame forever inside a bare pcall, so neither success nor failure ever reached log.txt: the session log
+--- contains "SgRfPdaGuest" zero times while the Esc STOCK page sat on the host placeholder.
+local SG_ESC_MAX_TRIES = 600          -- about ten seconds of update ticks, then stop and say so
+local _sgEscTries, _sgEscSettled = 0, false
+
+local function tryRegisterSg5Esc()
+    if _sgEscSettled then return end
+    if g_dedicatedServer ~= nil then _sgEscSettled = true return end
+    if SgRfPdaGuest == nil or type(SgRfPdaGuest.tryRegister) ~= "function" then
+        _sgEscTries = _sgEscTries + 1
+        if _sgEscTries >= SG_ESC_MAX_TRIES then
+            _sgEscSettled = true
+            print("[StockGuard] Esc guest NOT registered: SgRfPdaGuest.tryRegister is unavailable")
+        end
+        return
+    end
+    _sgEscTries = _sgEscTries + 1
+    local ok, res = pcall(SgRfPdaGuest.tryRegister)
+    if ok and res == true then
+        _sgEscSettled = true
+        print("[StockGuard] SgRfPdaGuest: registered module stockGuard on rfEscModules")
+        return
+    end
+    if not ok then
+        _sgEscSettled = true
+        print("[StockGuard] Esc guest registration ERROR: " .. tostring(res))
+        return
+    end
+    if _sgEscTries >= SG_ESC_MAX_TRIES then
+        _sgEscSettled = true
+        print("[StockGuard] Esc guest NOT registered after " .. tostring(_sgEscTries)
+            .. " attempts: the shared RF door never became available")
+    end
+end
+
+-- [REPAIR-365 major4] The guest now registers PER MISSION and stands down on delete.
+--
+-- Two defects were here. The hooks were Utils.appendedFunction closures, which this file's
+-- own MAINTENANCE row 187 rules out because they cannot be unlinked once made; and nothing
+-- ever reset _sgEscSettled or the guest's _registered, so registration was armed once per
+-- GAME session and a second save loaded in the same session got no page.
+--
+-- They are not re-added as new SGClassHook records either: records are keyed by method plus
+-- id, so a second append on FSBaseMission.update with StockGuardHooks.ID would REBIND that
+-- slot and silently drop SG-1's own update record. The calls are folded into the existing
+-- records above instead, which keeps one record per method per id and preserves every
+-- existing hook and return.
+local function resetSg5EscForMission(mission)
+    _sgEscTries, _sgEscSettled = 0, false
+    if SgRfPdaGuest ~= nil and type(SgRfPdaGuest.reset) == "function" then
+        -- The mission is threaded through deliberately. With two missions alive in one
+        -- process, deleting the first while the second is current would otherwise stand
+        -- down the SECOND mission's state and leave the first's behind.
+        pcall(SgRfPdaGuest.reset, mission)
+    end
+end
+--- [NOTE-378] A mission BEGINNING re-arms unconditionally; only a mission ENDING is
+--- owner-scoped. One helper for both would let an older mission's registration latch
+--- survive a new mission's load.
+local function rearmSg5EscForMission(mission)
+    _sgEscTries, _sgEscSettled = 0, false
+    if SgRfPdaGuest ~= nil and type(SgRfPdaGuest.rearm) == "function" then
+        pcall(SgRfPdaGuest.rearm, mission)
+    end
+end
+StockGuardHooks.resetSg5Esc = resetSg5EscForMission
+StockGuardHooks.rearmSg5Esc = rearmSg5EscForMission
+StockGuardHooks.tryRegisterSg5Esc = tryRegisterSg5Esc
