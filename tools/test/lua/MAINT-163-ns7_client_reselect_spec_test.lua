@@ -60,7 +60,7 @@ local function newConnection(streamId, isServer)
         self.sent = self.sent + 1
         local s = NewStream()
         event:writeStream(s, self)
-        local class = getmetatable(event).__index
+        local class = event:class()
         local received = class.emptyNew()
         inProcess(self.peerMission, received.readStream, received, s, self.peer)
     end
