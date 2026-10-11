@@ -641,3 +641,39 @@ group("T", function()
     UnloadingStation.addFillLevelFromTool = tcOriginal
     T.eq("T7 teardown restored the second mission's station", rawget(lsA, "removeFillLevel"), nil)
 end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- RSF-F239 (RECONCILE-399 carry): a class method must resolve for a Class() object
+-- ══════════════════════════════════════════════════════════════════════════
+group("RSF-F239", function()
+    -- The engine's shape: Class() sets __metatable = members, so getmetatable hands back
+    -- the CLASS TABLE. That table has no __index of its own; its own metatable carries
+    -- __index = baseClass.
+    local base = { inherited = function() return "from base" end }
+    local cls = { own = function() return "from class" end }
+    setmetatable(cls, { __index = base })
+    local inst = setmetatable({}, { __index = cls, __metatable = cls })
+
+    T.eq("F239a getmetatable really hands back the class table, not the metatable",
+        getmetatable(inst), cls)
+    T.eq("F239b the class table carries no __index of its own",
+        rawget(cls, "__index"), nil)
+    T.ok("F239c a method the class defines resolves",
+        SA.classMethod(inst, "own") == cls.own)
+    T.ok("F239d and one it inherits resolves too",
+        SA.classMethod(inst, "inherited") == base.inherited)
+    T.eq("F239e a key nobody defines is still nil",
+        SA.classMethod(inst, "absent"), nil)
+
+    -- A shape whose metatable really is a metatable keeps its own __index semantics.
+    local target = { m = function() return "via index table" end }
+    local plain = setmetatable({}, { __index = target })
+    T.ok("F239f a real __index table is honoured first",
+        SA.classMethod(plain, "m") == target.m)
+
+    local fnObj = setmetatable({}, { __index = function(_, k) return "fn:" .. tostring(k) end })
+    T.eq("F239g an __index function is called", SA.classMethod(fnObj, "z"), "fn:z")
+
+    T.eq("F239h an object with no metatable yields nil", SA.classMethod({}, "x"), nil)
+    T.eq("F239i a non-table is refused rather than indexed", SA.classMethod(42, "x"), nil)
+end)
