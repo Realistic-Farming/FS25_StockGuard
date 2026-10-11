@@ -421,6 +421,9 @@ end
 function A.fillUnitBindingFor(vehicle, index)
     if type(vehicle) ~= "table" or vehicle.spec_fillUnit == nil or type(vehicle.spec_fillUnit.fillUnits) ~= "table" then return nil end
     if vehicle.spec_fillUnit.fillUnits[index] == nil or consumerUnitsOf(vehicle)[index] then return nil end
+    -- SG2-5g: a mirrored straw blower unit is named by its alias, so every caller reaches the bale.
+    local mirror = A.strawBlowerMirrorOfUnit(vehicle, index)
+    if mirror ~= nil then return A.strawBlowerAliasBinding(vehicle, index, mirror.bale) end
     return A.fillUnitBinding(vehicle, index)
 end
 
@@ -457,6 +460,8 @@ function A.fillUnitKind(vehicles)
         local current = type(vehicle.configFileName) == "string" and vehicle.configFileName or ""
         if d.configFileName ~= nil and d.configFileName ~= current then return nil, "LAYOUT_CHANGED" end
         if A.fillUnitBindingFor(vehicle, d.fillUnitIndex) == nil then return nil, "FILL_UNIT_UNSUPPORTED" end
+        -- SG2-5g: a mirrored straw blower unit is never its own carrier; its alias names the bale.
+        if A.strawBlowerMirrorOfUnit(vehicle, d.fillUnitIndex) ~= nil then return nil, "MIRRORED" end
         return { vehicle = vehicle, fillUnitIndex = d.fillUnitIndex }
     end
 
@@ -502,7 +507,8 @@ function A.fillUnitKind(vehicles)
             if persistentIdOf(vehicle) ~= nil and fu ~= nil and type(fu.fillUnits) == "table" then
                 for index in ipairs(fu.fillUnits) do
                     local binding = A.fillUnitBindingFor(vehicle, index)
-                    if binding ~= nil then out[#out + 1] = { binding = binding } end
+                    -- SG2-5g: a mirrored straw blower unit's alias is never enumerated.
+                    if binding ~= nil and binding.aliasOf == nil then out[#out + 1] = { binding = binding } end
                 end
             end
         end
@@ -1242,6 +1248,47 @@ local function restoredBaleBinding(map, savedBinding)
 end
 A.restoredBaleBinding = restoredBaleBinding
 
+-- ── The straw blower mirror (SG2-5g, NATIVE_STRAW_BLOWER_V1) ───────────────────────────────
+--
+-- A STRAW BLOWER'S LOADED BALE AND ITS FILL UNIT ARE ONE MATERIAL AMOUNT (SG-2 :154; Bob's 5g intake and
+-- his R-15 of 2026-10-09). At the load (StrawBlower.lua:82-93) the unit takes the bale's whole level while
+-- the bale stays a world object, and :154 binds the unit as CarrierBinding.aliasOf that bale, with the
+-- bale's quantityBasisKey. The reverse of the round mirror's direction: here the bale is the one carrier
+-- and the unit the alias. SGStrawBlower notes the mirror at the load (after withdrawing the unit's plain
+-- carrier, which must hold nothing) and retires it at the leave, the delete or the last discharge. While
+-- it stands, fillUnitBindingFor names the unit by its alias, so every caller reaches the bale through
+-- SG-1's canonicalBinding; the fill-unit kind neither enumerates the unit nor resolves its plain binding
+-- (MIRRORED). Per mission: H:install and H:teardown empty the table.
+A.strawBlowerMirrors = A.strawBlowerMirrors or {}   -- the unit's carrier key -> { bale, vehicle, fillUnitIndex, baleId, alias }
+
+--- The unit's alias binding over `bale`: its own carrier key, aliasOf the bale's carrier id, the bale's
+--- quantityBasisKey.
+function A.strawBlowerAliasBinding(vehicle, index, bale)
+    local unit = A.fillUnitBinding(vehicle, index)
+    local own = A.baleBinding(bale)
+    if unit == nil or own == nil then return nil end
+    unit.aliasOf = SGRecords.carrierKeyString(own.carrierKey)
+    unit.quantityBasisKey = own.quantityBasisKey
+    return unit
+end
+
+--- The mirror standing over this vehicle's fill unit, or nil.
+function A.strawBlowerMirrorOfUnit(vehicle, index)
+    if next(A.strawBlowerMirrors) == nil then return nil end
+    local unit = A.fillUnitBinding(vehicle, index)
+    local m = unit ~= nil and A.strawBlowerMirrors[SGRecords.carrierKeyString(unit.carrierKey)] or nil
+    if m ~= nil and m.vehicle == vehicle and m.fillUnitIndex == index then return m end
+    return nil
+end
+
+--- The mirror whose bale this is, or nil.
+function A.strawBlowerMirrorOfBale(bale)
+    for _, m in pairs(A.strawBlowerMirrors) do
+        if m.bale == bale then return m end
+    end
+    return nil
+end
+
 -- ── The round mirror (SG2-5e-c, Part 3a) ────────────────────────────────────
 --
 -- A ROUND BALER'S MOUNTED BALE AND ITS STILL-FULL CHAMBER ARE ONE MATERIAL AMOUNT (SG-2 :473; Bob's
@@ -1308,10 +1355,19 @@ function A.resetRoundMirrors()
 end
 
 --- resolveAlias (SG-1 :238; SGOperations canonicalBinding). A binding that is no alias is its own
---- canonical binding (nil). A round mirror's alias is the chamber's binding while the mirror stands and
---- the chamber is still that carrier. Any other alias is refused (ALIAS_ERROR), never bound as itself.
+--- canonical binding (nil). A straw blower unit's alias is its bale's binding while that mirror stands
+--- (SG2-5g). A round mirror's alias is the chamber's binding while the mirror stands and the chamber is
+--- still that carrier. Any other alias is refused (ALIAS_ERROR), never bound as itself.
 function A.resolveAlias(binding)
     if type(binding) ~= "table" or binding.aliasOf == nil then return nil end
+    -- SG2-5g: a straw blower unit's alias names its bale's binding while the mirror stands.
+    local blower = A.strawBlowerMirrors[SGRecords.carrierKeyString(binding.carrierKey)]
+    if blower ~= nil then
+        if blower.baleId ~= binding.aliasOf or blower.alias.quantityBasisKey ~= binding.quantityBasisKey then error("ALIAS_UNPROVED", 0) end
+        local own = A.baleBinding(blower.bale)
+        if own == nil then error("ALIAS_UNPROVED", 0) end
+        return own
+    end
     local mirror = A.roundMirrors[SGRecords.carrierKeyString(binding.carrierKey)]
     if mirror == nil or mirror.chamberId ~= binding.aliasOf or mirror.alias.quantityBasisKey ~= binding.quantityBasisKey then
         error("ALIAS_UNPROVED", 0)

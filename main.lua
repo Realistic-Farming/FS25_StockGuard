@@ -74,6 +74,8 @@ source(modDirectory .. "src/native/SGGroundBrush.lua")
 source(modDirectory .. "src/native/SGGroundArea.lua")
 -- SG2-5bc-save: the Tedder's and the Mower's remainders survive a save with their StockGuard entries.
 source(modDirectory .. "src/native/SGFieldToolBufferSave.lua")
+-- SG2-5g: a straw blower's loaded bale and its fill unit as one quantity (NATIVE_STRAW_BLOWER_V1).
+source(modDirectory .. "src/native/SGStrawBlower.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 -- SG-3 Part 2.1: the food and feed grading member (profiles, the pure evaluator, the stored
 -- qualityBasisV1 producer, the derived sg3.assessments, and the member that registers them).
@@ -137,7 +139,7 @@ local function installNativeKernel(mission)
     SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem,
         Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil, SavegameController = SavegameController,
         Dischargeable = Dischargeable, Leveler = Leveler, Shovel = Shovel, WheelDestruction = WheelDestruction, Baler = Baler,
-        Tedder = Tedder, Mower = Mower, Bale = Bale, ForageWagon = ForageWagon })
+        Tedder = Tedder, Mower = Mower, Bale = Bale, ForageWagon = ForageWagon, StrawBlower = StrawBlower })
     local host = SGNativeHost.new(mission.stockGuard, {
         placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
         vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,
