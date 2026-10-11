@@ -677,3 +677,24 @@ group("RSF-F239", function()
     T.eq("F239h an object with no metatable yields nil", SA.classMethod({}, "x"), nil)
     T.eq("F239i a non-table is refused rather than indexed", SA.classMethod(42, "x"), nil)
 end)
+
+
+-- Exercise the PRELUDE Class helper itself, rather than hand-building the shape.
+group("CLASS-HARNESS", function()
+    local base = { inherited = function() return "base" end }
+    local baseMt = Class(base)
+    local cls = { own = function() return "own" end }
+    local mt = Class(cls, base)
+    local obj = setmetatable({}, mt)
+    T.ok("HC1 Class returns a distinct metatable", mt ~= cls)
+    T.eq("HC2 the metatable protects its class table", rawget(mt, "__metatable"), cls)
+    T.eq("HC3 getmetatable exposes the class table", getmetatable(obj), cls)
+    T.eq("HC4 class has no own __index", rawget(cls, "__index"), nil)
+    T.eq("HC5 superclass has no own __index", rawget(base, "__index"), nil)
+    T.eq("HC6 inherited member resolves through Class", obj.inherited, base.inherited)
+    T.eq("HC7 station adapter resolves own method through real helper", SA.classMethod(obj, "own"), cls.own)
+    T.eq("HC8 station adapter resolves inherited method through real helper", SA.classMethod(obj, "inherited"), base.inherited)
+    obj.own = function() return "instance" end
+    T.eq("HC9 class lookup skips the instance override", SA.classMethod(obj, "own"), cls.own)
+    T.eq("HC10 native-style base instance protects base table", getmetatable(setmetatable({}, baseMt)), base)
+end)
