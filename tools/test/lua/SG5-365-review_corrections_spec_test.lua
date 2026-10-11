@@ -394,13 +394,29 @@ group("B", function()
     show(false)
     T.ok("B4 the Next-action chip is not offered", c.el["rfFwAct2"].rfPivotChipLabel == nil)
     T.ok("B5 the Run-action chip is not offered", c.el["rfFwAct3"].rfPivotChipLabel == nil)
-    T.ok("B6 and the page says why instead of staying silent",
-        tostring(c.el["rfFwCmdBanner"].text):lower():find("unavailable") ~= nil)
+    T.ok("B6 withheld submission creates no command banner",
+        c.el["rfFwCmdBanner"].visible ~= true)
+    T.ok("B6b no internal submission code reaches the player",
+        tostring(c.el["rfFwCmdBanner"].text):find("NO_SUBMIT", 1, true) == nil)
 
     T.ok("B7 a key or controller press on the step chip refuses too",
         inProcess(m, SgRfPdaGuest.onActionActivate, 2) ~= true)
     T.ok("B8 and on the run chip",
         inProcess(m, SgRfPdaGuest.onActionActivate, 3) ~= true)
+    local published = m.stockGuard
+    local originalView, originalRequest = published.getClientView, published.requestView
+    for _, state in ipairs({ "WAITING", "UNAVAILABLE", "DENIED" }) do
+        published.getClientView = function()
+            return { state = state, usable = false, reason = "TEST_VIEW_STATE" }
+        end
+        published.requestView = function() return true end
+        show(true)
+        T.ok("B8 " .. state .. " offers no action chip",
+            c.el["rfFwAct3"].rfPivotChipLabel == nil)
+        T.ok("B8 " .. state .. " has no submission banner",
+            c.el["rfFwCmdBanner"].visible ~= true)
+    end
+    published.getClientView, published.requestView = originalView, originalRequest
     FSBaseMission.delete(m)
 end)
 

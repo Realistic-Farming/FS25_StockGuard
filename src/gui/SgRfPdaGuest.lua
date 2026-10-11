@@ -2001,7 +2001,8 @@ local function sitePickEntries()
             end
         end
     end
-    return entries, (#entries > 1) and nil or (blocked and blocked.reason or "SITE_LIST_EMPTY"), blocked
+    if #entries > 1 then return entries, nil, blocked end
+    return entries, (blocked and blocked.reason or "SITE_LIST_EMPTY"), blocked
 end
 
 --- Index of the live selection within the entry list. Falls back to FARM, never guesses a site.
@@ -2662,7 +2663,7 @@ paintCommandChrome = function(container)
     -- [REPAIR-365 major2] No action is offered at all unless a command can actually be
     -- sent: published submitCommand plus this view's own commandSessionId and nextSequence.
     -- Offering a chip that can only answer NO_SUBMIT is the defect being removed, so the
-    -- chips go and the reason is shown instead.
+    -- chips go. No submission is the normal withheld capability, not a player banner.
     local canSend, sendWhy = false, "NO_SUBMIT"
     if SGEscClientAdapter ~= nil and type(SGEscClientAdapter.canSubmit) == "function" then
         canSend, sendWhy = SGEscClientAdapter.canSubmit(g_currentMission)
@@ -2670,12 +2671,6 @@ paintCommandChrome = function(container)
     if not canSend then
         clearPivotBtn(container, "rfFwAct2")
         clearPivotBtn(container, "rfFwAct3")
-        local banner = findDescendant(container, "rfFwCmdBanner")
-        if banner ~= nil then
-            setText(banner, string.format(
-                tr("sg5_cmd_no_submit", "Actions unavailable here: %s"), tostring(sendWhy or "NO_SUBMIT")))
-            setVis(banner, true)
-        end
         return
     end
     if total > 1 then
