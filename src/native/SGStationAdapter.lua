@@ -94,11 +94,23 @@ local function hooksOf(hooks)
     return {}
 end
 
---- The method a class provides for `key`, read through the metatable at call time,
---- skipping any instance slot.
+--- The method a class provides for `key`, read at call time, skipping any
+--- instance slot.
+---
+--- RSF-F239. Class() sets mt.__metatable = members (shared/class.lua:15), so
+--- getmetatable(instance) hands back the CLASS TABLE and never the metatable. No
+--- engine class table carries an __index field of its own, and none inherits one,
+--- so reading mt.__index resolved NOTHING for any Class() object: every wrapper
+--- that reached here fell through to nil. Index the class table itself instead.
+--- Its own metatable carries __index = baseClass (class.lua:18), so a plain
+--- lookup finds an override and an inherited method alike. A shape whose
+--- metatable really is a metatable still has its __index honoured first, so a
+--- foreign object is unaffected.
 local function classMethod(obj, key)
     local mt = getmetatable(obj)
-    local index = mt ~= nil and mt.__index or nil
+    if type(mt) ~= "table" then return nil end
+    local index = rawget(mt, "__index")
+    if index == nil then index = mt end
     if type(index) == "table" then return index[key] end
     if type(index) == "function" then return index(obj, key) end
     return nil

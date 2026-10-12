@@ -86,7 +86,9 @@ local function newConnection(streamId, isServer)
         self.sent = self.sent + 1
         local s = NewStream()
         event:writeStream(s, self)
-        local class = getmetatable(event).__index
+        -- Class protects its instance metatable with the members table. The
+        -- event's exposed metatable is already its class in the engine shape.
+        local class = getmetatable(event)
         local received = class.emptyNew()
         inProcess(self.peerMission, received.readStream, received, s, self.peer)
     end
