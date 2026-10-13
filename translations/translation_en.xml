@@ -44,5 +44,18 @@
         <text name="sg4_reason_total_incomplete" text="The amounts do not add up to the whole recipe"/>
         <text name="sg4_reason_required_role_missing" text="A required ingredient is missing"/>
         <text name="sg4_reason_intent_unsupported" text="This recipe type does not support that use"/>
+        <text name="sg5_col_status" text="Status"/>
+        <text name="sg5_col_kind" text="Kind"/>
+        <text name="sg5_sheet_count_hint" text="%d items - scroll, or , and . to move"/>
+        <text name="sg5_detail_kind" text="Kind: %s"/>
+        <text name="sg5_detail_capacity" text="Capacity: %s"/>
+        <text name="sg5_detail_state" text="State: %s"/>
+        <text name="sg5_detail_amount" text="Amount: %s"/>
+        <text name="sg5_detail_knowledge" text="Knowledge: %s"/>
+        <text name="sg5_detail_where" text="Where: %s"/>
+        <text name="sg5_detail_actions" text="Actions: %s"/>
+        <text name="sg6_col_holders" text="Holders"/>
+        <text name="sg6_cell_holders" text="%d"/>
+        <text name="sg6_detail_estimate_unavailable" text="Sale estimate unavailable: it comes from Market Dynamics."/>
     </texts>
 </l10n>

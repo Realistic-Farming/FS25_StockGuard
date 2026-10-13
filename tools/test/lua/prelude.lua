@@ -59,6 +59,12 @@ function Class(...)
 	return mt
 end
 
+-- Engine GUI bases exist before mod source files load. Their methods are not
+-- exercised by the offline station tests; the tables preserve Class's real
+-- requirement that a declared base class is defined at load time.
+TabbedMenuFrameElement = TabbedMenuFrameElement or {}
+ScreenElement = ScreenElement or {}
+
 -- ── Event base + registration ──────────────────────────────
 Event = {}
 function Event.new(mt) return setmetatable({}, mt) end
