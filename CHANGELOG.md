@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0.0] - 2026-10-12
+
+> **This is not a final release.** It gives everyone, testers and players, new or returning, everything we have built so far, so nobody has to wait on an old version any longer. The Realistic Farming suite is far from done: we are still building and expanding every mod, and completing it could take months, possibly a year. Expect changes and rough edges along the way, and please report anything that looks wrong.
+
+Stock Guard is the suite's material foundation: it follows the actual grain, grass, straw, bales and ground material on your farm through harvesting, handling, storage and sale, so other Realistic Farming mods can read what a load really is and where it came from. Most of its work is behind the scenes; with Soil & Fertilizer installed you see it as crops, windrows, bales and piles that keep their condition.
+
+### Added
+- **Harvest:** a combine's cut becomes one tracked record of what it harvested (with Soil & Fertilizer, carrying the field's N, P, K and pH), and grain overloaded from a combine into a trailer keeps its history as one transfer. A combine's grain and straw still in the machine survive every save.
+- **Ground material:** material tipped onto the ground and moved by shovels, front loaders and levelers is tracked pixel by pixel and kept across a save, through smoothing, wheel tracks, field-tool clears and sowing. With Soil & Fertilizer, a pile keeps its age and wetness when it is picked up and put down again.
+- **Grass work:** mowers, tedders, rakes (towed ones too) and windrowers are followed from the mower to the windrow, and their unfinished swaths survive a save.
+- **Balers:** square and round balers keep the condition of what they baled in the chamber and the bale, an overflow carries into the next bale and survives a save, and a round bale takes its chamber's record when it drops. Non-stop balers are not tracked yet.
+- **Bales in the world** are tracked through a save, and a wrapped grass bale's record turns into silage when it ferments. Forage wagons and straw blowers are followed too.
+- **Stations:** selling and loading at stations settles as one transfer, and a converting unload is no longer recorded as a plain transfer.
+- **Groundwork, hidden for now:** food and feed quality records for harvests, mown grass and square bales, and a per-farm recipe library. Nothing changes on screen until the grading and recipe releases.
+
+### Fixed
+- Stocks are recognised again after a save and load and after quitting and relaunching the game (partly filled trailers, silos and combine buffers included), instead of being treated as unknown.
+- Stock pages are no longer empty in single player or on the hosting machine, and in multiplayer with Network Sync a joined player's choice of stock view reaches the server.
+- A failed ground-material capacity check shows a message and returns you to the menu instead of freezing the loading screen.
+- After the game reloads mods at the main menu, Stock Guard runs exactly one copy of itself.
+- Large fields' ground saves stay small, and every record still loads back exactly.
+
 ## [1.0.0.0] - 2026-09-18
 
 First public release.
