@@ -4,5 +4,45 @@
         <text name="sg6_capacity_refused" text="StockGuard tidak dapat menyiapkan kapasitas material untuk sesi ini: %s. Pemuatan dihentikan agar tidak ada barang yang salah dibaca. Periksa pilihan mod dan log."/>
         <text name="sg6_profile_mismatch" text="StockGuard: profil kapasitas material dan peta berbeda dari server. Dapatkan susunan yang cocok dan periksa log host."/>
         <text name="sg_site_purpose_yard" text="Halaman StockGuard"/>
+        <text name="sg3_reason_no_material" text="Tidak ada material"/>
+        <text name="sg3_reason_unsupported_material" text="Material ini tidak dinilai"/>
+        <text name="sg3_reason_unsupported_profile" text="Profil penilaian tidak didukung"/>
+        <text name="sg3_reason_origin_unproven" text="Asal tidak tercatat"/>
+        <text name="sg3_reason_soil_unavailable" text="Data tanah tidak tersedia saat panen"/>
+        <text name="sg3_reason_source_partial" text="Sumber panen hanya tercatat sebagian"/>
+        <text name="sg3_reason_maturity_unavailable" text="Kematangan tanaman saat panen tidak diketahui"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Asal tidak layak untuk pangan manusia"/>
+        <text name="sg3_reason_quality_partial" text="Kualitas hanya diketahui sebagian"/>
+        <text name="sg3_reason_quality_historical" text="Hanya catatan kualitas lama"/>
+        <text name="sg3_reason_condition_unavailable" text="Kondisi penyimpanan tidak tersedia"/>
+        <text name="sg3_reason_condition_pending" text="Kondisi penyimpanan masih tertunda"/>
+        <text name="sg3_reason_condition_condemned" text="Ditolak karena kondisi penyimpanan"/>
+        <text name="sg3_reason_condition_gap" text="Kondisi penyimpanan memiliki celah"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Kondisi dari mod lain tidak tercakup"/>
+        <text name="sg3_reason_process_pending" text="Pemrosesan masih tertunda"/>
+        <text name="sg3_reason_recipe_not_ready" text="Resep belum siap"/>
+        <text name="sg3_reason_grouped_portions" text="Dinilai per porsi"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Porsi memiliki nilai berbeda"/>
+        <text name="sg3_reason_source_changed" text="Stok berubah sejak dibaca"/>
+        <text name="sg3_reason_disclosure_denied" text="Tidak tersedia untuk Anda"/>
+        <text name="sg3_reason_profile_mismatch" text="Profil kualitas tidak cocok"/>
+        <text name="sg3_reason_composition_unknown" text="Komposisi tidak diketahui"/>
+        <text name="sg4_reason_library_loading" text="Memuat pustaka resep"/>
+        <text name="sg4_reason_library_unavailable" text="Pustaka resep tidak tersedia"/>
+        <text name="sg4_reason_library_not_owned" text="Pustaka resep ini milik pertanian lain"/>
+        <text name="sg4_reason_library_retired" text="Pustaka resep ini tidak digunakan lagi"/>
+        <text name="sg4_reason_library_full" text="Pustaka resep penuh"/>
+        <text name="sg4_reason_no_profile" text="Tidak ada jenis resep yang didukung"/>
+        <text name="sg4_reason_profile_absent" text="Jenis resep ini tidak tersedia"/>
+        <text name="sg4_reason_profile_unavailable" text="Jenis resep tidak dapat memakai resep ini"/>
+        <text name="sg4_reason_recipe_unknown" text="Resep tidak ditemukan"/>
+        <text name="sg4_reason_recipe_retired" text="Resep ini telah dihapus"/>
+        <text name="sg4_reason_recipe_stale" text="Resep ini telah berubah, muat ulang dan coba lagi"/>
+        <text name="sg4_reason_definition_invalid" text="Resep tidak valid"/>
+        <text name="sg4_reason_ingredient_invalid" text="Bahan tidak diizinkan di sini"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Jumlah di luar rentang yang diizinkan"/>
+        <text name="sg4_reason_total_incomplete" text="Jumlahnya tidak membentuk resep lengkap"/>
+        <text name="sg4_reason_required_role_missing" text="Bahan wajib tidak ada"/>
+        <text name="sg4_reason_intent_unsupported" text="Jenis resep ini tidak mendukung penggunaan tersebut"/>
     </texts>
 </l10n>

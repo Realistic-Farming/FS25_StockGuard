@@ -51,6 +51,10 @@ local nonempty = SGRecords.nonemptyString
 
 local function log(msg) print("[StockGuard] save: " .. tostring(msg)) end
 
+-- The load path's voice, so a restore repair greps as "[StockGuard] restore: ..." rather than
+-- under the save prefix (MAINTENANCE row 214, as #41 wrote it).
+local function logRestore(msg) print("[StockGuard] restore: " .. tostring(msg)) end
+
 function S.new(registry, operations, coordinator)
     local self = setmetatable({}, SGSave_mt)
     self.registry = registry
@@ -60,6 +64,7 @@ function S.new(registry, operations, coordinator)
     self.ledger = nil
     self.ledgerRegistered = false
     self.saveAttemptId = 0
+    self.openAttemptId = nil      -- SG2-4a: the native save attempt in progress, if any
     self.nativeSnapshotKey = nil
     self.loadEpoch = "1"
     self.sectionState = {}        -- sectionId -> { ready, reason, retained, payload, schemaVersion }
@@ -93,6 +98,14 @@ function S.validateEnvelope(e)
     end
     for id, sec in pairs(e.sections) do
         if type(sec) ~= "table" or not isInteger(sec.schemaVersion) then return nil, "SECTION_SHAPE:" .. tostring(id) end
+    end
+    -- [MAINTENANCE row 214] A save written before the fix can carry historical twins of live
+    -- stocks, which validateCore refuses on every load. Drop exactly those entries here, in
+    -- place, so the validation and the restore below both see the pruned list, as this function
+    -- already repairs e in place for a bad farmRestore proof.
+    local droppedTwins = SGOperations.dropHistoricalTwins(e.coreValues)
+    if droppedTwins > 0 then
+        logRestore("dropped " .. tostring(droppedTwins) .. " historical duplicates of live stocks")
     end
     local core, why = SGOperations.validateCore(e.coreValues)
     if core == nil then return nil, why end
@@ -175,7 +188,14 @@ function S:buildEnvelope(context)
         self.lastEnvelope = copy(self.retainedRaw)
         return self.lastEnvelope, { "RETAINED_RAW" }
     end
-    self.saveAttemptId = self.saveAttemptId + 1
+    if self.openAttemptId ~= nil then
+        -- SG2-4a: inside a native save attempt the envelope carries that attempt's id,
+        -- allocated from this same counter (openAttempt), so the ground descriptor and
+        -- the envelope name one attempt.
+        self.saveAttemptId = self.openAttemptId
+    else
+        self.saveAttemptId = self.saveAttemptId + 1
+    end
     self.nativeSnapshotKey = tostring(self.backendId or S.BACKEND_XML) .. ":" .. tostring(self.loadEpoch) .. ":" .. tostring(self.saveAttemptId)
     local e = {
         schemaVersion = S.SCHEMA_VERSION,
@@ -183,7 +203,7 @@ function S:buildEnvelope(context)
         saveAttemptId = self.saveAttemptId,
         nativeSnapshotKey = self.nativeSnapshotKey,
         initializedSections = {},
-        coreValues = self.operations:serializeCore(),
+        coreValues = self.operations:serializeCore(self:sectionOwnedCarriers()),
         sections = {},
         nativeAssociations = { saveAttemptId = self.saveAttemptId, nativeSnapshotKey = self.nativeSnapshotKey },
     }
@@ -225,7 +245,7 @@ function S:buildEnvelope(context)
                 e.sections[pl.spec.sectionId] = { schemaVersion = pl.spec.schemaVersion, payload = {} }
                 table.insert(e.initializedSections, pl.spec.sectionId)
             end
-            setPath(e.sections[pl.spec.sectionId].payload, pl.spec.collectionPath, self.operations:serializePending())
+            setPath(e.sections[pl.spec.sectionId].payload, pl.spec.collectionPath, self.operations:serializePending(self:sectionOwnedCarriers()))
         end
     end
     table.sort(e.initializedSections)
@@ -234,6 +254,38 @@ function S:buildEnvelope(context)
     end
     self.lastEnvelope = e
     return e, failed
+end
+
+--- SG2-4b: the carriers a registered section persists itself (its ownsCarrier), or nil
+--- when no section claims any. A claim that errors claims nothing.
+function S:sectionOwnedCarriers()
+    local claims = {}
+    for _, lease in self.registry:each(SGRegistry.KIND_SAVE_SECTION) do
+        if type(lease.spec.ownsCarrier) == "function" then claims[#claims + 1] = lease.spec.ownsCarrier end
+    end
+    if #claims == 0 then return nil end
+    return function(carrierKey)
+        for _, claim in ipairs(claims) do
+            local ok, owned = pcall(claim, carrierKey)
+            if ok and owned == true then return true end
+        end
+        return false
+    end
+end
+
+--- SG2-4a: a native save attempt allocates its id from the envelope's own counter, so
+--- ids stay monotonic whether or not an attempt is open, and buildEnvelope adopts it
+--- until closeAttempt.
+function S:openAttempt()
+    self.saveAttemptId = self.saveAttemptId + 1
+    self.openAttemptId = self.saveAttemptId
+    return self.openAttemptId
+end
+
+function S:closeAttempt(attemptId)
+    if self.openAttemptId == nil or self.openAttemptId ~= attemptId then return false end
+    self.openAttemptId = nil
+    return true
 end
 
 -- ---------------------------------------------------------
@@ -445,10 +497,17 @@ function S:stageLoad(payload, context)
     end
     self.loadedEnvelope = e
     self.saveAttemptId = math.max(self.saveAttemptId, e.saveAttemptId)
+    -- SG2-4a: a section coupled to a native image checks it names this attempt.
+    if type(context) == "table" then context.saveAttemptId = e.saveAttemptId end
     if e.farmRestore ~= nil then
         self.farmRestore = { receipts = copy(e.farmRestore.receipts), pendingUnits = copy(e.farmRestore.pendingUnits) }
     end
     result.core = self.operations:restoreCore(e.coreValues, context)
+    -- [MAINTENANCE row 206] The restore's counts, once per load: the line an in-game check
+    -- reads, since nothing in the game shows a stock's knowledge.
+    local rc = result.core or {}
+    log(string.format("restored stocks: %d reattached, %d mismatched (RESTORE_MISMATCH), %d kept as history, %d superseded",
+        rc.restored or 0, rc.unknown or 0, rc.historical or 0, rc.superseded or 0))
     -- Member sections as coupled dependency sets.
     local pending = {}
     for _, id in ipairs(e.initializedSections) do pending[id] = e.sections[id] end

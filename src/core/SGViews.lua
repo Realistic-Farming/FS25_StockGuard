@@ -25,6 +25,10 @@
 -- returned (never jumped over). An owner whose enumeration is missing,
 -- malformed or not READY is reported in ownerStates as explicitly
 -- unavailable, never as empty success.
+--
+-- RECIPE_LIBRARY (SG-1 :289, :342, :508; SG-4 :365-369) is the distinct projection of its one
+-- registered owner (SGRegistry:registerRecipeLibraryView), with its own schema and decoder: the
+-- route is checked before any version gate, and no library bytes pass the STOCK decoder.
 -- =========================================================
 
 SGViews = SGViews or {}
@@ -136,6 +140,14 @@ end
 -- ---------------------------------------------------------
 -- Capabilities
 -- ---------------------------------------------------------
+--- The library owner's own readiness, when it reports one (SG-4 :369: schema and readiness on the capability).
+local function libraryReadiness(lease)
+    if type(lease.spec.readiness) ~= "function" then return nil end
+    local ok, r = pcall(lease.spec.readiness)
+    if not ok or type(r) ~= "table" or type(r.state) ~= "string" then return { state = "ERROR", reasonCode = "READINESS_ERROR" } end
+    return { state = r.state, reasonCode = r.reasonCode }
+end
+
 function W:getCapabilities()
     local adapters, properties, owners = {}, {}, {}
     for id, lease in self.registry:each(SGRegistry.KIND_CARRIER_ADAPTER) do adapters[#adapters + 1] = { adapterId = id, version = lease.spec.version, carrierKinds = copy(lease.spec.carrierKinds) } end
@@ -146,6 +158,7 @@ function W:getCapabilities()
         if type(lease.spec.quoteAction) == "function" and type(lease.spec.validateQuote) == "function" and type(lease.spec.executeAction) == "function" then quoteReady = true end
     end
     local pendingReady = self.registry:count(SGRegistry.KIND_CARRIER_PENDING) > 0
+    local libraryLease = self.registry:libraryView()
     return {
         applicationSchema = W.APPLICATION,
         stockSchemaVersion = W.STOCK_SCHEMA_VERSION,
@@ -156,6 +169,8 @@ function W:getCapabilities()
         siteSchema = (self.sites ~= nil and self.sites.available) and SGSiteBinding.SCHEMA or nil,
         siteReasonCode = self.sites ~= nil and self.sites.reasonCode or "NOT_BOUND",
         quoteSchema = quoteReady and "SG_QUOTE_1" or nil,
+        recipeLibrary = libraryLease ~= nil and { ownerId = libraryLease.ownerId, schemaVersion = libraryLease.spec.schemaVersion, readiness = libraryReadiness(libraryLease) } or nil,
+        recipeLibraryReasonCode = libraryLease == nil and "RECIPE_LIBRARY_OWNER_ABSENT" or nil,
         carrierPendingSchema = pendingReady and SGOperations.PENDING_SCHEMA or nil,
         adapters = adapters, properties = properties, managementOwners = owners,
         ready = self.ready, reasonCode = self.ready and "READY" or self.reasonCode,
@@ -193,26 +208,43 @@ local function amountUnitToken(unit)
 end
 W.amountUnitToken = amountUnitToken
 
+--- The PROPERTY children of a STOCK row (SG-3 Part 1, Bob's SG-3 intake U2):
+---   * a stored record, as before;
+---   * an OWNER_RESOLVED property, resolved live through its owner (purpose PLAYER_VIEW, at one stable owner
+---     revision) where the material is resident, as readMaterial reads it; elsewhere its carried record, if any;
+---   * a disclosure that answers nil, "DISCLOSURE_DENIED" omits the child entirely: no identity or schema
+---     placeholder (SG-3 :47, :507). Any other refusal keeps the NOT_DISCLOSED placeholder.
 local function disclosedProperties(self, stock, actor, carrier)
     local out = {}
+    local records = {}
+    for pid, p in pairs(stock.properties) do records[pid] = p end
+    local cycle = {}
+    for pid, reg in self.registry:each(SGRegistry.KIND_PROPERTY) do
+        if reg.spec.residency == "OWNER_RESOLVED" and self.operations:isResident(reg, carrier) then
+            local live = self.operations:resolveResident(reg, stock, "PLAYER_VIEW", cycle)
+            if not (live.knowledge == "UNAVAILABLE" and live.reason == SGOperations.NOT_RESIDENT) then records[pid] = live end
+        end
+    end
     local pids = {}
-    for pid in pairs(stock.properties) do pids[#pids + 1] = pid end
+    for pid in pairs(records) do pids[#pids + 1] = pid end
     table.sort(pids)
     for _, pid in ipairs(pids) do
-        local p = stock.properties[pid]
+        local p = records[pid]
         local reg = self.registry:property(pid)
-        local disclosed = nil
+        local disclosed, denied = nil, false
         if reg ~= nil then
             local context = { purpose = "PLAYER_VIEW", trustedActorContext = copy(actor), carrierBinding = copy(carrier.binding), stockRef = self.operations:stockRef(stock) }
-            local ok, d = pcall(reg.spec.disclosure, context, copy(p))
+            local ok, d, why = pcall(reg.spec.disclosure, context, copy(p))
             if ok and type(d) == "table" and SGRecords.isPropertyRecord(d) then
                 disclosed = { propertyId = d.propertyId, schemaVersion = d.schemaVersion, producerId = d.producerId, propertyRevision = d.propertyRevision, knowledge = d.knowledge, knownAmount = d.knownAmount, basisAmount = d.basisAmount, amountUnit = d.amountUnit, payload = d.payload, reason = d.reason }
+            elseif ok and d == nil and why == "DISCLOSURE_DENIED" then
+                denied = true
             end
         end
-        if disclosed == nil then
+        if disclosed == nil and not denied then
             disclosed = { propertyId = pid, schemaVersion = p.schemaVersion, producerId = p.producerId, propertyRevision = p.propertyRevision, knowledge = "UNAVAILABLE", reason = reg and "NOT_DISCLOSED" or "PRODUCER_ABSENT" }
         end
-        out[#out + 1] = disclosed
+        if disclosed ~= nil then out[#out + 1] = disclosed end
     end
     return out
 end
@@ -264,14 +296,32 @@ local function carrierRow(self, carrier, actor)
     }
 end
 
+--- [MAINTENANCE row 238] The STOCK row's knowledge as this viewer may know it (SG-1 :255, :295; SG-3 :47,
+--- :505, :507: a withheld property leaves no trace). SG-1's stock.knowledge is derived from every record on
+--- the stock (SGOperations.knowledgeOf) and stays as it is for trusted reads (the sale facade, the settle).
+--- The row instead derives it from the children the row shows, a DISCLOSURE_DENIED property (omitted)
+--- counting for nothing, and carries over the inventory's own state, which SG-1 marks on the stock:
+---   * an unresolved settlement (SGOperations.settlementQualified): the stock UNAVAILABLE with a reason
+---     that every record carries too;
+---   * an unexplained delta: the reason UNEXPLAINED_DELTA, which the settle's UPDATE, BIRTH and REPLACE
+---     set, and reconcile's drift sets too since this row (never read from the records, which a hidden
+---     one would move: Bob's R-15).
+function W.rowKnowledge(stock, children)
+    local own = SGOperations.knowledgeOf({ properties = children or {} })
+    if SGOperations.settlementQualified(stock) then return "UNAVAILABLE" end
+    if stock.reason == "UNEXPLAINED_DELTA" and own == "KNOWN" then return "PARTIAL" end
+    return own
+end
+
 local function stockRow(self, stock, carrier, actor)
     local n = carrier.native or {}
     local navId, role = navigationOf(self, carrier)
+    local children = disclosedProperties(self, stock, actor, carrier)
     return {
         rowKind = "STOCK", stockRef = self.operations:stockRef(stock), carrierId = carrier.carrierId, quantityBasisKey = stock.quantityBasisKey,
         materialRef = copy(stock.materialRef), amount = stock.observedAmount, amountUnit = amountUnitToken(stock.amountUnit) or "UNAVAILABLE",
-        label = tostring(n.label or carrier.binding.profileId), positionKnown = n.x ~= nil, x = n.x, z = n.z, knowledge = stock.knowledge,
-        properties = disclosedProperties(self, stock, actor, carrier), navigationCarrierId = navId, navigationRole = role,
+        label = tostring(n.label or carrier.binding.profileId), positionKnown = n.x ~= nil, x = n.x, z = n.z, knowledge = W.rowKnowledge(stock, children),
+        properties = children, navigationCarrierId = navId, navigationRole = role,
         actions = actionsFor(self, "STOCK", stock.stockId, actor),
     }
 end
@@ -391,6 +441,51 @@ end
 -- ---------------------------------------------------------
 -- getManagementView
 -- ---------------------------------------------------------
+-- ---------------------------------------------------------
+-- RECIPE_LIBRARY: the one owner's view
+-- ---------------------------------------------------------
+--- SG-1 keeps the envelope: the route, availability, the requested selectionKey, and a viewKey over the
+--- actor, the selection, the access epoch and the owner's resolved libraryId. The owner supplies that
+--- libraryId, its own dataRevision (not a library edit revision) and the rows, which its validateRows
+--- must accept. No paging, no owner states. With no owner the route is UNAVAILABLE
+--- RECIPE_LIBRARY_OWNER_ABSENT; a non-READY answer carries no rows.
+function W:libraryView(actor, normalized, options, view)
+    view.pagingVersion, view.pageCursor, view.ownerStates = nil, nil, nil
+    local lease = self.registry:libraryView()
+    if lease == nil then
+        view.schemaVersion = nil
+        view.availability = "UNAVAILABLE"
+        view.reasonCode = "RECIPE_LIBRARY_OWNER_ABSENT"
+        return { state = "UNAVAILABLE", reason = view.reasonCode, view = view }
+    end
+    view.schemaVersion = lease.spec.schemaVersion
+    local ok, res = pcall(lease.spec.buildView, copy(actor), copy(normalized))
+    if not ok or type(res) ~= "table" or not W.AVAILABILITY[res.state] then
+        view.availability, view.reasonCode = "ERROR", "LIBRARY_VIEW_ERROR"
+        return { state = "ERROR", reason = view.reasonCode, view = view }
+    end
+    if res.state ~= "READY" then
+        view.availability = res.state
+        view.reasonCode = nonempty(res.reason, 128) and res.reason or res.state
+        return { state = res.state, reason = view.reasonCode, view = view }
+    end
+    local okV, valid = pcall(lease.spec.validateRows, copy(res.rows))
+    if not nonempty(res.libraryId, 128) or type(res.dataRevision) ~= "string" or type(res.rows) ~= "table" or not okV or valid ~= true then
+        view.availability, view.reasonCode = "ERROR", "LIBRARY_ROWS_MALFORMED"
+        return { state = "ERROR", reason = view.reasonCode, view = view }
+    end
+    view.libraryId = res.libraryId
+    view.dataRevision = res.dataRevision
+    view.viewKey = SGValues.canonicalKey({ binding = cursorBinding(self, actor, normalized, options), libraryId = res.libraryId, access = self.viewEpoch })
+    view.rows = copy(res.rows)
+    -- The LIBRARY row's actions are SG-1's ACTION children from the registered LIBRARY owners (SG-4 :381:
+    -- "Its actions include SAVE_RECIPE when admitted"), as a STOCK row's are.
+    for _, row in ipairs(view.rows) do
+        if row.rowKind == "LIBRARY" then row.actions = actionsFor(self, "LIBRARY", row.libraryId, actor) end
+    end
+    return { state = "READY", reason = nil, view = view }
+end
+
 function W:getManagementView(actor, selection, readOptions, trusted)
     local availability, reason = W.actorAvailability(actor)
     local route = type(selection) == "table" and selection.route or W.ROUTE_STOCK
@@ -410,11 +505,7 @@ function W:getManagementView(actor, selection, readOptions, trusted)
         view.reasonCode = self.reasonCode
         return { state = "WAITING", reason = self.reasonCode, view = view }
     end
-    if normalized.route == W.ROUTE_RECIPES then
-        view.availability = "UNAVAILABLE"
-        view.reasonCode = "RECIPE_LIBRARY_OWNER_ABSENT"
-        return { state = "UNAVAILABLE", reason = view.reasonCode, view = view }
-    end
+    if normalized.route == W.ROUTE_RECIPES then return self:libraryView(actor, normalized, options, view) end
     local binding = cursorBinding(self, actor, normalized, options)
     view.viewKey = SGValues.canonicalKey({ binding = binding, access = self.viewEpoch })
     local position = { phase = "CARRIERS", after = nil, ownerIndex = 1, ownerCursor = nil, retained = {} }
@@ -632,6 +723,11 @@ function W.decodeView(tokens)
     if why ~= nil or type(record) ~= "table" then return nil, why or "MALFORMED", false end
     if record.application ~= W.APPLICATION then return nil, "UNSUPPORTED_APPLICATION_VERSION", true end
     if record.route ~= W.ROUTE_STOCK then return nil, "UNSUPPORTED_ROUTE", true end
+    return W.decodeStockRecord(record)
+end
+
+--- The STOCK route's checks on a decoded record (W.decodeView's own, after its route gate).
+function W.decodeStockRecord(record)
     if record.schemaVersion ~= W.STOCK_SCHEMA_VERSION then return nil, "UNSUPPORTED_APPLICATION_VERSION", true end
     if not W.AVAILABILITY[record.availability] then return nil, "MALFORMED", false end
     if type(record.viewKey) ~= "string" or type(record.dataRevision) ~= "string" or type(record.selectionKey) ~= "string" then return nil, "MALFORMED", false end
@@ -653,5 +749,32 @@ function W.decodeView(tokens)
         if record.rows ~= nil and #record.rows > 0 then return nil, "PRIVATE_ROWS_ON_NON_READY", false end
         if record.commandSessionId ~= nil or record.nextPageCursor ~= nil or record.pageCursor ~= nil then return nil, "CREDENTIALS_ON_NON_READY", false end
     end
+    return record, nil, false
+end
+
+--- Decode a publication for the route it arrived on (SG-1 :508: the route selects the decoder). The
+--- route is checked before either route's version gate. STOCK takes W.decodeView's checks unchanged;
+--- RECIPE_LIBRARY takes its registered owner's schema and validateRows, so a READY library view with
+--- no owner, or of another schema, is TERMINAL before any row is read. Returns view or nil, reason, terminal.
+function W:decodeRouteView(tokens, route)
+    route = route or W.ROUTE_STOCK
+    local record, why = SGValues.decode(tokens)
+    if why ~= nil or type(record) ~= "table" then return nil, why or "MALFORMED", false end
+    if record.application ~= W.APPLICATION then return nil, "UNSUPPORTED_APPLICATION_VERSION", true end
+    if record.route ~= route then return nil, "UNSUPPORTED_ROUTE", true end
+    if route == W.ROUTE_STOCK then return W.decodeStockRecord(record) end
+    if route ~= W.ROUTE_RECIPES then return nil, "UNSUPPORTED_ROUTE", true end
+    if not W.AVAILABILITY[record.availability] or record.selectionKind ~= "LIBRARY" then return nil, "MALFORMED", false end
+    if type(record.viewKey) ~= "string" or type(record.dataRevision) ~= "string" or type(record.selectionKey) ~= "string" then return nil, "MALFORMED", false end
+    if record.availability ~= "READY" then
+        if record.rows ~= nil and #record.rows > 0 then return nil, "PRIVATE_ROWS_ON_NON_READY", false end
+        if record.commandSessionId ~= nil then return nil, "CREDENTIALS_ON_NON_READY", false end
+        return record, nil, false
+    end
+    local lease = self.registry ~= nil and self.registry:libraryView() or nil
+    if lease == nil or record.schemaVersion ~= lease.spec.schemaVersion then return nil, "UNSUPPORTED_APPLICATION_VERSION", true end
+    if not nonempty(record.libraryId, 128) or type(record.rows) ~= "table" then return nil, "MALFORMED", false end
+    local ok, valid = pcall(lease.spec.validateRows, copy(record.rows))
+    if not ok or valid ~= true then return nil, "MALFORMED_ROW", false end
     return record, nil, false
 end

@@ -27,6 +27,8 @@ StockGuardModDirectory = StockGuardModDirectory
 StockGuardModName = StockGuardModName or g_currentModName or "FS25_StockGuard"
 local modDirectory = StockGuardModDirectory
 
+-- MAINTENANCE row 187: one rebindable hook per engine method, before every module that hooks.
+source(modDirectory .. "src/core/SGClassHook.lua")
 source(modDirectory .. "src/capacity/SGSha256.lua")
 source(modDirectory .. "src/capacity/SGCanonicalProfile.lua")
 source(modDirectory .. "src/capacity/SGWireFormats.lua")
@@ -45,14 +47,61 @@ source(modDirectory .. "src/core/SGTransport.lua")
 source(modDirectory .. "src/StockGuard.lua")
 
 -- SG2-1 native kernel: operation context, captured work-area installer, Storage
--- brackets, FillUnit observer, the Storage and FillUnit carrier adapters and the
--- server host that wires them to the mission handle.
+-- brackets, FillUnit observer, the one native carrier adapter (storage and fill-unit
+-- kinds, SG2-1b) and the server host that wires them to the mission handle.
 source(modDirectory .. "src/native/SGOperationContext.lua")
 source(modDirectory .. "src/native/SGWorkAreaInstaller.lua")
 source(modDirectory .. "src/native/SGStorageBracket.lua")
 source(modDirectory .. "src/native/SGFillUnitObserver.lua")
 source(modDirectory .. "src/native/SGNativeAdapters.lua")
+source(modDirectory .. "src/native/SGStationAdapter.lua")
+source(modDirectory .. "src/native/SGDischargeCapture.lua")
+source(modDirectory .. "src/native/SGNativeSale.lua")
+source(modDirectory .. "src/native/SGCutState.lua")
+source(modDirectory .. "src/native/SGHarvestCapture.lua")
+source(modDirectory .. "src/native/SGCombineBufferSave.lua")
+-- SG2-4a: SG_NATIVE_MATERIAL_SAVE_V1 (the native save boundary) and the ground kind with its save.
+source(modDirectory .. "src/native/SGNativeMaterialSave.lua")
+source(modDirectory .. "src/native/SGGround.lua")
+-- SG2-4b: the ground cell sampler and the ground observer (the line bracket, the tip, the deferrals).
+source(modDirectory .. "src/native/SGGroundSampler.lua")
+source(modDirectory .. "src/native/SGGroundObserver.lua")
+-- SG2-4c: the Soil caller, ground condition for the line bracket's framed calls.
+source(modDirectory .. "src/native/SGSoilCondition.lua")
+-- SG2-5d: the collection seal and receipt store (StockGuard is the collection's producer).
+source(modDirectory .. "src/native/SGCollectionSeal.lua")
+source(modDirectory .. "src/native/SGGroundBrush.lua")
+source(modDirectory .. "src/native/SGGroundArea.lua")
+-- SG2-5bc-save: the Tedder's and the Mower's remainders survive a save with their StockGuard entries.
+source(modDirectory .. "src/native/SGFieldToolBufferSave.lua")
+-- SG2-5g: a straw blower's loaded bale and its fill unit as one quantity (NATIVE_STRAW_BLOWER_V1).
+source(modDirectory .. "src/native/SGStrawBlower.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
+-- SG-3 Part 2.1: the food and feed grading member (profiles, the pure evaluator, the stored
+-- qualityBasisV1 producer, the derived sg3.assessments, and the member that registers them).
+source(modDirectory .. "src/sg3/SG3Profiles.lua")
+source(modDirectory .. "src/sg3/SG3Evaluator.lua")
+source(modDirectory .. "src/sg3/SG3Quality.lua")
+source(modDirectory .. "src/sg3/SG3Assessments.lua")
+source(modDirectory .. "src/sg3/SG3Condition.lua")   -- SG-3 Part 3: SOIL_BALE_CONDITION_V1, the bale condition join
+source(modDirectory .. "src/sg3/SG3.lua")
+-- SG-4 Part 2a: the recipe library member (the store, the preparation profile registry, the LIBRARY owner and
+-- the RECIPE_LIBRARY view's rows). The native mixer profile is Part 2b.
+source(modDirectory .. "src/sg4/SG4Schema.lua")
+source(modDirectory .. "src/sg4/SG4Profiles.lua")
+source(modDirectory .. "src/sg4/SG4Library.lua")
+source(modDirectory .. "src/sg4/SG4Owner.lua")
+source(modDirectory .. "src/sg4/SG4.lua")
+
+-- EP-1 chemical station: role slots, the operator address, the WIP transfer route
+-- and the sale gate. These four shipped in the zip but were never sourced, so the
+-- globals did not exist in game and nothing could reach them. They are pure Lua
+-- tables of functions with no load-time engine calls and no dependency on each
+-- other, so this only makes the globals exist; no caller is wired up here.
+source(modDirectory .. "src/placeables/ChemicalStationRoles.lua")
+source(modDirectory .. "src/placeables/ChemicalStationAddress.lua")
+source(modDirectory .. "src/placeables/ChemicalStationWipRoute.lua")
+source(modDirectory .. "src/placeables/ChemicalStationSaleGate.lua")
 
 -- One controller for the process; the unload hook resets it per mission.
 StockGuardCapacity = StockGuardCapacity or SGCapacity.new()
@@ -67,9 +116,14 @@ local function onMissionLoad(mission)
         sg:installFinishedLoadingObserver()
     end
 end
-if Mission00 ~= nil and Mission00.load ~= nil and not SGCapacity._missionLoadAppended then
-    SGCapacity._missionLoadAppended = true   -- once per process, even if this file is re-sourced
-    Mission00.load = Utils.appendedFunction(Mission00.load, onMissionLoad)
+-- MAINTENANCE row 187: every engine hook below is one SGClassHook record per process. A
+-- mods reload sources this file again (on PC into a fresh environment, mods.lua:482-493),
+-- and each install REBINDS its record, so one copy runs, this file's newest. A record is
+-- never an Utils.appendedFunction closure: those cannot be unlinked once made.
+StockGuardHooks = StockGuardHooks or {}
+StockGuardHooks.ID = "stockGuardMain"
+if Mission00 ~= nil and Mission00.load ~= nil then
+    SGClassHook.append(Mission00, "load", StockGuardHooks.ID, onMissionLoad, StockGuard)
 end
 
 local function stockGuardOf(mission)
@@ -77,58 +131,103 @@ local function stockGuardOf(mission)
     return StockGuard.hostOf(mission)
 end
 
---- SG2-1: the native kernel host, server only. Adapters register before the
---- restore-complete barrier, which enumerates them; the class hooks install once
+--- SG2-1: the native kernel host, server only. The native adapter registers before
+--- the restore-complete barrier, which enumerates it; the class hooks install once
 --- per process and dispatch to the current host.
 local function installNativeKernel(mission)
     if mission == nil or mission.stockGuard == nil or type(mission.getIsServer) ~= "function" or not mission:getIsServer() then return end
-    SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem })
+    SGNativeHost.installClassHooks({ Storage = Storage, StorageSystem = StorageSystem, PlaceableSystem = PlaceableSystem, VehicleSystem = VehicleSystem,
+        Cutter = Cutter, Combine = Combine, FSDensityMapUtil = FSDensityMapUtil, SavegameController = SavegameController,
+        Dischargeable = Dischargeable, Leveler = Leveler, Shovel = Shovel, WheelDestruction = WheelDestruction, Baler = Baler,
+        Tedder = Tedder, Mower = Mower, Bale = Bale, ForageWagon = ForageWagon, StrawBlower = StrawBlower })
     local host = SGNativeHost.new(mission.stockGuard, {
         placeables = function() return mission.placeableSystem ~= nil and mission.placeableSystem.placeables or {} end,
         vehicles = function() return mission.vehicleSystem ~= nil and mission.vehicleSystem.vehicles or {} end,
+        -- SG2 bale family, part 2a: the item system the world bale kind resolves and enumerates through.
+        items = function() return mission.itemSystem end,
+        storageSystem = function() return mission.storageSystem end,
+        -- SG2-4b: the ground of this mission (attached below), for the ground carrier kind.
+        ground = function() local sg = stockGuardOf(mission) return sg ~= nil and sg.ground or nil end,
+        -- SG2-5d-b: the seal store the Baler's add seals into (SGCollectionSeal, on the StockGuard host).
+        collectionSeals = function() local sg = stockGuardOf(mission) return sg ~= nil and sg.collectionSeals or nil end,
     })
     local ok, why = host:install()
-    print("[StockGuard] native kernel " .. (ok and "installed: Storage and FillUnit adapters registered" or ("not installed: " .. tostring(why))))
+    print("[StockGuard] native kernel " .. (ok and "installed: native carrier adapter registered (storage and fill-unit kinds)" or ("not installed: " .. tostring(why))))
+    -- SG-3 Part 2.1: the grading member registers its properties on the same handle, server only.
+    if SG3 ~= nil then
+        local member, whySG3 = SG3.install(mission.stockGuard)
+        if member == nil then print("[StockGuard] SG-3: not installed: " .. tostring(whySG3)) end
+    end
+    -- SG-4 Part 2a: the recipe library member, server only, before the restore barrier so a saved library
+    -- finds its section.
+    if SG4 ~= nil then
+        local member4, whySG4 = SG4.install(mission.stockGuard, stockGuardOf(mission))
+        if member4 == nil then print("[StockGuard] SG-4: not installed: " .. tostring(whySG4)) end
+    end
+    -- SG2-4a: the ground section and SG2's own save participant, then the boundary goes live.
+    local sg = stockGuardOf(mission)
+    -- SG2-5a: a Windrower work area's per-call retirements keep a budget of their own, so they
+    -- never evict a silo's or a trailer's history (SG-2 :259; Bob's 5a ruling, condition a).
+    if sg ~= nil and sg.operations ~= nil and SGNativeAdapters ~= nil then
+        sg.operations:setRetiredClass("windrowerArea", SGNativeAdapters.isWindrowerAreaKey)
+        -- SG2-5b: every emptying drop of a Tedder buffer retires a stock (Bob's 5b Q1).
+        sg.operations:setRetiredClass("tedderBuffer", SGNativeAdapters.isTedderBufferKey)
+        -- SG2-5c: so does every emptying drop of a Mower buffer (Bob's 5c ruling, condition 1).
+        sg.operations:setRetiredClass("mowerBuffer", SGNativeAdapters.isMowerBufferKey)
+        -- SG2-5d-b: every Baler tick retires a pickup stock, and an overflow retires at each overwrite.
+        sg.operations:setRetiredClass("balerPickup", SGNativeAdapters.isBalerPickupKey)
+        sg.operations:setRetiredClass("balerOverflow", SGNativeAdapters.isBalerOverflowKey)
+        -- SG2-5f: a ForageWagon buffer's stock retires at almost every fill (Bob's 5f R-15).
+        sg.operations:setRetiredClass("forageBuffer", SGNativeAdapters.isForageBufferKey)
+        -- SG2 bale family, part 2a: every deleted world bale retires a stock; a farm's bales keep their own budget.
+        sg.operations:setRetiredClass("bale", SGNativeAdapters.isBaleKey)
+    end
+    if sg ~= nil and SGGround ~= nil then
+        local ground, whyGround = SGGround.attach(sg)
+        print("[StockGuard] native material save " .. (ground ~= nil and ("live: " .. SGNativeMaterialSave.PROFILE .. ", sg2Ground participant registered") or ("not live: " .. tostring(whyGround))))
+    end
 end
 
-StockGuardHooks = StockGuardHooks or {}
-if not StockGuardHooks.installed then
-    StockGuardHooks.installed = true
+do
     if Mission00 ~= nil and Mission00.loadMission00Finished ~= nil then
-        Mission00.loadMission00Finished = Utils.appendedFunction(Mission00.loadMission00Finished, function(mission)
+        SGClassHook.append(Mission00, "loadMission00Finished", StockGuardHooks.ID, function(mission)
             local sg = stockGuardOf(mission)
             if sg ~= nil then
                 pcall(sg.onLoadMission00Finished, sg)
+                -- SG-4 Part 2a: a client decodes the recipe library's rows with the server's own check.
+                if SG4 ~= nil and not sg:isServer() then pcall(SG4.installClient, mission.stockGuard) end
                 local ok, err = pcall(installNativeKernel, mission)
                 if not ok then print("[StockGuard] native kernel install failed: " .. tostring(err)) end
             end
-        end)
+        end, StockGuard)
     end
     if FSBaseMission ~= nil and FSBaseMission.delete ~= nil then
-        FSBaseMission.delete = Utils.prependedFunction(FSBaseMission.delete, function(mission)
+        SGClassHook.prepend(FSBaseMission, "delete", StockGuardHooks.ID, function(mission)
             if SGNativeHost ~= nil and SGNativeHost.current ~= nil then pcall(SGNativeHost.current.teardown, SGNativeHost.current) end
+            if SG3 ~= nil then pcall(SG3.teardown, mission.stockGuard) end
+            if SG4 ~= nil then pcall(SG4.teardown, mission.stockGuard) end
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.delete, sg) end
-        end)
+        end, StockGuard)
     end
     if FSBaseMission ~= nil and FSBaseMission.update ~= nil then
-        FSBaseMission.update = Utils.appendedFunction(FSBaseMission.update, function(mission, dt)
+        SGClassHook.append(FSBaseMission, "update", StockGuardHooks.ID, function(mission, dt)
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.update, sg, dt) end
             if SGNativeHost ~= nil and SGNativeHost.current ~= nil and sg ~= nil then pcall(SGNativeHost.current.update, SGNativeHost.current, dt) end
-        end)
+        end, StockGuard)
     end
     if FSBaseMission ~= nil and FSBaseMission.onConnectionClosed ~= nil then
-        FSBaseMission.onConnectionClosed = Utils.prependedFunction(FSBaseMission.onConnectionClosed, function(mission, connection, reason)
+        SGClassHook.prepend(FSBaseMission, "onConnectionClosed", StockGuardHooks.ID, function(mission, connection, reason)
             local sg = stockGuardOf(mission)
             if sg ~= nil then pcall(sg.onConnectionClosed, sg, connection) end
-        end)
+        end, StockGuard)
     end
     if FSCareerMissionInfo ~= nil and FSCareerMissionInfo.saveToXMLFile ~= nil then
-        FSCareerMissionInfo.saveToXMLFile = Utils.appendedFunction(FSCareerMissionInfo.saveToXMLFile, function(missionInfo)
+        SGClassHook.append(FSCareerMissionInfo, "saveToXMLFile", StockGuardHooks.ID, function(missionInfo)
             local sg = stockGuardOf(g_currentMission)
             if sg ~= nil then pcall(sg.onSaveToXML, sg, missionInfo) end
-        end)
+        end, StockGuard)
     end
 end
 

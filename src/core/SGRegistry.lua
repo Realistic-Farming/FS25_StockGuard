@@ -9,7 +9,8 @@
 -- or transmitted.
 --
 -- Registrations: registerCarrierAdapter, registerProperty, registerConsumer,
--- registerManagementOwner, registerSaveSection, registerCarrierPending.
+-- registerManagementOwner, registerSaveSection, registerCarrierPending,
+-- registerRecipeLibraryView.
 -- Specs are trusted initialization-time integration code; validation here
 -- catches missing callbacks and bad shapes, not hostile Lua.
 -- =========================================================
@@ -24,6 +25,7 @@ G.KIND_CONSUMER = "CONSUMER"
 G.KIND_MANAGEMENT = "MANAGEMENT_OWNER"
 G.KIND_SAVE_SECTION = "SAVE_SECTION"
 G.KIND_CARRIER_PENDING = "CARRIER_PENDING"
+G.KIND_LIBRARY_VIEW = "RECIPE_LIBRARY_VIEW"
 
 G.OPERATION_KINDS = { BIRTH = true, TRANSFER = true, MIX = true, CONVERT = true, REMOVE = true, REBIND = true }
 G.TARGET_KINDS = { CARRIER = true, STOCK = true, PROCESS = true, LIBRARY = true }
@@ -124,7 +126,8 @@ function G:registerCarrierAdapter(adapterId, spec)
     if not isFn(spec.resolveCarrier) or not isFn(spec.readNativeState) or not isFn(spec.enumerateCarriers) or not isFn(spec.hasAccess) then
         return nil, "CALLBACKS"
     end
-    if not optFn(spec.resolveAlias) or not optFn(spec.restoreBinding) or not optFn(spec.onCarrierBindingChanged) or not optFn(spec.getNavigationCarrierId) then
+    if not optFn(spec.resolveAlias) or not optFn(spec.restoreBinding) or not optFn(spec.onCarrierBindingChanged) or not optFn(spec.getNavigationCarrierId)
+       or not optFn(spec.restoredQuantityImage) then
         return nil, "OPTIONAL_CALLBACKS"
     end
     return issue(self, G.KIND_CARRIER_ADAPTER, adapterId, spec)
@@ -142,6 +145,11 @@ function G:registerProperty(propertyId, spec)
     if spec.applicability ~= nil and type(spec.applicability) ~= "table" then return nil, "APPLICABILITY" end
     if not isFn(spec.validate) or not isFn(spec.combine) or not isFn(spec.transform) or not isFn(spec.disclosure) then return nil, "CALLBACKS" end
     if spec.residency == "OWNER_RESOLVED" and (not isFn(spec.resolveResident) or not isFn(spec.getResidentRevision)) then return nil, "RESIDENT_CALLBACKS" end
+    -- SG-3 Part 1 (Bob's SG-3 intake, U1; SG-1 :253-255, :285; SG-3 :98-100): a STORED property may declare
+    -- that it interprets a genuine birth (birth = true); settle then calls its transform on each candidate born
+    -- from creation slots (SGOperations interpretDestination). Optional, a boolean, STORED only.
+    if spec.birth ~= nil and type(spec.birth) ~= "boolean" then return nil, "BIRTH" end
+    if spec.birth == true and spec.residency ~= "STORED" then return nil, "BIRTH_RESIDENCY" end
     spec = shallow(spec)
     local causal = spec.validateCause ~= nil or spec.transformCausalState ~= nil or spec.compactCausalState ~= nil or spec.causal == true
     if causal and not (isFn(spec.validateCause) and isFn(spec.transformCausalState) and isFn(spec.compactCausalState)) then
@@ -234,6 +242,8 @@ function G:registerSaveSection(sectionId, spec)
     if not positiveInt(spec.schemaVersion) then return nil, "SCHEMA_VERSION" end
     if spec.dependencies ~= nil and not stringList(spec.dependencies) then return nil, "DEPENDENCIES" end
     if not isFn(spec.serialize) or not isFn(spec.stageLoad) or not isFn(spec.commitLoad) or not isFn(spec.clearReadiness) then return nil, "CALLBACKS" end
+    -- SG2-4b: a section may persist a set of carriers itself (ownsCarrier(carrierKey)).
+    if not optFn(spec.ownsCarrier) then return nil, "CALLBACKS" end
     if spec.farmRestorePolicy ~= nil and not G.FARM_RESTORE_POLICY[spec.farmRestorePolicy] then return nil, "FARM_RESTORE_POLICY" end
     -- An undeclared farm-restore policy stays undeclared: under an actual
     -- conversion that section is retained until its owner supplies the contract.
@@ -254,6 +264,29 @@ function G:registerCarrierPending(ownerId, spec)
     if not optFn(spec.disclosePending) then return nil, "OPTIONAL_CALLBACKS" end
     if self:count(G.KIND_CARRIER_PENDING) > 0 then return nil, "ONE_COLLECTION" end
     return issue(self, G.KIND_CARRIER_PENDING, ownerId, spec)
+end
+
+-- ---------------------------------------------------------
+-- registerRecipeLibraryView(ownerId, spec)
+-- ---------------------------------------------------------
+--- The RECIPE_LIBRARY route's one owner (SG-1 :289, "the distinct SG-4 projection and decoder").
+--- spec = { version, schemaVersion, buildView, validateRows }: the server builds the route's rows with
+--- buildView(actor, normalizedSelection) -> { state, reason?, libraryId?, dataRevision?, rows? }, and
+--- both sides check them with validateRows(rows) -> true or false, reason before a view is published or
+--- applied, so a client registers the owner too. schemaVersion is the route's own application schema.
+function G:registerRecipeLibraryView(ownerId, spec)
+    if not nonempty(ownerId, 64) then return nil, "INVALID_ID" end
+    if type(spec) ~= "table" then return nil, "INVALID_SPEC" end
+    if not positiveInt(spec.version) or not positiveInt(spec.schemaVersion) then return nil, "VERSION" end
+    if not isFn(spec.buildView) or not isFn(spec.validateRows) then return nil, "CALLBACKS" end
+    if self:count(G.KIND_LIBRARY_VIEW) > 0 then return nil, "LIBRARY_VIEW_PRESENT" end
+    return issue(self, G.KIND_LIBRARY_VIEW, ownerId, spec)
+end
+
+--- The live RECIPE_LIBRARY owner's lease, or nil.
+function G:libraryView()
+    for _, lease in self:each(G.KIND_LIBRARY_VIEW) do return lease end
+    return nil
 end
 
 -- ---------------------------------------------------------

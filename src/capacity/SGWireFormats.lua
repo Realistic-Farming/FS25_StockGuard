@@ -85,11 +85,11 @@ end
 -- Installation (native classes, once per process, active only when READY)
 -- =========================================================
 local ctl = nil   -- the capacity controller (width and registry facts)
--- Class.method -> the function this module installed. On the global table: a
--- mods-set change at the main menu re-sources this file into the same mod
--- environment (mods.lua:431 reuses _G[modName]) while _installed stays true,
--- so a file-local map would come back empty and verifyInstalled would see
--- nothing. The map, like the flag, survives the re-source.
+-- Class.method -> the wrapper on the class (its SGClassHook trampoline, the same
+-- function for the whole process). A mods-set change at the main menu re-sources this
+-- file: into the SAME environment on console (mods.lua:483-485) but into a FRESH one on
+-- PC (:482, :489-493), where this map and every flag start over. So install always
+-- rebinds the records and refills the map from them (MAINTENANCE row 187).
 SGWireFormats._ours = SGWireFormats._ours or {}
 local ours = SGWireFormats._ours
 
@@ -118,13 +118,15 @@ local function liveState(connection, what)
 end
 SGWireFormats.liveState = liveState
 
---- Bind the controller and replace the native pairs. Safe to call once per
---- process (the flag lives on the global table, so a re-source cannot stack).
+--- Bind the controller and replace the native pairs: one SGClassHook record per pair for
+--- the process, rebound by every call, so the pairs that run are always this module's,
+--- reading this controller, and never two stacked copies (MAINTENANCE row 187).
+SGWireFormats.HOOK_ID = "wireFormats"
 function SGWireFormats.install(controller)
     ctl = controller
-    if SGWireFormats._installed then return true end
     if SellingStation == nil or ProductionPoint == nil or Storage == nil then return false end
     SGWireFormats._installed = true
+    local ID = SGWireFormats.HOOK_ID
 
     -- ---------------- SellingStation ----------------
     local function writePriceList(self, streamId, connection)
@@ -163,9 +165,7 @@ function SGWireFormats.install(controller)
         end
         return true
     end
-    local sellRead, sellWrite = SellingStation.readStream, SellingStation.writeStream
-    local sellReadU, sellWriteU = SellingStation.readUpdateStream, SellingStation.writeUpdateStream
-    SellingStation.readStream = function(self, streamId, connection)
+    SGClassHook.wrap(SellingStation, "readStream", ID, function(sellRead, self, streamId, connection)
         local st = liveState(connection, "SellingStation.readStream")
         if st == "inactive" then return sellRead(self, streamId, connection) end
         if st == "refused" then return end
@@ -173,23 +173,23 @@ function SGWireFormats.install(controller)
         self.moneyChangeType = MoneyType.registerWithId(moneyTypeId, "soldMaterials", "finance_other")
         SellingStation:superClass().readStream(self, streamId, connection)
         if connection:getIsServer() then readPriceList(self, streamId, connection) end
-    end
-    SellingStation.writeStream = function(self, streamId, connection)
+    end, SGWireFormats)
+    SGClassHook.wrap(SellingStation, "writeStream", ID, function(sellWrite, self, streamId, connection)
         local st = liveState(connection, "SellingStation.writeStream")
         if st == "inactive" then return sellWrite(self, streamId, connection) end
         if st == "refused" then return end
         streamWriteUInt16(streamId, self.moneyChangeType.id)
         SellingStation:superClass().writeStream(self, streamId, connection)
         if not connection:getIsServer() then writePriceList(self, streamId, connection) end
-    end
-    SellingStation.readUpdateStream = function(self, streamId, timestamp, connection)
+    end, SGWireFormats)
+    SGClassHook.wrap(SellingStation, "readUpdateStream", ID, function(sellReadU, self, streamId, timestamp, connection)
         local st = liveState(connection, "SellingStation.readUpdateStream")
         if st == "inactive" then return sellReadU(self, streamId, timestamp, connection) end
         if st == "refused" then return end
         SellingStation:superClass().readUpdateStream(self, streamId, timestamp, connection)
         if connection:getIsServer() and streamReadBool(streamId) then readPriceList(self, streamId, connection) end
-    end
-    SellingStation.writeUpdateStream = function(self, streamId, connection, dirtyMask)
+    end, SGWireFormats)
+    SGClassHook.wrap(SellingStation, "writeUpdateStream", ID, function(sellWriteU, self, streamId, connection, dirtyMask)
         local st = liveState(connection, "SellingStation.writeUpdateStream")
         if st == "inactive" then return sellWriteU(self, streamId, connection, dirtyMask) end
         if st == "refused" then return end
@@ -198,14 +198,13 @@ function SGWireFormats.install(controller)
             local flag = self.unloadingStationDirtyFlag
             if streamWriteBool(streamId, bit32.band(dirtyMask, flag) ~= 0) then writePriceList(self, streamId, connection) end
         end
-    end
-    ours["SellingStation.readStream"] = SellingStation.readStream
-    ours["SellingStation.writeStream"] = SellingStation.writeStream
-    ours["SellingStation.readUpdateStream"] = SellingStation.readUpdateStream
-    ours["SellingStation.writeUpdateStream"] = SellingStation.writeUpdateStream
+    end, SGWireFormats)
+    ours["SellingStation.readStream"] = SGClassHook.record(SellingStation, "readStream", ID).wrapper
+    ours["SellingStation.writeStream"] = SGClassHook.record(SellingStation, "writeStream", ID).wrapper
+    ours["SellingStation.readUpdateStream"] = SGClassHook.record(SellingStation, "readUpdateStream", ID).wrapper
+    ours["SellingStation.writeUpdateStream"] = SGClassHook.record(SellingStation, "writeUpdateStream", ID).wrapper
 
     -- ---------------- ProductionPoint (two leading lists) ----------------
-    local prodRead, prodWrite = ProductionPoint.readStream, ProductionPoint.writeStream
     local function writeIdSet(streamId, set, connection, what)
         local rows = {}
         for id in pairs(set) do rows[#rows + 1] = { id = id } end
@@ -226,7 +225,7 @@ function SGWireFormats.install(controller)
         if not ok then refuse(what, why, connection) return nil end
         return rows
     end
-    ProductionPoint.readStream = function(self, streamId, connection)
+    SGClassHook.wrap(ProductionPoint, "readStream", ID, function(prodRead, self, streamId, connection)
         local st = liveState(connection, "ProductionPoint.readStream")
         if st == "inactive" then return prodRead(self, streamId, connection) end
         if st == "refused" then return end
@@ -265,8 +264,8 @@ function SGWireFormats.install(controller)
             self.palletLimitReached = streamReadBool(streamId)
         end
         SGWireFormats.runTails("ProductionPoint", "read", self, streamId, connection)
-    end
-    ProductionPoint.writeStream = function(self, streamId, connection)
+    end, SGWireFormats)
+    SGClassHook.wrap(ProductionPoint, "writeStream", ID, function(prodWrite, self, streamId, connection)
         local st = liveState(connection, "ProductionPoint.writeStream")
         if st == "inactive" then return prodWrite(self, streamId, connection) end
         if st == "refused" then return end
@@ -297,13 +296,11 @@ function SGWireFormats.install(controller)
             streamWriteBool(streamId, self.palletLimitReached == true)
         end
         SGWireFormats.runTails("ProductionPoint", "write", self, streamId, connection)
-    end
-    ours["ProductionPoint.readStream"] = ProductionPoint.readStream
-    ours["ProductionPoint.writeStream"] = ProductionPoint.writeStream
+    end, SGWireFormats)
+    ours["ProductionPoint.readStream"] = SGClassHook.record(ProductionPoint, "readStream", ID).wrapper
+    ours["ProductionPoint.writeStream"] = SGClassHook.record(ProductionPoint, "writeStream", ID).wrapper
 
     -- ---------------- Storage ----------------
-    local stRead, stWrite = Storage.readStream, Storage.writeStream
-    local stReadU, stWriteU = Storage.readUpdateStream, Storage.writeUpdateStream
     local function writeStoragePayload(self, streamId, connection)
         local list = self.sortedFillTypes
         -- Same validate-before-write rule as the list writers (brief 4.7): the
@@ -340,28 +337,28 @@ function SGWireFormats.install(controller)
         for _, e in ipairs(entries) do self:setFillLevel(e.present and e.level or 0, e.id) end
         return true
     end
-    Storage.readStream = function(self, streamId, connection)
+    SGClassHook.wrap(Storage, "readStream", ID, function(stRead, self, streamId, connection)
         local st = liveState(connection, "Storage.readStream")
         if st == "inactive" then return stRead(self, streamId, connection) end
         if st == "refused" then return end
         Storage:superClass().readStream(self, streamId, connection)
         readStoragePayload(self, streamId, connection)
-    end
-    Storage.writeStream = function(self, streamId, connection)
+    end, SGWireFormats)
+    SGClassHook.wrap(Storage, "writeStream", ID, function(stWrite, self, streamId, connection)
         local st = liveState(connection, "Storage.writeStream")
         if st == "inactive" then return stWrite(self, streamId, connection) end
         if st == "refused" then return end
         Storage:superClass().writeStream(self, streamId, connection)
         writeStoragePayload(self, streamId, connection)
-    end
-    Storage.readUpdateStream = function(self, streamId, timestamp, connection)
+    end, SGWireFormats)
+    SGClassHook.wrap(Storage, "readUpdateStream", ID, function(stReadU, self, streamId, timestamp, connection)
         local st = liveState(connection, "Storage.readUpdateStream")
         if st == "inactive" then return stReadU(self, streamId, timestamp, connection) end
         if st == "refused" then return end
         Storage:superClass().readUpdateStream(self, streamId, timestamp, connection)
         if connection:getIsServer() and streamReadBool(streamId) then readStoragePayload(self, streamId, connection) end
-    end
-    Storage.writeUpdateStream = function(self, streamId, connection, dirtyMask)
+    end, SGWireFormats)
+    SGClassHook.wrap(Storage, "writeUpdateStream", ID, function(stWriteU, self, streamId, connection, dirtyMask)
         local st = liveState(connection, "Storage.writeUpdateStream")
         if st == "inactive" then return stWriteU(self, streamId, connection, dirtyMask) end
         if st == "refused" then return end
@@ -370,11 +367,11 @@ function SGWireFormats.install(controller)
             local flag = self.storageDirtyFlag
             if streamWriteBool(streamId, bit32.band(dirtyMask, flag) ~= 0) then writeStoragePayload(self, streamId, connection) end
         end
-    end
-    ours["Storage.readStream"] = Storage.readStream
-    ours["Storage.writeStream"] = Storage.writeStream
-    ours["Storage.readUpdateStream"] = Storage.readUpdateStream
-    ours["Storage.writeUpdateStream"] = Storage.writeUpdateStream
+    end, SGWireFormats)
+    ours["Storage.readStream"] = SGClassHook.record(Storage, "readStream", ID).wrapper
+    ours["Storage.writeStream"] = SGClassHook.record(Storage, "writeStream", ID).wrapper
+    ours["Storage.readUpdateStream"] = SGClassHook.record(Storage, "readUpdateStream", ID).wrapper
+    ours["Storage.writeUpdateStream"] = SGClassHook.record(Storage, "writeUpdateStream", ID).wrapper
     return true
 end
 

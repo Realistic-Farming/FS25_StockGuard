@@ -4,5 +4,45 @@
         <text name="sg6_capacity_refused" text="StockGuard kunde inte ordna materialkapaciteten för den här sessionen: %s. Laddningen stoppas så att inga varor läses fel. Kontrollera modurvalet och loggen."/>
         <text name="sg6_profile_mismatch" text="StockGuard: material- och kartkapacitetsprofilen skiljer sig från serverns. Skaffa motsvarande uppsättning och läs värdens logg."/>
         <text name="sg_site_purpose_yard" text="StockGuard-gaard"/>
+        <text name="sg3_reason_no_material" text="Inget material"/>
+        <text name="sg3_reason_unsupported_material" text="Detta material bedöms inte"/>
+        <text name="sg3_reason_unsupported_profile" text="Bedömningsprofilen stöds inte"/>
+        <text name="sg3_reason_origin_unproven" text="Ursprung inte registrerat"/>
+        <text name="sg3_reason_soil_unavailable" text="Markdata saknades vid skörd"/>
+        <text name="sg3_reason_source_partial" text="Skördekällan bara delvis registrerad"/>
+        <text name="sg3_reason_maturity_unavailable" text="Grödans mognad okänd vid skörd"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Ursprunget är inte godkänt som livsmedel"/>
+        <text name="sg3_reason_quality_partial" text="Kvaliteten bara delvis känd"/>
+        <text name="sg3_reason_quality_historical" text="Endast tidigare kvalitetsregistrering"/>
+        <text name="sg3_reason_condition_unavailable" text="Lagringsskick inte tillgängligt"/>
+        <text name="sg3_reason_condition_pending" text="Lagringsskick väntar"/>
+        <text name="sg3_reason_condition_condemned" text="Kasserat på grund av lagringsskick"/>
+        <text name="sg3_reason_condition_gap" text="Lagringsskicket har luckor"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Skick från en annan mod täcks inte"/>
+        <text name="sg3_reason_process_pending" text="Bearbetning väntar"/>
+        <text name="sg3_reason_recipe_not_ready" text="Receptet är inte klart"/>
+        <text name="sg3_reason_grouped_portions" text="Bedömt i portioner"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Portionerna har olika betyg"/>
+        <text name="sg3_reason_source_changed" text="Lagret har ändrats sedan läsning"/>
+        <text name="sg3_reason_disclosure_denied" text="Inte tillgängligt för dig"/>
+        <text name="sg3_reason_profile_mismatch" text="Kvalitetsprofilerna stämmer inte"/>
+        <text name="sg3_reason_composition_unknown" text="Sammansättning okänd"/>
+        <text name="sg4_reason_library_loading" text="Receptbiblioteket läses in"/>
+        <text name="sg4_reason_library_unavailable" text="Receptbiblioteket är inte tillgängligt"/>
+        <text name="sg4_reason_library_not_owned" text="Detta receptbibliotek tillhör en annan gård"/>
+        <text name="sg4_reason_library_retired" text="Detta receptbibliotek används inte längre"/>
+        <text name="sg4_reason_library_full" text="Receptbiblioteket är fullt"/>
+        <text name="sg4_reason_no_profile" text="Ingen recepttyp som stöds är tillgänglig"/>
+        <text name="sg4_reason_profile_absent" text="Receptets typ är inte tillgänglig"/>
+        <text name="sg4_reason_profile_unavailable" text="Recepttypen kan inte använda detta recept"/>
+        <text name="sg4_reason_recipe_unknown" text="Receptet hittades inte"/>
+        <text name="sg4_reason_recipe_retired" text="Detta recept har tagits bort"/>
+        <text name="sg4_reason_recipe_stale" text="Detta recept har ändrats, uppdatera och försök igen"/>
+        <text name="sg4_reason_definition_invalid" text="Receptet är ogiltigt"/>
+        <text name="sg4_reason_ingredient_invalid" text="En ingrediens är inte tillåten här"/>
+        <text name="sg4_reason_value_out_of_bounds" text="En mängd ligger utanför det tillåtna intervallet"/>
+        <text name="sg4_reason_total_incomplete" text="Mängderna utgör inte hela receptet"/>
+        <text name="sg4_reason_required_role_missing" text="En obligatorisk ingrediens saknas"/>
+        <text name="sg4_reason_intent_unsupported" text="Denna recepttyp stöder inte den användningen"/>
     </texts>
 </l10n>

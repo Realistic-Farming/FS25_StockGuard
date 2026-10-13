@@ -4,5 +4,45 @@
         <text name="sg6_capacity_refused" text="StockGuard konnte die Materialkapazität für diese Sitzung nicht einrichten: %s. Das Laden wird abgebrochen, damit keine Waren falsch gelesen werden. Prüfe die Mod-Auswahl und das Log."/>
         <text name="sg6_profile_mismatch" text="StockGuard: Das Material- und Kartenkapazitätsprofil weicht vom Server ab. Besorge dir die passende Zusammenstellung und sieh im Host-Log nach."/>
         <text name="sg_site_purpose_yard" text="StockGuard-Hof"/>
+        <text name="sg3_reason_no_material" text="Kein Material"/>
+        <text name="sg3_reason_unsupported_material" text="Dieses Material wird nicht bewertet"/>
+        <text name="sg3_reason_unsupported_profile" text="Bewertungsprofil nicht unterstützt"/>
+        <text name="sg3_reason_origin_unproven" text="Herkunft nicht erfasst"/>
+        <text name="sg3_reason_soil_unavailable" text="Bodendaten waren bei der Ernte nicht verfügbar"/>
+        <text name="sg3_reason_source_partial" text="Erntequelle nur teilweise erfasst"/>
+        <text name="sg3_reason_maturity_unavailable" text="Reifegrad bei der Ernte unbekannt"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Herkunft nicht als Lebensmittel zulässig"/>
+        <text name="sg3_reason_quality_partial" text="Qualität nur teilweise bekannt"/>
+        <text name="sg3_reason_quality_historical" text="Nur früherer Qualitätsnachweis"/>
+        <text name="sg3_reason_condition_unavailable" text="Lagerzustand nicht verfügbar"/>
+        <text name="sg3_reason_condition_pending" text="Lagerzustand noch ausstehend"/>
+        <text name="sg3_reason_condition_condemned" text="Durch Lagerzustand verworfen"/>
+        <text name="sg3_reason_condition_gap" text="Lagerzustand lückenhaft"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Zustand aus anderem Mod nicht abgedeckt"/>
+        <text name="sg3_reason_process_pending" text="Verarbeitung noch ausstehend"/>
+        <text name="sg3_reason_recipe_not_ready" text="Rezept nicht bereit"/>
+        <text name="sg3_reason_grouped_portions" text="In Teilmengen bewertet"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Teilmengen haben unterschiedliche Noten"/>
+        <text name="sg3_reason_source_changed" text="Bestand seit dem Lesen geändert"/>
+        <text name="sg3_reason_disclosure_denied" text="Für dich nicht verfügbar"/>
+        <text name="sg3_reason_profile_mismatch" text="Qualitätsprofile stimmen nicht überein"/>
+        <text name="sg3_reason_composition_unknown" text="Zusammensetzung unbekannt"/>
+        <text name="sg4_reason_library_loading" text="Rezeptbibliothek wird geladen"/>
+        <text name="sg4_reason_library_unavailable" text="Rezeptbibliothek ist nicht verfügbar"/>
+        <text name="sg4_reason_library_not_owned" text="Diese Rezeptbibliothek gehört einem anderen Hof"/>
+        <text name="sg4_reason_library_retired" text="Diese Rezeptbibliothek wird nicht mehr verwendet"/>
+        <text name="sg4_reason_library_full" text="Die Rezeptbibliothek ist voll"/>
+        <text name="sg4_reason_no_profile" text="Kein unterstützter Rezepttyp verfügbar"/>
+        <text name="sg4_reason_profile_absent" text="Der Rezepttyp dieses Rezepts ist nicht verfügbar"/>
+        <text name="sg4_reason_profile_unavailable" text="Der Rezepttyp kann dieses Rezept nicht verwenden"/>
+        <text name="sg4_reason_recipe_unknown" text="Rezept nicht gefunden"/>
+        <text name="sg4_reason_recipe_retired" text="Dieses Rezept wurde entfernt"/>
+        <text name="sg4_reason_recipe_stale" text="Dieses Rezept wurde geändert, bitte aktualisieren und erneut versuchen"/>
+        <text name="sg4_reason_definition_invalid" text="Das Rezept ist ungültig"/>
+        <text name="sg4_reason_ingredient_invalid" text="Eine Zutat ist hier nicht erlaubt"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Eine Menge liegt außerhalb des erlaubten Bereichs"/>
+        <text name="sg4_reason_total_incomplete" text="Die Mengen ergeben nicht das ganze Rezept"/>
+        <text name="sg4_reason_required_role_missing" text="Eine erforderliche Zutat fehlt"/>
+        <text name="sg4_reason_intent_unsupported" text="Dieser Rezepttyp unterstützt diese Verwendung nicht"/>
     </texts>
 </l10n>

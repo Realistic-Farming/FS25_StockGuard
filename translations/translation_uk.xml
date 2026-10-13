@@ -4,5 +4,45 @@
         <text name="sg6_capacity_refused" text="StockGuard не зміг підготувати місткість матеріалів для цієї сесії: %s. Завантаження зупинено, щоб товари не читалися хибно. Перевірте набір модів і журнал."/>
         <text name="sg6_profile_mismatch" text="StockGuard: профіль місткості матеріалів і карти відрізняється від серверного. Отримайте відповідну збірку та перегляньте журнал хоста."/>
         <text name="sg_site_purpose_yard" text="Dvir StockGuard"/>
+        <text name="sg3_reason_no_material" text="Немає матеріалу"/>
+        <text name="sg3_reason_unsupported_material" text="Цей матеріал не оцінюється"/>
+        <text name="sg3_reason_unsupported_profile" text="Профіль оцінювання не підтримується"/>
+        <text name="sg3_reason_origin_unproven" text="Походження не записано"/>
+        <text name="sg3_reason_soil_unavailable" text="Дані про ґрунт під час збирання були недоступні"/>
+        <text name="sg3_reason_source_partial" text="Джерело врожаю записано лише частково"/>
+        <text name="sg3_reason_maturity_unavailable" text="Стиглість культури під час збирання невідома"/>
+        <text name="sg3_reason_food_origin_ineligible" text="Походження не допускає вживання в їжу"/>
+        <text name="sg3_reason_quality_partial" text="Якість відома лише частково"/>
+        <text name="sg3_reason_quality_historical" text="Лише попередній запис якості"/>
+        <text name="sg3_reason_condition_unavailable" text="Стан зберігання недоступний"/>
+        <text name="sg3_reason_condition_pending" text="Стан зберігання очікується"/>
+        <text name="sg3_reason_condition_condemned" text="Забраковано через стан зберігання"/>
+        <text name="sg3_reason_condition_gap" text="У стані зберігання є прогалини"/>
+        <text name="sg3_reason_foreign_condition_uncovered" text="Стан з іншого моду не охоплено"/>
+        <text name="sg3_reason_process_pending" text="Переробка очікується"/>
+        <text name="sg3_reason_recipe_not_ready" text="Рецепт не готовий"/>
+        <text name="sg3_reason_grouped_portions" text="Оцінено частинами"/>
+        <text name="sg3_reason_mixed_portion_grades" text="Частини мають різні оцінки"/>
+        <text name="sg3_reason_source_changed" text="Запас змінився після читання"/>
+        <text name="sg3_reason_disclosure_denied" text="Вам недоступно"/>
+        <text name="sg3_reason_profile_mismatch" text="Профілі якості не збігаються"/>
+        <text name="sg3_reason_composition_unknown" text="Склад невідомий"/>
+        <text name="sg4_reason_library_loading" text="Завантаження бібліотеки рецептів"/>
+        <text name="sg4_reason_library_unavailable" text="Бібліотека рецептів недоступна"/>
+        <text name="sg4_reason_library_not_owned" text="Ця бібліотека рецептів належить іншій фермі"/>
+        <text name="sg4_reason_library_retired" text="Ця бібліотека рецептів більше не використовується"/>
+        <text name="sg4_reason_library_full" text="Бібліотека рецептів заповнена"/>
+        <text name="sg4_reason_no_profile" text="Немає доступного підтримуваного типу рецепта"/>
+        <text name="sg4_reason_profile_absent" text="Тип цього рецепта недоступний"/>
+        <text name="sg4_reason_profile_unavailable" text="Цей тип рецепта не може використати цей рецепт"/>
+        <text name="sg4_reason_recipe_unknown" text="Рецепт не знайдено"/>
+        <text name="sg4_reason_recipe_retired" text="Цей рецепт видалено"/>
+        <text name="sg4_reason_recipe_stale" text="Цей рецепт змінився, оновіть і спробуйте знову"/>
+        <text name="sg4_reason_definition_invalid" text="Рецепт недійсний"/>
+        <text name="sg4_reason_ingredient_invalid" text="Цей інгредієнт тут не дозволено"/>
+        <text name="sg4_reason_value_out_of_bounds" text="Кількість поза допустимим діапазоном"/>
+        <text name="sg4_reason_total_incomplete" text="Кількості не складають увесь рецепт"/>
+        <text name="sg4_reason_required_role_missing" text="Бракує обов'язкового інгредієнта"/>
+        <text name="sg4_reason_intent_unsupported" text="Цей тип рецепта не підтримує таке використання"/>
     </texts>
 </l10n>

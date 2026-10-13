@@ -384,34 +384,31 @@ end
 -- ---------------------------------------------------------
 F._current = nil
 
---- Install the FarmManager wrappers once per process. The live coordinator
---- is the token; without one the wrappers are pure delegates.
+--- Install the FarmManager wrappers: one SGClassHook record each for the process, rebound
+--- by every call (MAINTENANCE row 187), so after a mods reload they read THIS module's
+--- coordinator token. Without one the wrappers are pure delegates.
+F.HOOK_ID = "farmRestore"
 function F.installHooks()
-    if F._hooksInstalled then return true end
     if FarmManager == nil then return false end
     F._hooksInstalled = true
     if type(FarmManager.mergeFarmsForSingleplayer) == "function" then
-        local native = FarmManager.mergeFarmsForSingleplayer
-        F._nativeMerge = native
-        F._mergeWrapper = function(fm, ...)
+        SGClassHook.wrap(FarmManager, "mergeFarmsForSingleplayer", F.HOOK_ID, function(native, fm, ...)
             local c = F._current
             if c ~= nil then pcall(c.observeBeforeMerge, c, fm) end
             local results = { native(fm, ...) }
             if c ~= nil then pcall(c.observeAfterMerge, c, fm) end
             return unpack(results)
-        end
-        FarmManager.mergeFarmsForSingleplayer = F._mergeWrapper
+        end, F)
+        F._mergeWrapper = SGClassHook.record(FarmManager, "mergeFarmsForSingleplayer", F.HOOK_ID).wrapper
     end
     if type(FarmManager.loadDefaults) == "function" then
-        local nativeDefaults = FarmManager.loadDefaults
-        F._nativeDefaults = nativeDefaults
-        F._defaultsWrapper = function(fm, ...)
+        SGClassHook.wrap(FarmManager, "loadDefaults", F.HOOK_ID, function(nativeDefaults, fm, ...)
             local results = { nativeDefaults(fm, ...) }
             local c = F._current
             if c ~= nil then pcall(c.observeFarmsLoadedWithoutMerge, c) end
             return unpack(results)
-        end
-        FarmManager.loadDefaults = F._defaultsWrapper
+        end, F)
+        F._defaultsWrapper = SGClassHook.record(FarmManager, "loadDefaults", F.HOOK_ID).wrapper
     end
     return true
 end
@@ -421,14 +418,10 @@ end
 function F.removeHooks()
     F._current = nil
     if FarmManager == nil then return end
-    if F._mergeWrapper ~= nil and FarmManager.mergeFarmsForSingleplayer == F._mergeWrapper then
-        FarmManager.mergeFarmsForSingleplayer = F._nativeMerge
-    end
-    if F._defaultsWrapper ~= nil and FarmManager.loadDefaults == F._defaultsWrapper then
-        FarmManager.loadDefaults = F._nativeDefaults
-    end
+    SGClassHook.unwrap(FarmManager, "mergeFarmsForSingleplayer", F.HOOK_ID)
+    SGClassHook.unwrap(FarmManager, "loadDefaults", F.HOOK_ID)
     F._hooksInstalled = nil
-    F._mergeWrapper, F._nativeMerge, F._defaultsWrapper, F._nativeDefaults = nil, nil, nil, nil
+    F._mergeWrapper, F._defaultsWrapper = nil, nil
 end
 
 function F.setCurrent(coordinator)

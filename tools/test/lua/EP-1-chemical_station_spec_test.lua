@@ -589,3 +589,20 @@ do
     T.eq("J13 invalid placeable type refused", select(2, SaleGate.attach(nil, registerOverwritten)), "PLACEABLE_TYPE_INVALID")
     T.eq("J14 no helper available is a failure, not native allow", select(2, SaleGate.attach({ functions = { canBeSold = baseCanBeSold } }, nil)), "CAN_BE_SOLD_NOT_REPLACED")
 end
+
+-- =========================================================
+-- Part 3: the two role orders must agree (Bob, PR #9 cold review)
+-- =========================================================
+-- SaleGate.ROLE_ORDER is a byte-identical copy of Roles.ORDER. While neither file
+-- loaded, that drift was inert; wiring them into the load path made both live at
+-- once, so a change to one and not the other is now a real defect. Asserting they
+-- are equal closes it without coupling the two modules to each other.
+do
+    T.eq("role orders agree in length", #SaleGate.ROLE_ORDER, #Roles.ORDER)
+    local same = true
+    for i = 1, math.max(#SaleGate.ROLE_ORDER, #Roles.ORDER) do
+        if SaleGate.ROLE_ORDER[i] ~= Roles.ORDER[i] then same = false end
+    end
+    T.ok("SaleGate.ROLE_ORDER matches Roles.ORDER element for element", same,
+        "the two role orders have drifted; they are separate copies of one list")
+end

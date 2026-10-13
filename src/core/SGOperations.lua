@@ -42,6 +42,7 @@ local isFinite = SGValues.isFinite
 local isInteger = SGValues.isInteger
 local nonempty = SGRecords.nonemptyString
 
+O.RETIRED_LIMIT = 256
 O.OUTCOME_COMMITTED = "COMMITTED"
 O.OUTCOME_NO_OP = "NO_OP"
 O.OUTCOME_UNRESOLVED = "UNRESOLVED"
@@ -62,7 +63,9 @@ function O.new(registry, loadEpoch)
     self.openHandles = {}          -- operationId -> handle (public part)
     self.handleState = {}          -- operationId -> { before, lease }
     self.retiredStocks = {}        -- stockId -> retired StockRecord (historical, bounded)
-    self.retiredLimit = 256
+    self.restoredIds = {}          -- stockId -> true: a saved id a restore pass of this mission reattached
+    self.retiredLimit = O.RETIRED_LIMIT
+    self.retiredClasses = {}       -- SG2-4b: { name, owns(carrierKey) }, each its own budget
     self.pending = {}              -- carrierId -> pending record (the canonical collection)
     self.onChanged = nil           -- function(kind, id)
     self._deferred = nil           -- queued notifications during a replacement
@@ -150,10 +153,16 @@ function O.validateNativeState(ns)
     if not nonempty(ns.unit, 32) then return nil, "UNIT" end
     if ns.capacity ~= nil and not SGRecords.isAmount(ns.capacity) then return nil, "CAPACITY" end
     if ns.x ~= nil and (not isFinite(ns.x) or not isFinite(ns.z)) then return nil, "POSITION" end
+    local fp = ns.footprint
+    if fp ~= nil and (type(fp) ~= "table" or not nonempty(fp.kind, 32) or not isFinite(fp.x) or not isFinite(fp.z)
+                      or (fp.size ~= nil and (not isFinite(fp.size) or fp.size <= 0))) then
+        return nil, "FOOTPRINT"
+    end
     return {
         materialRef = ns.materialRef and copy(ns.materialRef) or nil, amount = ns.amount, unit = ns.unit,
         capacity = ns.capacity, x = ns.x, z = ns.z, ownerFarmId = ns.ownerFarmId, storeKind = ns.storeKind,
         stationAccess = ns.stationAccess, label = ns.label, nativeUniqueId = ns.nativeUniqueId,
+        footprint = fp and { kind = fp.kind, x = fp.x, z = fp.z, size = fp.size } or nil,
     }
 end
 
@@ -217,16 +226,34 @@ end
 -- of a long session evicted every historical stock before touching an ordinary one,
 -- which is exactly the data loss B10 was opened for, moved to a longer session.
 -- Each set now gets its own budget and each is evicted oldest-first within itself.
+--
+-- SG2-4b: a member section that persists a class of carriers itself (the ground cells,
+-- SGGround) registers that class here, and its retired stocks get a budget of their own,
+-- ordinary and historical apart as above, so a mass restore mismatch on the ground can
+-- never evict a silo's or a trailer's unresolved history (SG-2 :259).
+local function retiredClassOf(self, s)
+    -- Classified once per retired record; setRetiredClass clears the marks.
+    if s.retiredClass ~= nil then return s.retiredClass end
+    local class = "core"
+    for _, c in ipairs(self.retiredClasses) do
+        local ok, owned = pcall(c.owns, s.carrierKey)
+        if ok and owned == true then class = c.name break end
+    end
+    s.retiredClass = class
+    return class
+end
+
 local function pruneRetired(self)
-    local ordinary, historical = 0, 0
+    local counts = {}
     for _, s in pairs(self.retiredStocks) do
-        if s.historical then historical = historical + 1 else ordinary = ordinary + 1 end
+        local key = retiredClassOf(self, s) .. (s.historical and ":historical" or ":ordinary")
+        counts[key] = (counts[key] or 0) + 1
     end
 
-    local function evictOldest(wantHistorical)
+    local function evictOldest(key)
         local oldest, oldestRev = nil, nil
         for id, s in pairs(self.retiredStocks) do
-            if (s.historical == true) == wantHistorical then
+            if retiredClassOf(self, s) .. (s.historical and ":historical" or ":ordinary") == key then
                 if oldestRev == nil or SGValues.compareDecimal(s.dataRevision, oldestRev) < 0 then
                     oldest, oldestRev = id, s.dataRevision
                 end
@@ -237,8 +264,18 @@ local function pruneRetired(self)
         return true
     end
 
-    while ordinary > self.retiredLimit and evictOldest(false) do ordinary = ordinary - 1 end
-    while historical > self.retiredLimit and evictOldest(true) do historical = historical - 1 end
+    for key, n in pairs(counts) do
+        while n > self.retiredLimit and evictOldest(key) do n = n - 1 end
+    end
+end
+
+--- SG2-4b: give the retired stocks of carriers `owns(carrierKey)` selects a budget of their own.
+function O:setRetiredClass(name, owns)
+    if type(name) ~= "string" or name == "" or name == "core" or type(owns) ~= "function" then return false end
+    for _, s in pairs(self.retiredStocks) do s.retiredClass = nil end
+    for _, c in ipairs(self.retiredClasses) do if c.name == name then c.owns = owns return true end end
+    self.retiredClasses[#self.retiredClasses + 1] = { name = name, owns = owns }
+    return true
 end
 
 local function retireStock(self, stock, reason)
@@ -278,6 +315,16 @@ local function scaleCoverage(stock, oldAmount, newAmount)
             p.propertyRevision = p.propertyRevision + 1
         end
     end
+end
+
+--- [MAINTENANCE row 238] Is this stock held by an unresolved settlement? _qualifyCaptured marks one
+--- UNAVAILABLE with the operation's reason and qualifies every record with the same reason.
+function O.settlementQualified(stock)
+    if stock.knowledge ~= "UNAVAILABLE" or stock.reason == nil then return false end
+    for _, p in pairs(stock.properties) do
+        if p.knowledge ~= "UNAVAILABLE" or p.reason ~= stock.reason then return false end
+    end
+    return true
 end
 
 --- Overall knowledge of a stock from its properties: uniform states map
@@ -332,6 +379,10 @@ local function reconcile(self, carrierId, state, reason)
         stock.observedAmount = state.amount
         stock.dataRevision = bump(self)
         if stock.knowledge == "KNOWN" then stock.knowledge = "PARTIAL" end
+        -- [MAINTENANCE row 238] The change is unexplained whatever the knowledge was, and the reason
+        -- says so (MAINTENANCE row 197's reason), so a reader that sees only some of the records (the
+        -- player view) still knows it. An unresolved settlement's reason stands.
+        if not O.settlementQualified(stock) then stock.reason = "UNEXPLAINED_DELTA" end
         notify(self, "STOCK", stock.stockId)
     end
     return stock
@@ -578,12 +629,73 @@ function O:captureOperation(adapterLease, kind, participants)
             return nil, "PARTICIPANT"
         end
     end
+    self:captureResident(kind, before)
     self.nextOperation = self.nextOperation + 1
     local operationId = "op:" .. self.loadEpoch .. ":" .. tostring(self.nextOperation)
     local handle = { operationId = operationId, kind = kind, adapterId = adapterLease.ownerId, open = true }
     self.openHandles[operationId] = handle
     self.handleState[operationId] = { before = before, lease = adapterLease }
     return { handle = handle, before = copy(before), operationId = operationId }
+end
+
+--- The capture carries the facts (the SG-1 brief :232, SG-2 :343's carrying half): for each
+--- OWNER_RESOLVED property, every participant whose stock is resident is resolved now, while the
+--- owner's domain still holds it, inside ONE owner stamp pair for the whole capture (SG-2 :328,
+--- "validate the owner stamp before/after a multi-part capture"). An unstable pair leaves the
+--- property unavailable on every resident participant. The records go to residentProperties,
+--- which only the settle's portions read, so they travel with the material that leaves and are
+--- never installed back on the resident stock (Bob's 2-4c-0 ruling, change 2).
+function O:captureResident(kind, before)
+    for pid, reg in self.registry:each(SGRegistry.KIND_PROPERTY) do
+        -- Only an owner that declares where it is resident has anything to carry: without the
+        -- key every stock reads live, and the capture asks it nothing (the older behaviour).
+        local a = reg.spec.applicability
+        if reg.spec.residency == "OWNER_RESOLVED" and type(a) == "table" and type(a.residentStoreKinds) == "table" then
+            local resident = {}
+            local ids = {}
+            for carrierId in pairs(before.carriers) do ids[#ids + 1] = carrierId end
+            table.sort(ids)
+            for _, carrierId in ipairs(ids) do
+                local b = before.carriers[carrierId]
+                local stock = b.stock ~= nil and self.stocks[b.stock.stockRef.stockId] or nil
+                if stock ~= nil and self:isResident(reg, self.carriers[carrierId]) then
+                    resident[#resident + 1] = { b = b, stock = stock }
+                end
+            end
+            if #resident > 0 then
+                local stamp = { purpose = "CAPTURE", operationKind = kind, participants = #resident }
+                local okBefore, revBefore = pcall(reg.spec.getResidentRevision, copy(stamp))
+                local answers = {}
+                for i, r in ipairs(resident) do
+                    local ok, record, reason = pcall(reg.spec.resolveResident, self:residentContext(r.stock, "CAPTURE"))
+                    answers[i] = { ok = ok, record = ok and record or nil, reason = ok and reason or "RESIDENT_ERROR" }
+                end
+                local okAfter, revAfter = pcall(reg.spec.getResidentRevision, copy(stamp))
+                local stable = okBefore and okAfter and revBefore ~= nil and revBefore == revAfter
+                for i, r in ipairs(resident) do
+                    local ans = answers[i]
+                    local out
+                    if not stable then
+                        out = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "RESIDENT_UNSTABLE", r.stock.dataRevision)
+                    elseif ans.record ~= nil then
+                        local valid, why = self:validateResult(ans.record, reg.spec.producerId)
+                        if valid ~= nil then
+                            out = copy(valid)
+                            out.materialRevision = r.stock.dataRevision
+                        else
+                            out = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "RESIDENT_INVALID:" .. tostring(why), r.stock.dataRevision)
+                        end
+                    elseif ans.reason ~= O.NOT_RESIDENT then
+                        out = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, tostring(ans.reason or "RESIDENT_ABSENT"), r.stock.dataRevision)
+                    end
+                    if out ~= nil then
+                        r.b.residentProperties = r.b.residentProperties or {}
+                        r.b.residentProperties[pid] = out
+                    end
+                end
+            end
+        end
+    end
 end
 
 local function closeHandle(self, handle)
@@ -651,6 +763,26 @@ local function interpretDestination(self, context, kind, contributions, destinat
     if destinationBefore ~= nil then
         for pid in pairs(destinationBefore.properties or {}) do propertyIds[pid] = true end
     end
+    -- SG-3 Part 1 (Bob's SG-3 intake, U1, and his R-15 note of 2026-10-07; SG-1 :253-255, :285; SG-3 :98-100).
+    -- New material born from creation slots, into any candidate holding stock (a BIRTH, a REPLACE, or an UPDATE
+    -- of material already there: a harvest fills one hopper over many ticks) in anything but a REBIND, is
+    -- interpreted by every STORED producer that declared births (SGRegistry, birth = true), through its
+    -- transform, once, with the existing record as outputs[1].destinationBefore (SG-3 :98, "existing material
+    -- requires its expected material and property revisions"). A slot's contribution carries no properties of
+    -- its own, so before this no producer was ever asked about new material. Only a candidate holding stock
+    -- reaches here (settle's step 7). A carrier-only move, a REBIND and a restore never come here as a birth
+    -- (SG-3 :99, :346).
+    local birth = false
+    if kind ~= "REBIND" then
+        for _, c in ipairs(contributions) do
+            if c.slotId ~= nil then birth = true break end
+        end
+    end
+    if birth then
+        for pid, lease in self.registry:each(SGRegistry.KIND_PROPERTY) do
+            if lease.spec.birth == true then propertyIds[pid] = true end
+        end
+    end
     local useTransform = kind == "CONVERT"
     for _, c in ipairs(contributions) do if c.conversionBasisId ~= nil then useTransform = true end end
     local results = {}
@@ -666,9 +798,13 @@ local function interpretDestination(self, context, kind, contributions, destinat
     local pids = {}
     for pid in pairs(propertyIds) do pids[#pids + 1] = pid end
     table.sort(pids)
+    local destCarrier = cand.carrierId ~= nil and self.carriers[cand.carrierId] or nil
     for _, pid in ipairs(pids) do
         local reg = self.registry:property(pid)
-        if reg == nil then
+        if reg ~= nil and reg.spec.residency == "OWNER_RESOLVED" and destCarrier ~= nil and self:isResident(reg, destCarrier) then
+            -- A resident destination is read live, never from a deposited copy (:326):
+            -- nothing is installed for it, so no per-cell record weighs on the ground save.
+        elseif reg == nil then
             -- No producer: a stored record is kept and qualified on read; a
             -- carried portion record is unavailable, never a placeholder over data.
             local stored = destinationBefore and destinationBefore.properties[pid] or nil
@@ -684,13 +820,14 @@ local function interpretDestination(self, context, kind, contributions, destinat
             end
         else
             local ok, result, reason
-            if useTransform then
+            local viaTransform = useTransform or (birth and reg.spec.birth == true)
+            if viaTransform then
                 ok, result, reason = pcall(reg.spec.transform, copy(context), copy(contributions), { { carrierId = cand.carrierId, slotId = cand.slotId, stockRef = copy(cand.stockRef), amount = cand.amount, unit = cand.unit, materialRef = copy(cand.materialRef), destinationBefore = destinationBefore and copy(destinationBefore) or nil } })
             else
                 ok, result, reason = pcall(reg.spec.combine, copy(context), copy(contributions), destinationBefore and copy(destinationBefore) or nil)
             end
             if not ok then
-                results[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, useTransform and "TRANSFORM_ERROR" or "COMBINE_ERROR")
+                results[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, viaTransform and "TRANSFORM_ERROR" or "COMBINE_ERROR")
             elseif result == nil then
                 results[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, tostring(reason or "UNKNOWN"))
             else
@@ -803,6 +940,27 @@ function O:settleOperation(handle, report)
     return outcome, reason
 end
 
+--- The third proof of a replacement (Bob's :959 ruling, 2026-10-06; SG-1 :253, "Report includes
+--- complete observed owner states and proved aliases"; SG-2 :473). A round Baler's REBIND promotes the
+--- mounted bale to its own binding and retires the alias, so the promoted binding can carry neither the
+--- alias nor the chamber's quantity basis: the chamber's next contents rebind under that same key (SG-1
+--- :224). The proof travels in the report instead. On a REBIND only, a replacement r of carrier C is
+--- proved when the report's provedAliases hold a binding a that is an alias of C over C's old basis, names
+--- the same native carrier as r's binding, and still resolves to C through the adapter's resolveAlias at
+--- this settle, before the alias retires; and r's binding is no alias and is its own quantity.
+local function aliasProvesReplacement(self, handle, lease, r, old, aliases)
+    if handle.kind ~= "REBIND" then return false end
+    if r.binding.aliasOf ~= nil or r.binding.quantityBasisKey ~= self:carrierIdOf(r.binding) then return false end
+    for _, a in ipairs(aliases) do
+        if SGRecords.isCarrierBinding(a) and a.aliasOf == r.carrierId and a.quantityBasisKey == old.quantityBasisKey
+            and SGValues.equal(a.carrierKey, r.binding.carrierKey) then
+            local canonical = self:canonicalBinding(lease, a)
+            if canonical ~= nil and self:carrierIdOf(canonical) == r.carrierId then return true end
+        end
+    end
+    return false
+end
+
 --- Build the detached candidate set, validate it, then install once.
 function O:_settle(handle, st, report)
     local before = st.before
@@ -812,6 +970,7 @@ function O:_settle(handle, st, report)
     local allocations = type(report.allocations) == "table" and copy(report.allocations) or {}
     local created = type(report.createdBindings) == "table" and report.createdBindings or {}
     local replacements = type(report.replacements) == "table" and report.replacements or {}
+    local provedAliases = type(report.provedAliases) == "table" and report.provedAliases or {}
     local function fail(why)
         self:_qualifyCaptured(before, "UNRESOLVED_SETTLEMENT:" .. why, afterRaw)
         return O.OUTCOME_UNRESOLVED, why
@@ -854,7 +1013,8 @@ function O:_settle(handle, st, report)
         if type(r) ~= "table" or before.carriers[r.carrierId] == nil or not SGRecords.isCarrierBinding(r.binding) then return fail("REPLACEMENT") end
         if r.binding.carrierKey.adapterId ~= handle.adapterId then return fail("REPLACEMENT_ADAPTER") end
         local old = before.carriers[r.carrierId].carrier.binding
-        if r.binding.aliasOf ~= r.carrierId and r.binding.quantityBasisKey ~= old.quantityBasisKey then return fail("REPLACEMENT_UNPROVED") end
+        if r.binding.aliasOf ~= r.carrierId and r.binding.quantityBasisKey ~= old.quantityBasisKey
+            and not aliasProvesReplacement(self, handle, st.lease, r, old, provedAliases) then return fail("REPLACEMENT_UNPROVED") end
         local newId = self:carrierIdOf(r.binding)
         if newId ~= r.carrierId and self.carriers[newId] ~= nil then return fail("REPLACEMENT_COLLISION") end
         if moves[r.carrierId] ~= nil then return fail("REPLACEMENT_DUPLICATE") end
@@ -937,6 +1097,7 @@ function O:_settle(handle, st, report)
                 portion.sourceStockRef = copy(b.stock.stockRef)
                 portion.materialRef = copy(b.stock.materialRef)
                 portion.properties = copy(b.stock.properties)
+                for pid, rec in pairs(b.residentProperties or {}) do portion.properties[pid] = copy(rec) end
                 portion.acceptedCauses = copy(b.stock.acceptedCauses)
                 portion.knowledge = b.stock.knowledge
                 local share = b.amount > 0 and math.min(1, a.sourceAmount / b.amount) or 0
@@ -1127,6 +1288,9 @@ function O:_settle(handle, st, report)
             if stock ~= nil then
                 stock.carrierId = mv.newId
                 stock.carrierKey = copy(mv.binding.carrierKey)
+                -- The quantity the moved carrier's binding names (the third proof's promoted
+                -- binding is its own); never the old basis, which the old key's next contents take.
+                stock.quantityBasisKey = mv.binding.quantityBasisKey
             end
             self.pending[mv.newId] = self.pending[oldId]
             self.pending[oldId] = nil
@@ -1177,7 +1341,13 @@ function O:_settle(handle, st, report)
             end
             s.acceptedCauses = c.acceptedCauses or {}
             s.knowledge = O.knowledgeOf(s)
-            if c.unexplainedDelta then s.reason = "UNEXPLAINED_DELTA" end
+            -- [MAINTENANCE row 197] As UPDATE does: a stock born or replaced with part of its
+            -- amount unexplained holds material no contribution explains, so it is partially
+            -- known (SG-1 brief :90, :108; "unexplained increase is unknown only for added amount").
+            if c.unexplainedDelta then
+                if s.knowledge == "KNOWN" then s.knowledge = "PARTIAL" end
+                s.reason = "UNEXPLAINED_DELTA"
+            end
             if c.pendingReplacement ~= nil then
                 local p = self.pending[carrier.carrierId]
                 local r = c.pendingReplacement
@@ -1328,9 +1498,12 @@ end
 
 --- Canonical serialized collection (sorted rows keyed by the lossless
 --- carrier key token encoding).
-function O:serializePending()
+function O:serializePending(exclude)
     local ids = {}
-    for id in pairs(self.pending) do ids[#ids + 1] = id end
+    for id in pairs(self.pending) do
+        local carrier = self.carriers[id]
+        if exclude == nil or carrier == nil or not exclude(carrier.binding.carrierKey) then ids[#ids + 1] = id end
+    end
     table.sort(ids)
     local rows = {}
     for _, id in ipairs(ids) do
@@ -1472,13 +1645,42 @@ end
 -- ---------------------------------------------------------
 -- readMaterial / visitOwnedPropertyRecords / readPropertyMix
 -- ---------------------------------------------------------
+-- RESIDENCY (SG-2 v2.3 :326-330, the SG-1 brief :232; Bob's 2-4c-0 ruling). An OWNER_RESOLVED
+-- fact is live in its owner's domain only where the material is resident there: a registration
+-- names those native store kinds as applicability.residentStoreKinds (Soil: { "ground" }),
+-- matched against the carrier's native storeKind. Elsewhere SG-1 reads the record it stored when
+-- the material left (the carried property), and never asks the owner. A registration without
+-- the key keeps the older reading: every stock is resolved. An owner answering NOT_RESIDENT is
+-- read as not resident either way.
+O.NOT_RESIDENT = "NOT_RESIDENT"
+
+--- Is `reg`'s material resident on `carrier` (its owner holds the live fact there)?
+function O:isResident(reg, carrier)
+    local a = reg.spec.applicability
+    local kinds = type(a) == "table" and a.residentStoreKinds or nil
+    if type(kinds) ~= "table" then return true end
+    local kind = carrier ~= nil and carrier.native ~= nil and carrier.native.storeKind or nil
+    if kind == nil then return false end
+    for _, k in ipairs(kinds) do if k == kind then return true end end
+    return false
+end
+
+--- The owner's context for one stock: the exact material, its footprint (the carrier's native
+--- footprint, the SG-1 brief :232), the purpose and the quantity basis.
+function O:residentContext(stock, purpose)
+    local carrier = stock.carrierId ~= nil and self.carriers[stock.carrierId] or nil
+    local fp = carrier ~= nil and carrier.native ~= nil and carrier.native.footprint or nil
+    return { stockRef = self:stockRef(stock), carrierKey = copy(stock.carrierKey), purpose = purpose, quantityBasisKey = stock.quantityBasisKey,
+             amount = stock.observedAmount, unit = stock.amountUnit, footprint = fp and copy(fp) or nil }
+end
+
 --- Resolve an OWNER_RESOLVED property for a stock at one stable owner
 --- revision (before/after check), with cycle detection.
 function O:resolveResident(reg, stock, purpose, cycle)
     local key = reg.ownerId .. "|" .. stock.stockId
     if cycle[key] then return SGRecords.unavailableProperty(reg.ownerId, reg.spec.schemaVersion, reg.spec.producerId, "RESOLUTION_CYCLE", stock.dataRevision) end
     cycle[key] = true
-    local context = { stockRef = self:stockRef(stock), carrierKey = copy(stock.carrierKey), purpose = purpose, quantityBasisKey = stock.quantityBasisKey, amount = stock.observedAmount, unit = stock.amountUnit }
+    local context = self:residentContext(stock, purpose)
     local ok1, revBefore = pcall(reg.spec.getResidentRevision, copy(context))
     local ok2, record, reason = pcall(reg.spec.resolveResident, copy(context))
     local ok3, revAfter = pcall(reg.spec.getResidentRevision, copy(context))
@@ -1534,7 +1736,14 @@ function O:readMaterial(consumerLease, query)
                 elseif reg.spec.schemaVersion ~= spec.requiredSchemas[pid] then
                     snap.properties[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "SCHEMA_INCOMPATIBLE", stock.dataRevision)
                 elseif reg.spec.residency == "OWNER_RESOLVED" then
-                    snap.properties[pid] = self:resolveResident(reg, stock, ctx.purpose, cycle)
+                    -- Live where the material is resident; elsewhere the carried record (:330).
+                    local carrier = stock.carrierId ~= nil and self.carriers[stock.carrierId] or nil
+                    local live = self:isResident(reg, carrier) and self:resolveResident(reg, stock, ctx.purpose, cycle) or nil
+                    if live ~= nil and not (live.knowledge == "UNAVAILABLE" and live.reason == O.NOT_RESIDENT) then
+                        snap.properties[pid] = live
+                    elseif snap.properties[pid] == nil then
+                        snap.properties[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "NOT_RECORDED", stock.dataRevision)
+                    end
                 elseif snap.properties[pid] == nil then
                     snap.properties[pid] = SGRecords.unavailableProperty(pid, reg.spec.schemaVersion, reg.spec.producerId, "NOT_RECORDED", stock.dataRevision)
                 end
@@ -1675,10 +1884,14 @@ local function serializeStock(s)
     }
 end
 
-function O:serializeCore()
+--- The saved records of the carriers `pick(carrierKey)` selects (nil selects all): the
+--- carrier rows, their live stocks and the unresolved historical stocks, in id order.
+function O:collectRecords(pick)
     local carriers = {}
     local ids = {}
-    for id in pairs(self.carriers) do ids[#ids + 1] = id end
+    for id, c in pairs(self.carriers) do
+        if pick == nil or pick(c.binding.carrierKey) then ids[#ids + 1] = id end
+    end
     table.sort(ids)
     for _, id in ipairs(ids) do
         local c = self.carriers[id]
@@ -1687,17 +1900,29 @@ function O:serializeCore()
     end
     local stocks = {}
     local sids = {}
-    for id in pairs(self.stocks) do sids[#sids + 1] = id end
+    for id, s in pairs(self.stocks) do
+        if pick == nil or pick(s.carrierKey) then sids[#sids + 1] = id end
+    end
     table.sort(sids)
     for _, id in ipairs(sids) do stocks[#stocks + 1] = serializeStock(self.stocks[id]) end
     -- Unresolved historical stocks (carrier absent or mismatched at the last
     -- load) travel until a load resolves them; bounded by the retired limit.
     local historical = {}
     local hids = {}
-    for id, s in pairs(self.retiredStocks) do if s.historical then hids[#hids + 1] = id end end
+    for id, s in pairs(self.retiredStocks) do
+        if s.historical and (pick == nil or pick(s.carrierKey)) then hids[#hids + 1] = id end
+    end
     table.sort(hids)
     for _, id in ipairs(hids) do historical[#historical + 1] = serializeStock(self.retiredStocks[id]) end
-    return { schemaVersion = 2, revision = self.revision, nextStock = self.nextStock, carriers = carriers, stocks = stocks, historical = historical }
+    return { carriers = carriers, stocks = stocks, historical = historical }
+end
+
+--- SG_SAVE_2.coreValues. SG2-4b: `exclude(carrierKey)` names the carriers a member save
+--- section persists itself (the ground cells, in extensions.sg2Ground's payload, SG-2
+--- :563); their carriers, stocks and history stay out of the ordinary envelope.
+function O:serializeCore(exclude)
+    local r = self:collectRecords(exclude ~= nil and function(k) return not exclude(k) end or nil)
+    return { schemaVersion = 2, revision = self.revision, nextStock = self.nextStock, carriers = r.carriers, stocks = r.stocks, historical = r.historical }
 end
 
 local function validateSavedStock(s, i, label, carrierIds)
@@ -1757,6 +1982,62 @@ local function retainHistorical(self, saved, reason, binding)
     h.retireReason = reason
     h.readiness = "UNAVAILABLE"
     self.retiredStocks[saved.stockId] = h
+end
+
+--- [MAINTENANCE row 214] Before the restore walk, free every saved stock id that a stock minted
+--- at this load already holds. The load epoch restarts at "1" in every game process (SG.new), so
+--- the enumeration of a fresh launch mints "st:1:1", "st:1:2", ... again, and an unchanged
+--- carrier's fresh stock carries the very id its saved stock holds. The reattach requires that id
+--- to be free, so every such stock fell to RESTORE_MISMATCH and its saved record was kept as a
+--- historical twin of the live stock, which the next load's validateCore refused. A holder moves
+--- to an id no live, retired or saved record holds (SG-1 brief :224, a token is never reused),
+--- the way the reattach itself moves a live stock's id. A stock an earlier restore pass of this
+--- mission reattached keeps its id: the first claim on a saved id stands.
+local function freeSavedIds(self, saved)
+    local taken = {}
+    for _, s in ipairs(saved) do taken[s.stockId] = true end
+    local moved = 0
+    for _, s in ipairs(saved) do
+        local holder = self.stocks[s.stockId]
+        if holder ~= nil and not self.restoredIds[s.stockId] then
+            local id
+            repeat id = self:newStockId() until not taken[id] and self.stocks[id] == nil and self.retiredStocks[id] == nil
+            self.stocks[s.stockId] = nil
+            holder.stockId = id
+            holder.dataRevision = bump(self)
+            self.stocks[id] = holder
+            local carrier = self.carriers[holder.carrierId]
+            if carrier ~= nil and carrier.stockId == s.stockId then carrier.stockId = id end
+            moved = moved + 1
+        end
+    end
+    return moved
+end
+
+--- [MAINTENANCE row 214] The load-side guard for a save that already carries the twins the
+--- restore above used to write: drop each historical entry whose stockId is also a saved live
+--- stock's, and say how many. Without it validateCore refuses such an envelope on every load, and
+--- the refusal path writes the same bytes back. Live stocks are never touched, nothing else is
+--- altered, and every other uniqueness violation still refuses as before. Carried from #41
+--- (Wizard's REPAIR-208, ruling of 2026-09-30 23:24), where the save repair was first written.
+function O.dropHistoricalTwins(core)
+    if type(core) ~= "table" or type(core.stocks) ~= "table" or type(core.historical) ~= "table" then
+        return 0
+    end
+    local live = {}
+    for _, s in ipairs(core.stocks) do
+        if type(s) == "table" and s.stockId ~= nil then live[s.stockId] = true end
+    end
+    local kept, dropped = {}, 0
+    for _, s in ipairs(core.historical) do
+        if type(s) == "table" and s.stockId ~= nil and live[s.stockId] then
+            dropped = dropped + 1
+        else
+            kept[#kept + 1] = s
+        end
+    end
+    if dropped > 0 then core.historical = kept end
+    return dropped
 end
 
 --- The restore half of the join (SG-1 brief 4.7.1). Every saved carrier of a
@@ -1853,6 +2134,7 @@ function O:restoreCore(core, context)
     local saved = {}
     for _, s in ipairs(core.stocks) do saved[#saved + 1] = s end
     for _, s in ipairs(core.historical or {}) do saved[#saved + 1] = s end
+    local moved = freeSavedIds(self, saved)
     -- ONE CLAIM PER CARRIER PER LOAD (SG2-1 re-review BLOCKER). Saved live stocks
     -- are walked before history rows. The first saved stock that reattaches to, or
     -- is judged against, a carrier's live record claims that record for this load.
@@ -1861,6 +2143,21 @@ function O:restoreCore(core, context)
     -- history row at today's amount did exactly that) nor reset its knowledge to
     -- UNKNOWN (an older row at another amount did that on every load).
     local claimed, superseded = {}, 0
+    -- [MAINTENANCE row 206] The saved and the reloaded native amount are the same quantity when
+    -- they are equal as numbers, or, for a carrier whose adapter supplies restoredQuantityImage,
+    -- when their images are equal: the engine saves a FLOAT level as float32 to six decimals,
+    -- so the reloaded level is the saved one as native wrote it, never the exact double SG-1
+    -- recorded. Exact integer equality of the images, never a tolerance (SG-1 brief :392).
+    local function sameAmount(carrier, nativeAmount, savedAmount)
+        local lease = self.registry:get(SGRegistry.KIND_CARRIER_ADAPTER, carrier.adapterId)
+        local image = lease ~= nil and lease.spec.restoredQuantityImage or nil
+        if type(image) == "function" then
+            local okA, a = pcall(image, copy(carrier.binding), nativeAmount)
+            local okB, b = pcall(image, copy(carrier.binding), savedAmount)
+            if okA and okB and type(a) == "number" and type(b) == "number" then return a == b end
+        end
+        return nativeAmount == savedAmount
+    end
     for _, s in ipairs(saved) do
         local carrier = nil
         if refused[s.carrierId] == nil then carrier = self.carriers[target[s.carrierId] or s.carrierId] end
@@ -1870,7 +2167,7 @@ function O:restoreCore(core, context)
         if carrier ~= nil and live ~= nil and claimed[carrier.carrierId] then
             retainHistorical(self, s, "RESTORE_SUPERSEDED", bindingOf[s.carrierId])
             superseded = superseded + 1
-        elseif carrier ~= nil and live ~= nil and self.stocks[s.stockId] == nil and nativeAmount == s.observedAmount and SGValues.equal(nativeMaterial, s.materialRef) then
+        elseif carrier ~= nil and live ~= nil and self.stocks[s.stockId] == nil and sameAmount(carrier, nativeAmount, s.observedAmount) and SGValues.equal(nativeMaterial, s.materialRef) then
             claimed[carrier.carrierId] = true
             -- Reattach: identity, generation, properties and causes carried; native quantity stands.
             self.stocks[live.stockId] = nil
@@ -1884,6 +2181,7 @@ function O:restoreCore(core, context)
             for _, c in ipairs(s.acceptedCauses or {}) do live.acceptedCauses[c.key] = { sequence = c.sequence, fingerprint = c.fingerprint } end
             live.dataRevision = bump(self)
             self.stocks[s.stockId] = live
+            self.restoredIds[s.stockId] = true
             carrier.stockId = s.stockId
             carrier.lastGeneration = math.max(carrier.lastGeneration or 0, s.contentsGeneration)
             self.retiredStocks[s.stockId] = nil
@@ -1914,7 +2212,7 @@ function O:restoreCore(core, context)
             if carrier ~= nil then carrier.lastGeneration = math.max(carrier.lastGeneration or 0, sc.lastGeneration or 0) end
         end
     end
-    return { restored = restored, unknown = unknown, historical = historical, refused = refusedCount, superseded = superseded }
+    return { restored = restored, unknown = unknown, historical = historical, refused = refusedCount, superseded = superseded, moved = moved }
 end
 
 --- Mission teardown.
@@ -1925,6 +2223,7 @@ function O:clear()
     self.carriers = {}
     self.stocks = {}
     self.retiredStocks = {}
+    self.restoredIds = {}
     self.pending = {}
     self._deferred = nil
     self.busy = false
