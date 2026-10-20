@@ -47,6 +47,8 @@ GS.LATCHING = { CARDINALITY = true, INCONSISTENT = true, SAMPLE = true, SCALE = 
 local function isFinite(n) return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge end
 local function isInteger(n) return isFinite(n) and math.floor(n) == n end
 
+local function logLine(msg) print("[StockGuard] ground: " .. tostring(msg)) end
+
 --- Bind to the mission's height layer. Returns the sampler, or nil and a reason.
 function GS.bind(mission)
     mission = mission or g_currentMission
@@ -87,13 +89,67 @@ function GS.bind(mission)
 end
 
 --- A refused read. A grid or scale proof failure latches the binding (GS.LATCHING); a read
---- refused for its own reasons (out of the map, an unknown type index) does not.
-function GS:refuse(reason)
+--- refused for its own reasons (out of the map, an unknown type index) does not. The detail
+--- is what the fault report is made of (see GS:diagnose).
+function GS:refuse(reason, detail)
     if self.fault == nil and GS.LATCHING[reason] then
-        self.fault = { reason = reason }
+        self.fault = { reason = reason, detail = detail }
         self.faultQualified = {}
+        -- faultLogged belongs to the observer's narrative line (SGGroundObserver.latchFault);
+        -- this is the evidence line's own flag, so neither can silence the other.
+        if not self.faultEvidenced then
+            self.faultEvidenced = true
+            local ok, line = pcall(self.diagnose, self, detail)
+            if ok and type(line) == "string" then logLine(line) else logLine("fault " .. tostring(reason) .. " with no readable detail") end
+        end
     end
     return nil, reason
+end
+
+--- The pixel count the engine answers for a square around one world point, as
+--- "matching/total". The proofs read the third value; the second says how many pixels held
+--- anything, which separates a grid that covers more than one pixel from a pass that covers
+--- the right one and finds it empty.
+function GS:probe(modifier, cx, cz, extent)
+    modifier:setParallelogramWorldCoords(cx - extent, cz - extent, cx + extent, cz - extent, cx - extent, cz + extent, DensityCoordType.POINT_POINT_POINT)
+    local _, matching, total = modifier:executeGet()
+    return tostring(matching) .. "/" .. tostring(total)
+end
+
+--- One line per latched binding: the proof that fired, the values it saw, and what the same
+--- modifier answers for the same pixel under each grid an engine could plausibly use (the
+--- inset square this sampler reads, a near-point query, the whole pixel, and the pixel's two
+--- half-shifted neighbours). No read the sampler uses for its own work comes from here: this
+--- runs once, on the read that latches, and is the evidence the grid observation needs
+--- (:24-25, and the rounding note in tools/test/mutate_sg24b.py).
+function GS:diagnose(detail)
+    local fault = self.fault
+    local parts = { "fault " .. tostring((type(detail) == "table" and detail.proof) or (fault ~= nil and fault.reason) or "?") }
+    if type(detail) == "table" then
+        if detail.x ~= nil then parts[#parts + 1] = "pixel=" .. tostring(detail.x) .. "," .. tostring(detail.z) end
+        if detail.typeCount ~= nil then parts[#parts + 1] = "type=" .. tostring(detail.type) .. "/" .. tostring(detail.typeCount) end
+        if detail.heightCount ~= nil then parts[#parts + 1] = "height=" .. tostring(detail.height) .. "/" .. tostring(detail.heightCount) end
+        if detail.positiveCount ~= nil then parts[#parts + 1] = "positive=" .. tostring(detail.positive) .. "/" .. tostring(detail.positiveCount) end
+        if detail.typedCount ~= nil then parts[#parts + 1] = "typed=" .. tostring(detail.typed) .. "/" .. tostring(detail.typedCount) end
+        if detail.block then parts[#parts + 1] = "block=" .. tostring(detail.nx) .. "x" .. tostring(detail.nz) .. " count=" .. tostring(detail.count) end
+        if detail.raw ~= nil then parts[#parts + 1] = "raw=" .. tostring(detail.raw) .. " typeValue=" .. tostring(detail.type) end
+    end
+    parts[#parts + 1] = "grid pitch=" .. tostring(self.pitch) .. " size=" .. tostring(self.size) .. " terrain=" .. tostring(self.terrainSize) .. " inset=" .. tostring(GS.INSET)
+    if type(detail) == "table" and detail.x ~= nil and detail.z ~= nil then
+        local p = self.pitch
+        local cx, cz = self:cellCentre(detail.x, detail.z)
+        local inset = 0.5 * p - GS.INSET * p
+        local probes = {
+            "inset=" .. self:probe(self.typeModifier, cx, cz, inset),
+            "point=" .. self:probe(self.typeModifier, cx, cz, 0.001),
+            "pixel=" .. self:probe(self.typeModifier, cx, cz, 0.5 * p),
+            "minusHalf=" .. self:probe(self.typeModifier, cx - 0.5 * p, cz, inset),
+            "plusHalf=" .. self:probe(self.typeModifier, cx + 0.5 * p, cz, inset),
+            "heightInset=" .. self:probe(self.heightModifier, cx, cz, inset),
+        }
+        parts[#parts + 1] = "probe " .. table.concat(probes, " ")
+    end
+    return table.concat(parts, " ")
 end
 
 --- The filter on one height type's index, as getFillLevelAtArea builds it (:102-104).
@@ -146,24 +202,24 @@ function GS:readCell(x, z)
     local ax, az, bx, bz, cx, cz = self:polygon(x, z, 1, 1)
     set(self.typeModifier, ax, az, bx, bz, cx, cz)
     local typeValue, _, typeTotal = self.typeModifier:executeGet()
-    if typeTotal ~= 1 then return self:refuse("CARDINALITY") end
+    if typeTotal ~= 1 then return self:refuse("CARDINALITY", { proof = "TYPE", x = x, z = z, type = typeValue, typeCount = typeTotal }) end
     set(self.heightModifier, ax, az, bx, bz, cx, cz)
     local raw, _, heightTotal = self.heightModifier:executeGet()
-    if heightTotal ~= 1 then return self:refuse("CARDINALITY") end
-    if not isInteger(raw) or raw < 0 or not isInteger(typeValue) or typeValue < 0 then return self:refuse("SAMPLE") end
+    if heightTotal ~= 1 then return self:refuse("CARDINALITY", { proof = "HEIGHT", x = x, z = z, height = raw, heightCount = heightTotal }) end
+    if not isInteger(raw) or raw < 0 or not isInteger(typeValue) or typeValue < 0 then return self:refuse("SAMPLE", { proof = "SAMPLE", x = x, z = z, raw = raw, type = typeValue }) end
     local _, positive, positiveTotal = self.heightModifier:executeGet(self.heightFilter)
-    if positiveTotal ~= 1 then return self:refuse("CARDINALITY") end
+    if positiveTotal ~= 1 then return self:refuse("CARDINALITY", { proof = "POSITIVE", x = x, z = z, positive = positive, positiveCount = positiveTotal }) end
     local hm = g_densityMapHeightManager
     local heightType = hm:getDensityMapHeightTypeByIndex(typeValue)
     if raw == 0 then
-        if positive ~= 0 then return self:refuse("INCONSISTENT") end
+        if positive ~= 0 then return self:refuse("INCONSISTENT", { proof = "INCONSISTENT_EMPTY", x = x, z = z, positive = positive, raw = raw }) end
         if heightType ~= nil then
             local _, typed, typedTotal = self.heightModifier:executeGet(self.heightFilter, self:typeFilterOf(heightType))
-            if typedTotal ~= 1 or typed ~= 0 then return self:refuse("TYPE_UNVERIFIED") end
+            if typedTotal ~= 1 or typed ~= 0 then return self:refuse("TYPE_UNVERIFIED", { proof = "TYPE_EMPTY", x = x, z = z, typed = typed, typedCount = typedTotal }) end
         end
         return { x = x, z = z, raw = 0, liters = 0 }
     end
-    if positive ~= 1 then return self:refuse("INCONSISTENT") end
+    if positive ~= 1 then return self:refuse("INCONSISTENT", { proof = "INCONSISTENT_TYPED", x = x, z = z, positive = positive, raw = raw }) end
     -- Index 0 is the empty height type (types index from 1, DensityMapHeightManager.lua:193):
     -- positive height under it holds no material of any fill type, as the engine's own
     -- readers find it (they filter by type: DensityMapHeightUtil.getFillLevelAtArea :80-109,
@@ -173,11 +229,11 @@ function GS:readCell(x, z)
     if typeValue == 0 then return { x = x, z = z, raw = raw, liters = 0 } end
     if heightType == nil or heightType.fillTypeIndex == nil then return self:refuse("UNKNOWN_TYPE_INDEX") end
     local _, typed, typedTotal = self.heightModifier:executeGet(self.heightFilter, self:typeFilterOf(heightType))
-    if typedTotal ~= 1 or typed ~= 1 then return self:refuse("TYPE_UNVERIFIED") end
+    if typedTotal ~= 1 or typed ~= 1 then return self:refuse("TYPE_UNVERIFIED", { proof = "TYPE_TYPED", x = x, z = z, typed = typed, typedCount = typedTotal }) end
     local name = g_fillTypeManager ~= nil and g_fillTypeManager:getFillTypeNameByIndex(heightType.fillTypeIndex) or nil
     if type(name) ~= "string" or name == "" then return self:refuse("FILL_TYPE_UNNAMED") end
     local perRaw = hm:getMinValidLiterValue(heightType.fillTypeIndex)
-    if not isFinite(perRaw) or perRaw <= 0 then return self:refuse("SCALE") end
+    if not isFinite(perRaw) or perRaw <= 0 then return self:refuse("SCALE", { proof = "SCALE", x = x, z = z, raw = raw, perRaw = perRaw }) end
     return { x = x, z = z, raw = raw, liters = raw * perRaw, fillTypeIndex = heightType.fillTypeIndex, fillTypeName = name }
 end
 
@@ -187,7 +243,7 @@ function GS:blockEmpty(x0, z0, nx, nz)
     local ax, az, bx, bz, cx, cz = self:polygon(x0, z0, nx, nz)
     set(self.heightModifier, ax, az, bx, bz, cx, cz)
     local _, positive, total = self.heightModifier:executeGet(self.heightFilter)
-    if total ~= nx * nz then return self:refuse("CARDINALITY") end
+    if total ~= nx * nz then return self:refuse("CARDINALITY", { proof = "BLOCK", block = true, nx = nx, nz = nz, count = total, positive = positive }) end
     self.blockProofs = self.blockProofs + 1
     return positive == 0
 end
