@@ -51,7 +51,9 @@ g_terrainNode = g_terrainNode or { terrain = true }
 -- side over the bench's 256 m terrain, so a pixel is 0.5 m, centred on the origin. Each
 -- pixel holds a raw height (the height channels, 6 bits) and a height-type index (the
 -- type channels). Knobs for fault rows:
---   expand      extra pixels NEAREST_EXPAND adds on every side (0 = the engine's rounding)
+--   expand      extra pixels the query takes on every side, ANY mode (fault injection;
+--               0 = that mode's own rounding. NEAREST_EXPAND's own rounding already
+--               adds one ring, native-proven by TEST-951 - see pixelsOf)
 --   typedLie    a pixel key whose type filter answers false (a type/height disagreement)
 --   stepRaw     the most raw units one line call adds to one pixel (spreads a drop)
 --   roundUp     the line writes ceil(budget) instead of floor(budget)
@@ -141,13 +143,34 @@ local function pixelsOf(poly, rounding)
     local minz, maxz = math.min(poly.az, poly.bz, poly.cz, dz), math.max(poly.az, poly.bz, poly.cz, dz)
     local p, h, size = ENGINE_GROUND.pitch(), ENGINE_GROUND.half(), ENGINE_GROUND.size
     local x0, x1, z0, z1
+    -- [952] e is the FAULT INJECTOR and it now applies to every mode, because the
+    -- sampler no longer uses NEAREST_EXPAND and a knob that only worked on the mode
+    -- under repair could not produce a cardinality failure any more.
+    local e = ENGINE_GROUND.expand
     if rounding == DensityRoundingMode.NEAREST_EXPAND then
-        local e = ENGINE_GROUND.expand
+        -- [952] NATIVE-CALIBRATED, and this is a CORRECTION. This branch used to take
+        -- "every pixel the box touches" and the comment above called e = 0 "the
+        -- engine's rounding". Tina's TEST-951 on Ally falsified that: a 27 x 27 block,
+        -- insetted 0.1 px as GS:polygon builds it, came back as 841 = 29 x 29 -
+        -- `expected=729 actual=841 pixels=(35,2555)+27x27` in the one-shot line at
+        -- 22:41:19.556 of log-fresh-951-full.txt (SHA256 17e86604..9fc227b6). So this
+        -- A one-ring expansion is consistent with that count on the probed geometry.
+        -- The model uses that interpretation so it no longer masks the observed failure.
+        x0, x1 = math.floor((minx + h) / p) - 1 - e, math.ceil((maxx + h) / p) - 1 + 1 + e
+        z0, z1 = math.floor((minz + h) / p) - 1 - e, math.ceil((maxz + h) / p) - 1 + 1 + e
+    elseif rounding == DensityRoundingMode.INCLUSIVE then
+        -- Every pixel the box touches. Modelled separately from NEAREST since 952 so
+        -- the two can be compared on the same geometry rather than sharing a branch;
+        -- the engine's own INCLUSIVE uses are all inside the internal PF mod
+        -- (NitrogenMap.lua:610,612,745,753), not base-game script.
         x0, x1 = math.floor((minx + h) / p) - e, math.ceil((maxx + h) / p) - 1 + e
         z0, z1 = math.floor((minz + h) / p) - e, math.ceil((maxz + h) / p) - 1 + e
     else
-        x0, x1 = math.ceil((minx + h) / p - 0.5), math.floor((maxx + h) / p - 0.5)
-        z0, z1 = math.ceil((minz + h) / p - 0.5), math.floor((maxz + h) / p - 0.5)
+        -- NEAREST: the pixels whose CENTRES lie inside. Nine base-game uses, all on
+        -- density modifiers in utils/FSDensityMapUtil.lua (294, 385, 2559, 2563, 2599,
+        -- 2626, 2694, 2780, 2807).
+        x0, x1 = math.ceil((minx + h) / p - 0.5) - e, math.floor((maxx + h) / p - 0.5) + e
+        z0, z1 = math.ceil((minz + h) / p - 0.5) - e, math.floor((maxz + h) / p - 0.5) + e
     end
     return math.max(0, x0), math.max(0, z0), math.min(size - 1, x1), math.min(size - 1, z1)
 end

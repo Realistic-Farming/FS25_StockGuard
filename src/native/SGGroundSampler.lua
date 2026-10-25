@@ -4,9 +4,10 @@
 -- SG-2 v2.3 :164. The one reader of native ground material: a terrain-height pixel's
 -- type and quantity, read with the construction the engine's own area reader uses
 -- (DensityMapHeightUtil.getFillLevelAtArea, :80-109): dedicated type- and height-channel
--- DensityMapModifiers with NEAREST_EXPAND polygon rounding, a positive-height filter and
--- a per-type filter, and litres as raw height times the type's live
--- getMinValidLiterValue (DensityMapHeightManager.lua:498-501).
+-- DensityMapModifiers with NEAREST polygon rounding (see the rounding note at the
+-- modifier construction below), a positive-height filter and a per-type filter, and litres
+-- as raw height times the type's live getMinValidLiterValue
+-- (DensityMapHeightManager.lua:498-501).
 --
 -- THE GRID. Pixel (x, z) of the height layer spans world
 -- [x * p - T/2, (x + 1) * p - T/2] on each axis, with p = terrainSize / getDensityMapSize
@@ -74,10 +75,40 @@ function GS.bind(mission)
     self.pitch = terrainSize / size
     self.half = terrainSize * 0.5
     self.typeFirst, self.typeNum = typeFirst, typeNum
+    -- ROUNDING MODE: NEAREST, NOT NEAREST_EXPAND. MEASURED IN GAME, ONCE, ON ONE SITE.
+    --
+    -- Both modifiers used NEAREST_EXPAND, copied from the engine's own area reader
+    -- (DensityMapHeightUtil.getFillLevelAtArea, :80-109). That reader is asked for an
+    -- AREA and may legitimately widen to cover it; this sampler asks for exactly one
+    -- pixel, or exactly one rectangle of pixels, and then PROVES the cardinality it got.
+    -- Widening makes that proof fail even when the read is otherwise correct.
+    --
+    -- WHAT WAS ACTUALLY OBSERVED, and it is only this:
+    --   TEST-951  NEAREST_EXPAND, MapUS, block (35,2555)+27x27: expected 729, actual 841
+    --             (841 = 29x29, consistent with one extra ring on this geometry).
+    --   TEST-959  NEAREST, same map, same block: 729 pixels exactly, and a 1x1 cell read
+    --             at the same site: 1 pixel exactly. reads 1068->1069,
+    --             blockProofs 582->583, fault=none.
+    --
+    -- LIMITS, stated because the measurement is narrow:
+    --   * ONE map (MapUS) and ONE site. Not every map, grid, operation or block shape.
+    --   * Only the 27x27 and 1x1 shapes were explicitly probed and logged. Other native
+    --     reads occurred, but their individual shapes and counts were not recorded.
+    --   * The proof came from an ISOLATED DIAGNOSTIC PACKAGE built on the Pumps N' Hoses
+    --     842 base (SG958, SHA256 1ff2d3dc2709faef11afd02c3478b7913e38b6c95e2ebf338a25769-
+    --     db7ab8ad2) driven by a manual read-only console probe. It was NOT measured from
+    --     this development tree, and that PNH adapter work is a separate scope which is
+    --     deliberately not part of this change.
+    --   * The engine's rounding behaviour itself remains uninspectable; this records what
+    --     the two modes returned, not why.
+    --
+    -- The CARDINALITY proof and its latch are unchanged and still the safety net: if a
+    -- grid ever answers a count this sampler did not ask for, the binding still refuses
+    -- and latches rather than trusting the number.
     self.heightModifier = DensityMapModifier.new(id, heightFirst, heightNum)
-    self.heightModifier:setPolygonRoundingMode(DensityRoundingMode.NEAREST_EXPAND)
+    self.heightModifier:setPolygonRoundingMode(DensityRoundingMode.NEAREST)
     self.typeModifier = DensityMapModifier.new(id, typeFirst, typeNum)
-    self.typeModifier:setPolygonRoundingMode(DensityRoundingMode.NEAREST_EXPAND)
+    self.typeModifier:setPolygonRoundingMode(DensityRoundingMode.NEAREST)
     self.heightFilter = DensityMapFilter.new(self.heightModifier)
     self.heightFilter:setValueCompareParams(DensityValueCompareType.GREATER, 0)
     self.typeFilters = {}
