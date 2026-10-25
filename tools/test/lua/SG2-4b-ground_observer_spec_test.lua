@@ -312,6 +312,20 @@ group("S", function()
     T.eq("S5 a rounding that takes a neighbour is refused, never summed (totalNumPixels must be 1)", tostring(({ s:readCell(300, 260) })[2]), "CARDINALITY")
     G_.expand = 0
     T.eq("S5b a cardinality failure latches that binding; each proof row below reads through a fresh one", tostring(s.fault and s.fault.reason), "CARDINALITY")
+    -- S5c onward: the latch must carry the numbers the engine actually answered, and print
+    -- them once, so a native run names the failing proof instead of only naming it by reason
+    -- (MAINTENANCE row 321).
+    s = GS.bind(m)
+    G_.expand = 1
+    local evLines = printed(function() s:readCell(300, 260) end)
+    G_.expand = 0
+    local det = s.fault and s.fault.detail or nil
+    T.eq("S5c the latch names the proof that fired and the count the engine answered, not the 1 the sampler assumed", tostring(det and det.proof) .. "/" .. tostring(det and det.typeCount), "TYPE/9")
+    T.eq("S5d it carries the pixel the read was for", tostring(det and det.x) .. "," .. tostring(det and det.z), "300,260")
+    T.eq("S5e the evidence line prints the proof, the pixel, the grid it believed and the probes, once",
+        tostring(has(evLines, "fault TYPE pixel=300,260")) .. "/" .. tostring(has(evLines, "grid pitch=0.5")) .. "/" .. tostring(has(evLines, "probe inset=")),
+        "true/true/true")
+    T.eq("S5f and it leaves the observer its own once-only narrative flag", tostring(s.faultLogged), "nil")
     s = GS.bind(m)
     G_.typedLie = G_.key(300, 260)
     T.eq("S6 the type channel and the typed positive-height query must agree", tostring(({ s:readCell(300, 260) })[2]), "TYPE_UNVERIFIED")

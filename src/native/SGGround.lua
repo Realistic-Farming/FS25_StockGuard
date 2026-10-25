@@ -528,7 +528,13 @@ function GR:stage(d, context)
     local identity, why = GR.currentIdentity(mission)
     if identity == nil then return unavailable(why) end
     if identity.mapKey ~= d.mapKey then return unavailable("MAP_CHANGED") end
-    if identity.nativeHeightFile ~= d.nativeHeightFile then return unavailable("HEIGHT_FILE_CHANGED") end
+    if identity.nativeHeightFile ~= d.nativeHeightFile then
+        -- The refusal alone cannot be acted on: name both files, with their lengths, so a
+        -- native run says which side moved and how (MAINTENANCE row 321).
+        log("height file changed: saved [" .. tostring(d.nativeHeightFile) .. "] " .. tostring(#tostring(d.nativeHeightFile))
+            .. " bytes, now [" .. tostring(identity.nativeHeightFile) .. "] " .. tostring(#tostring(identity.nativeHeightFile)) .. " bytes")
+        return unavailable("HEIGHT_FILE_CHANGED")
+    end
     if identity.layerDescriptor ~= d.layerDescriptor then return unavailable("LAYER_INCOMPATIBLE") end
     local dir = mission.missionInfo ~= nil and mission.missionInfo.savegameDirectory or nil
     if not nonempty(dir, 1024) then return unavailable("NO_SAVEGAME_DIRECTORY") end

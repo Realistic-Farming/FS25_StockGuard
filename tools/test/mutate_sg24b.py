@@ -54,12 +54,12 @@ BENCH = "SG2-4b-ground_observer_spec_test.lua"
 MUTATIONS = [
  # ── the sampler ────────────────────────────────────────────────────────────────
  ("S1-no-cardinality", GS,
-  [("    if typeTotal ~= 1 then return self:refuse(\"CARDINALITY\") end\n", "", 1),
-   ("    if heightTotal ~= 1 then return self:refuse(\"CARDINALITY\") end\n", "", 1),
-   ("    if positiveTotal ~= 1 then return self:refuse(\"CARDINALITY\") end\n", "", 1)],
+  [("    if typeTotal ~= 1 then return self:refuse(\"CARDINALITY\", { proof = \"TYPE\", x = x, z = z, type = typeValue, typeCount = typeTotal }) end\n", "", 1),
+   ("    if heightTotal ~= 1 then return self:refuse(\"CARDINALITY\", { proof = \"HEIGHT\", x = x, z = z, height = raw, heightCount = heightTotal }) end\n", "", 1),
+   ("    if positiveTotal ~= 1 then return self:refuse(\"CARDINALITY\", { proof = \"POSITIVE\", x = x, z = z, positive = positive, positiveCount = positiveTotal }) end\n", "", 1)],
   "a read over a neighbour is summed instead of refused (S5)"),
  ("S2-no-typed-verification", GS,
-  [("    if typedTotal ~= 1 or typed ~= 1 then return self:refuse(\"TYPE_UNVERIFIED\") end\n    local name", "    local name", 1)],
+  [("    if typedTotal ~= 1 or typed ~= 1 then return self:refuse(\"TYPE_UNVERIFIED\", { proof = \"TYPE_TYPED\", x = x, z = z, typed = typed, typedCount = typedTotal }) end\n    local name", "    local name", 1)],
   "an occupied pixel's type is not verified by the typed query (S6)"),
  ("S3-raw-as-litres", GS,
   [("liters = raw * perRaw,", "liters = raw,", 1)],

@@ -387,8 +387,14 @@ group("F", function()
     local m6, sg6 = reload(m5, "f_final4", nil, { index = 16, terrainSize = 512 })
     T.eq("F7 the same map at another terrain scale is an incompatible layer", readiness(sg6), "UNAVAILABLE/LAYER_INCOMPATIBLE")
     ENGINE_MAPS[ENGINE_HEIGHT_ID].filename = "densityMap_height2.gdm"
-    local m7, sg7 = reload(m6, "f_final4", nil, { index = 16 })
+    local linesF
+    local m7, sg7
+    linesF = printed(function() m7, sg7 = reload(m6, "f_final4", nil, { index = 16 }) end)
     T.eq("F8 another height file name is refused before the layer", readiness(sg7), "UNAVAILABLE/HEIGHT_FILE_CHANGED")
+    T.eq("F8b and the refusal names both files with their lengths, so the next native run says which side moved",
+        tostring(has(linesF, "height file changed: saved [")) .. "/" .. tostring(has(linesF, "[" .. HEIGHT_FILE .. "] 21 bytes"))
+        .. "/" .. tostring(has(linesF, "[densityMap_height2.gdm] 22 bytes")),
+        "true/true/true")
     ENGINE_MAPS[ENGINE_HEIGHT_ID].filename = HEIGHT_FILE
     -- A save that did not come through the controller (the SG-1 benches' direct path).
     sg7.save.openAttemptId = nil
