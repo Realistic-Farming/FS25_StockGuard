@@ -441,7 +441,26 @@ function SGCapacity:prepareGround(heightManager, fillManager, channels, savedAcc
         for lname, index in pairs(saved) do
             if not isInt(index) or index < 1 or used[index] then return self:fail("SAVED_MAPPING_INVALID", lname) end
             used[index] = true
-            if byLower[lname] ~= index then return self:fail("SAVED_MAPPING_CHANGED", lname) end
+            -- A saved index above what the current channel count can represent cannot
+            -- be remapped by anything. Not a new stop: no current index can exceed
+            -- capacity (see the GROUND_INDEX check above), so the old equality test
+            -- already failed this case. It is only named now.
+            if capacity < index then return self:fail("SAVED_MAPPING_OUT_OF_RANGE", lname) end
+            local current = byLower[lname]
+            -- GONE. Native would set forceTypeConversion (DensityMapHeightManager
+            -- :396-404) and convert the saved raster, which can reinterpret heaps of
+            -- this very type. Keep stopping: that is what this guard is for. Reported
+            -- distinctly from a moved index, because merging the two is what made a
+            -- removed type look like a corrupted mapping.
+            if current == nil then return self:fail("SAVED_MAPPING_REMOVED", lname) end
+            -- PRESENT but moved: safe, and expected. An index is a position, not an
+            -- identity: loadDensityMapHeightTypeFromXML calls sortHeightTypes at :221
+            -- on every registration and it renumbers all of them (:184-193), so any
+            -- added foliage or mod height type shifts the rest. Native initialize
+            -- handles it by passing the saved AND current index to
+            -- setDensityMapHeightTypeProperties (:386, :391), and this wrapper's
+            -- success branch calls superFunc with tipTypeMappings intact (:731-735),
+            -- so the engine has what it needs to remap. No stop here.
         end
     end
     self.groundSignature = sig
