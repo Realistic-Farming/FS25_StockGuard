@@ -60,6 +60,15 @@ local AWAIT_REPLY_PASSES = 6
 local _awaitPasses = 0
 local _stationWaiting = false
 local _entryHold = false
+-- SG-5 host v2.15 gap slice state in one table: G2 the site fallback note, G3 the farm-change observer
+-- and its stale mark, G5 the registry listener and the token that makes an old listener inert.
+local _g5 = {
+    identityStale = false,
+    farmTarget = nil,
+    registryHost = nil,
+    registryToken = nil,
+    fallbackNote = false,
+}
 local seedSelectionSelector
 local paintCommandChrome
 local currentPageStart
@@ -1344,6 +1353,13 @@ local function awaitingFirstReply(paint)
     return _awaitPasses <= AWAIT_REPLY_PASSES
 end
 
+--- G2: after a vanished site fell back to the whole farm, the one sentence that says so. Nil otherwise.
+local function fallbackNoteText()
+    if _g5.fallbackNote ~= true then return nil end
+    if type(_selection) ~= "table" or _selection.selectionKind ~= "FARM" then return nil end
+    return tr("sg_site_fallback", "That place is no longer available. Showing the whole farm instead.")
+end
+
 local function paintTable(container, paint)
     clearTable(container)
     -- The price and station caches live for one paint too, and for the same reason: a price
@@ -1421,6 +1437,10 @@ local function paintTable(container, paint)
         -- The summary the title used to carry now rides the count line, which is already on screen and
         -- already reads well.
         local moreParts = {}
+        local siteNote = fallbackNoteText()
+        if siteNote ~= nil then
+            moreParts[#moreParts + 1] = siteNote
+        end
         -- The count line names the VIEW, so "Storages: Hay (3)" tells the player where they
         -- are without needing the chips to be the only clue.
         moreParts[#moreParts + 1] = countLineForView(paint.rowCount)
@@ -1458,7 +1478,9 @@ local function paintTable(container, paint)
         end
     elseif state == "READY" and paint.readyEmpty then
         setText(title, tr("sg5_ready_empty_title", "Stock"))
-        setText(empty, tr("sg5_ready_empty_body", "Nothing listed in this stock view yet. That does not mean the farm has no goods."))
+        local readyNote = fallbackNoteText()
+        setText(empty, (readyNote ~= nil and (readyNote .. " ") or "")
+            .. tr("sg5_ready_empty_body", "Nothing listed in this stock view yet. That does not mean the farm has no goods."))
         setVis(empty, true)
     elseif state == "WAITING" or awaitingFirstReply(paint) or (_pendingRequest and state ~= "DENIED" and state ~= "ERROR" and state ~= "UNAVAILABLE" and state ~= "TERMINAL") then
         setText(title, tr("sg5_pending_title", "Stock"))
@@ -1489,16 +1511,12 @@ local function resetTransportTrail()
     _lastRequestedCursor = nil
 end
 
-local function handleFarmTransition(farmId)
-    local changed = false
-    if _hasFarmSeen then
-        if _lastFarmId ~= farmId then changed = true end
-    else
-        _hasFarmSeen = true
-        if farmId == nil then changed = true end
-    end
-    if changed and SGEscClientAdapter ~= nil then
-        SGEscClientAdapter.invalidateLocal(g_currentMission, "FARM_CHANGED")
+-- SG-5 host v2.15 :103-107 (G3): a farm or local-actor change drops this guest's private copy whether or
+-- not the page is showing. clearWidgets is true only when the caller knows the page is the active panel,
+-- because the container is shared with the other Esc modules.
+local function dropPrivateState(reason, clearWidgets)
+    if SGEscClientAdapter ~= nil then
+        SGEscClientAdapter.invalidateLocal(g_currentMission, reason or "FARM_CHANGED")
         -- [REPAIR-371 / NOTE-373] A farm or local-actor change drops THIS guest's and THIS
         -- adapter's own state, and nothing else. uiFor is keyed by the mission handle, so
         -- without this the focus state, the last selection and the command UI state all
@@ -1516,18 +1534,42 @@ local function handleFarmTransition(farmId)
         elseif type(SGEscClientAdapter.clearSiteState) == "function" then
             pcall(SGEscClientAdapter.clearSiteState, g_currentMission)
         end
-        -- The guest's own authoritative selection goes back to the farm floor too, so the
-        -- next request is the new farm's FARM floor rather than an inherited SITE intent.
-        _selection = { route = "STOCK", selectionKind = "FARM" }
-        _selectionIndex = 1
-        _stationWaiting = false
-        _pendingRequest = false
-        resetPagingLocal()
-        resetTransportTrail()
-        -- Clear painted private data immediately, before any new host reply.
-        if _lastContainer ~= nil then
-            clearTable(_lastContainer)
-        end
+    end
+    -- The guest's own authoritative selection goes back to the farm floor too, so the
+    -- next request is the new farm's FARM floor rather than an inherited SITE intent.
+    _selection = { route = "STOCK", selectionKind = "FARM" }
+    _selectionIndex = 1
+    _stationWaiting = false
+    _pendingRequest = false
+    _view = VIEW_PLANNER
+    _drillProduct = nil
+    _drillTitle = nil
+    _plannerRows = {}
+    _viewRows = {}
+    _stationCache = nil
+    _whereCache = {}
+    _sheetRows = {}
+    _sheetSig = nil
+    _g5.fallbackNote = false
+    resetPagingLocal()
+    resetTransportTrail()
+    -- Clear painted private data immediately, before any new host reply.
+    if clearWidgets and _lastContainer ~= nil then
+        clearTable(_lastContainer)
+        clearSheet(_lastContainer)
+    end
+end
+
+local function handleFarmTransition(farmId)
+    local changed = false
+    if _hasFarmSeen then
+        if _lastFarmId ~= farmId then changed = true end
+    else
+        _hasFarmSeen = true
+        if farmId == nil then changed = true end
+    end
+    if changed then
+        dropPrivateState("FARM_CHANGED", true)
     end
     _lastFarmId = farmId
     return changed
@@ -1577,6 +1619,7 @@ local function clearPrivateDisplay(reason)
     resetPagingLocal()
     if reason == "SELECTION_CHANGED" then
         resetTransportTrail()
+        _g5.fallbackNote = false
     end
     if _lastContainer ~= nil then
         clearTable(_lastContainer)
@@ -2070,6 +2113,7 @@ local function settleStaleSite()
             -- [NOTE-373] same single authoritative state, so the fallback actually sticks
             _selection = { route = "STOCK", selectionKind = "FARM" }
             _selectionIndex = 1
+            _g5.fallbackNote = true
         end
         _focusSlot = 1
         _actionChipOffset = 0
@@ -2283,6 +2327,7 @@ function SgRfPdaGuest.openFromHostModule(opts)
 
     local prior = captureEntryContext()
     _entryHold = true
+    _g5.fallbackNote = false
 
     local function fail(why)
         -- Always release hold even if restore or an optional provider throws.
@@ -2466,6 +2511,64 @@ function SgRfPdaGuest.onOpenHelp(container)
     return false
 end
 
+local function playerUserId(player)
+    if type(player) ~= "table" then return nil end
+    local userId = nil
+    if type(player.getUserId) == "function" then
+        local ok, id = pcall(player.getUserId, player)
+        if ok then userId = id end
+    end
+    if userId == nil and player.userId ~= nil then userId = player.userId end
+    return userId
+end
+
+-- G3: PLAYER_FARM_CHANGED while the page is hidden. Only a change KNOWN to belong to another user is
+-- ignored; anything else is treated as the local player's, because dropping a copy is the safe side.
+local function onLocalFarmChanged(_target, subject)
+    if g_dedicatedServer ~= nil then return end
+    if type(subject) == "table" and type(g_localPlayer) == "table" and subject ~= g_localPlayer then
+        local subjectId, localId = playerUserId(subject), playerUserId(g_localPlayer)
+        if subjectId ~= nil and localId ~= nil and subjectId ~= localId then return end
+    end
+    dropPrivateState("FARM_CHANGED", _lastContainer ~= nil and isActivePanel())
+    _g5.identityStale = true
+end
+
+-- A private target, never the StockGuard host: unsubscribeAll(target) at teardown must remove only this.
+local function bindFarmObserver()
+    if _g5.farmTarget ~= nil or g_dedicatedServer ~= nil then return false end
+    if g_messageCenter == nil or MessageType == nil or MessageType.PLAYER_FARM_CHANGED == nil then return false end
+    local target = {}
+    g_messageCenter:subscribe(MessageType.PLAYER_FARM_CHANGED, onLocalFarmChanged, target)
+    _g5.farmTarget = target
+    return true
+end
+
+-- G5: another module took (or left) the page. StockGuard owns no child root of its own, so the leave
+-- puts the shared layout back and drops the last paint; it never clears widgets another module may be using.
+local function onRegistryChanged(token)
+    if token == nil or token ~= _g5.registryToken then return end
+    if g_dedicatedServer ~= nil or _entryHold then return end
+    if isActivePanel() then return end
+    if _lastContainer ~= nil then
+        restoreSgLayout(_lastContainer)
+    end
+    _lastPaint = nil
+end
+
+-- The registry has no removal API, so a listener is made inert by its token instead: a reset or a
+-- replacement registry gets a fresh token and the old listener returns at its first line.
+local function bindRegistryListener()
+    local reg = getHost()
+    if reg == nil or type(reg.addChangeListener) ~= "function" then return false end
+    if _g5.registryHost == reg and _g5.registryToken ~= nil then return false end
+    local token = {}
+    _g5.registryHost = reg
+    _g5.registryToken = token
+    reg:addChangeListener(function() onRegistryChanged(token) end)
+    return true
+end
+
 function SgRfPdaGuest.onShow(container, lightOnly)
     if g_dedicatedServer ~= nil then
         return
@@ -2474,6 +2577,12 @@ function SgRfPdaGuest.onShow(container, lightOnly)
     _ownerMission = g_currentMission
     local farmId = localFarmId()
     local farmChanged = handleFarmTransition(farmId)
+    if _g5.identityStale then
+        _g5.identityStale = false
+        farmChanged = true
+    end
+    pcall(bindRegistryListener)
+    pcall(bindFarmObserver)
     -- [REPAIR-371] One stable consumer id, bound idempotently for this controller's
     -- lifetime, and the stale re-read at this existing entry rather than on a timer.
     if SGEscClientAdapter ~= nil and type(SGEscClientAdapter.bindSiteChanges) == "function" then
@@ -2549,6 +2658,10 @@ function SgRfPdaGuest.tryRegister()
         else
             return false
         end
+    end
+    if _registered then
+        pcall(bindRegistryListener)
+        pcall(bindFarmObserver)
     end
     return _registered and g_inGameMenu ~= nil and g_inGameMenu.menuRealisticFarming ~= nil
 end
@@ -2928,6 +3041,14 @@ function SgRfPdaGuest.resetForTests()
     _routePending = false
     _stationWaiting = false
     _entryHold = false
+    if _g5.farmTarget ~= nil and g_messageCenter ~= nil and type(g_messageCenter.unsubscribeAll) == "function" then
+        pcall(g_messageCenter.unsubscribeAll, g_messageCenter, _g5.farmTarget)
+    end
+    _g5.farmTarget = nil
+    _g5.registryHost = nil
+    _g5.registryToken = nil
+    _g5.identityStale = false
+    _g5.fallbackNote = false
 end
 
 --- [NOTE-378] A mission BEGINS. This is deliberately NOT reset: main.lua calls this from its
@@ -3005,5 +3126,9 @@ function SgRfPdaGuest._testState()
         routePending = _routePending,
         stationWaiting = _stationWaiting,
         entryHold = _entryHold,
+        farmObserverBound = _g5.farmTarget ~= nil,
+        registryBound = _g5.registryToken ~= nil,
+        identityStale = _g5.identityStale,
+        fallbackNote = _g5.fallbackNote,
     }
 end

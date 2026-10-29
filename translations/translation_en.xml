@@ -4,6 +4,7 @@
         <text name="sg6_capacity_refused" text="StockGuard could not arrange material capacity for this session: %s. Loading stops so no goods are misread. Check the mods set and the log."/>
         <text name="sg6_profile_mismatch" text="StockGuard: the material and map capacity profile differs from the server. Obtain the matching setup and consult the host log."/>
         <text name="sg_site_purpose_yard" text="StockGuard yard"/>
+        <text name="sg_site_fallback" text="That place is no longer available. Showing the whole farm instead."/>
         <text name="sg3_reason_no_material" text="No material"/>
         <text name="sg3_reason_unsupported_material" text="This material is not graded"/>
         <text name="sg3_reason_unsupported_profile" text="Grading profile not supported"/>
