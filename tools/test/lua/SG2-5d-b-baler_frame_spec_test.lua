@@ -1290,7 +1290,7 @@ group("K", function()
             T.eq("K1 NAMED: a round Baler opens its tick since SG2-5e-b: the BALER frame and its admission, as a square one",
                 tostring(host.lastBalerTick ~= nil) .. "/" .. admits(), "true/1")
         else
-            T.eq("K2 NAMED: a non-stop Baler opens no tick: no BALER frame, no admission, Soil's standalone path keeps it",
+            T.eq("K2 NAMED: a non-stop Baler opens no tick while SGBalerNonStop is not loaded: no BALER frame, no admission, Soil's standalone path keeps it",
                 tostring(host.lastBalerTick) .. "/" .. admits(), "nil/0")
         end
         FSBaseMission.delete(m)

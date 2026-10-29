@@ -439,6 +439,8 @@ function G.admitPrimitive(gf, call)
     -- SG2-5d-b: the add's frame admits no line; a BALER frame admits pickups (one type per tick is
     -- decided after the line, when it is known what it removed: G.balerBalance).
     if gf.balerAdd then return "BALER_ADD_FRAME" end
+    -- SG2 non-stop framing: the overload scope admits no line (it frames onUpdateTick, not a work area).
+    if gf.overload ~= nil then return "BALER_OVERLOAD_SCOPE" end
     if gf.baler ~= nil and call.maxDelta > 0 then return "NOT_A_PICKUP" end
     -- SG2-5f: a ForageWagon call admits its pickups only; its fill's frame admits no line.
     if gf.forageFill ~= nil then return "FORAGE_FILL_FRAME" end
@@ -723,7 +725,7 @@ function G.openFrame(host, vehicle, opts)
     -- A WINDROWER frame opens with no unit: its area carrier binds at the first pickup. A TEDDER
     -- frame's buffer binds at its first pickup too, or is already bound from an earlier call.
     if #units == 0 and opts.area == nil and opts.tedder == nil and opts.baler == nil and opts.mower == nil and opts.mowerDrop == nil
-        and opts.forage == nil and opts.forageFill == nil then return nil end
+        and opts.forage == nil and opts.forageFill == nil and opts.overload == nil then return nil end
     local frame = SGOperationContext.open(host.context, vehicle, G.FRAME)
     if frame == nil then return nil end
     host.nextDischarge = host.nextDischarge + 1
@@ -731,7 +733,7 @@ function G.openFrame(host, vehicle, opts)
         kind = opts.kind, vehicle = vehicle, units = units, expectType = opts.expectType, dropsOnly = opts.dropsOnly == true,
         requested = opts.requested, sequence = 0, pending = nil, operations = {}, refused = {}, area = opts.area, tedder = opts.tedder,
         baler = opts.baler, balerAdd = opts.balerAdd == true, mower = opts.mower, mowerDrop = opts.mowerDrop,
-        forage = opts.forage, forageFill = opts.forageFill,
+        forage = opts.forage, forageFill = opts.forageFill, overload = opts.overload,
         callRef = "ground:" .. string.lower(opts.kind) .. ":" .. tostring(host.epoch) .. ":" .. tostring(host.nextDischarge),
     }
     return frame
@@ -746,6 +748,11 @@ function G.onUnitObserved(host, obs)
     -- SG2-5d-b (C2): inside the add's frame a settled add's own report is consumed; the rest replay.
     if gf ~= nil and gf.balerAdd then
         if obs.vehicle == gf.vehicle and G.balerConsume(gf.baler, obs) then obs.groundConsumed = true end
+        return
+    end
+    -- SG2 non-stop framing: inside a non-stop Baler's overload scope (SGBalerNonStop.observe).
+    if gf ~= nil and gf.overload ~= nil then
+        if SGBalerNonStop ~= nil then SGBalerNonStop.observe(host, gf, obs) end
         return
     end
     if gf == nil or gf.pending == nil or obs.vehicle ~= gf.vehicle then return end
@@ -1737,9 +1744,12 @@ end
 -- by the inner onEnd around its original. A tick a throw left open is closed at the Baler's next
 -- onStart: what it still held is native loss.
 --
--- WHICH BALERS (Bob's C4; SG2-5e-b, the round half): a Baler with no non-stop buffer (nonStopBaling
--- false, :1979), on the server, square or round. A non-stop Baler opens no tick, so none of its
--- lines is admitted: Soil's standalone carries it until its own slice.
+-- WHICH BALERS (Bob's C4; SG2-5e-b, the round half; SG2 non-stop framing): every Baler on the server,
+-- square or round, with or without a non-stop buffer (nonStopBaling, :434-435). A non-stop Baler's
+-- pickup lands in the unit native chose (:1979-1987): its buffer, unless the main is taking the
+-- pickup after an overload (fillMainUnitAfterOverload with unloadingStarted). The add settles on that
+-- unit. Its overload, the buffer moved into the chamber in onUpdateTick (:996-1062), and the pad
+-- marker are SGBalerNonStop's; without that module a non-stop Baler stays unframed.
 --
 -- A ROUND BALER (hasUnloadingAnimation true) runs the same pickup tick, add, seal, overflow and
 -- re-add through the same native code. What differs (Bob's 5e intake, Part 1):
@@ -1799,10 +1809,11 @@ G.balerTicks = G.balerTicks or {}
 
 local function finite(n) return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge end
 
---- Does this Baler take the BALER frame? (Bob's C4; SG2-5e-b: square or round, never non-stop)
+--- Does this Baler take the BALER frame? (Bob's C4; SG2-5e-b: square or round; SG2 non-stop framing:
+--- a non-stop Baler too, while its overload half, SGBalerNonStop, is loaded)
 function G.balerFramed(vehicle)
     local spec = type(vehicle) == "table" and vehicle.spec_baler or nil
-    return type(spec) == "table" and vehicle.isServer == true and spec.nonStopBaling ~= true
+    return type(spec) == "table" and vehicle.isServer == true and (spec.nonStopBaling ~= true or SGBalerNonStop ~= nil)
         and type(spec.fillUnitIndex) == "number" and type(spec.workAreaParameters) == "table"
 end
 
@@ -1819,6 +1830,16 @@ end
 --- The main unit's binding and carrier id.
 local function chamberOf(vehicle)
     local binding = A.fillUnitBindingFor(vehicle, vehicle.spec_baler.fillUnitIndex)
+    if binding == nil then return nil end
+    return binding, SGRecords.carrierKeyString(binding.carrierKey)
+end
+
+--- The unit an add landed on: the main unit, or a non-stop Baler's buffer (SG2 non-stop framing).
+local function receiverOf(vehicle, fillUnitIndex)
+    local spec = vehicle.spec_baler
+    if fillUnitIndex == spec.fillUnitIndex then return chamberOf(vehicle) end
+    if spec.nonStopBaling ~= true or type(spec.buffer) ~= "table" or fillUnitIndex ~= spec.buffer.fillUnitIndex then return nil end
+    local binding = A.fillUnitBindingFor(vehicle, fillUnitIndex)
     if binding == nil then return nil end
     return binding, SGRecords.carrierKeyString(binding.carrierKey)
 end
@@ -1984,14 +2005,16 @@ local function record(host, tick, result)
     host.lastSettlement = { callRef = result.callRef, outcome = result.outcome, reason = result.reason, report = result.report or { outcomeEvidence = result.evidence } }
 end
 
---- The add, before the original listener (C1, C2, the seal, Q2). Returns nothing: the report
---- this add raises after the listener is expected when the add settled or was abandoned.
-function G.balerSettleAdd(host, tick, fillTypeIndex, D, Aapplied)
+--- The add, before the original listener (C1, C2, the seal, Q2), on the unit native chose: the main
+--- unit, or a non-stop Baler's buffer (fillUnitIndex; the main when omitted). Returns nothing: the
+--- report this add raises after the listener is expected when the add settled or was abandoned.
+function G.balerSettleAdd(host, tick, fillTypeIndex, D, Aapplied, fillUnitIndex)
     local vehicle = tick.vehicle
     local spec = vehicle.spec_baler
+    fillUnitIndex = fillUnitIndex or spec.fillUnitIndex
     if not tick.bound or tick.live == nil or tick.live.amount <= G.EPSILON then return end
     if not finite(Aapplied) or Aapplied <= G.EPSILON then return end      -- A = 0: no TRANSFER to the unit
-    local unitBinding, unitId = chamberOf(vehicle)
+    local unitBinding, unitId = receiverOf(vehicle, fillUnitIndex)
     if unitBinding == nil then return end
     local F = spec.fillScale
     local Pn = spec.workAreaParameters.lastPickedUpLiters or 0
@@ -2006,17 +2029,18 @@ function G.balerSettleAdd(host, tick, fillTypeIndex, D, Aapplied)
     local ub = beforeOf(cap, unitId)
     local held = ub ~= nil and ub.amount > G.EPSILON and ub.materialRef ~= nil and ub.materialRef.fillTypeName ~= name
     if held then
-        -- Another type in the chamber: FillUnit empties it first (FillUnit.lua:1142-1146), so the
-        -- applied delta is the new level less the old one, not what entered. What entered is the
+        -- Another type in the receiving unit: FillUnit empties it first (FillUnit.lua:1142-1146), so
+        -- the applied delta is the new level less the old one, not what entered. What entered is the
         -- unit's whole new level.
-        local level = vehicle:getFillUnitFillLevel(spec.fillUnitIndex)
+        local level = vehicle:getFillUnitFillLevel(fillUnitIndex)
         src = math.min(P, P * level / (Pn * F))
     end
     tick.live.amount = math.max(0, P - src)
     local after = { [tick.carrierId] = unitState(host, tick.binding), [unitId] = unitState(host, unitBinding) }
     local evidence = { nativePath = "GROUND_BALER_ADD", callRef = tick.callRef .. ":add", fillTypeName = name, requestedAmount = D,
                        appliedAmount = Aapplied, explainedAmount = share, produced = Pn, observedProduced = P, fillScale = F }
-    tick.expected[#tick.expected + 1] = { fillUnitIndex = spec.fillUnitIndex, accepted = Aapplied }
+    if fillUnitIndex ~= spec.fillUnitIndex then evidence.receiver = "BUFFER" end
+    tick.expected[#tick.expected + 1] = { fillUnitIndex = fillUnitIndex, accepted = Aapplied }
     if tick.unproved or held or name == nil or name ~= tick.fillTypeName then
         tick.unproved = true
         host.handle.abandonOperation(cap.handle, G.BALER_COALESCE, after)
@@ -2238,6 +2262,14 @@ local function balerEnd(original, self, ...)
         local unitBinding = chamberOf(self)
         local okR, c, why = pcall(host.handle.refreshCarrier, host.nativeLease, unitBinding, SGNativeHost ~= nil and SGNativeHost.REASON or nil)
         if not okR or (c == nil and why ~= nil) then count(tick.refused, "CHAMBER_REFRESH:" .. tostring(okR and why or c)) end
+        -- SG2 non-stop framing: a non-stop Baler's add can land in its buffer (:1979-1987), so the
+        -- buffer's record is brought to native too. Native picks the receiver; it is never re-derived.
+        local bufferIndex = SGBalerNonStop ~= nil and SGBalerNonStop.bufferIndex(self) or nil
+        if bufferIndex ~= nil then
+            local bufferBinding = A.fillUnitBindingFor(self, bufferIndex)
+            local okB, cB, whyB = pcall(host.handle.refreshCarrier, host.nativeLease, bufferBinding, SGNativeHost ~= nil and SGNativeHost.REASON or nil)
+            if not okB or (cB == nil and whyB ~= nil) then count(tick.refused, "BUFFER_REFRESH:" .. tostring(okB and whyB or cB)) end
+        end
         local okOpen, result = pcall(G.openBalerAdd, host, self, tick)
         if okOpen then frame = result else logOnce("balerAddOpen", "baler add frame failed to open (" .. tostring(result) .. ")") end
     end
@@ -2255,26 +2287,54 @@ local function balerFill(original, self, fillUnitIndex, fillLevelDelta, fillType
     local tick = host ~= nil and G.balerTicks[self] or nil
     local spec = type(self) == "table" and self.spec_baler or nil
     local add, wasFull = false, false
-    if tick ~= nil and type(spec) == "table" and fillUnitIndex == spec.fillUnitIndex and type(fillLevelDelta) == "number" and fillLevelDelta > 0 then
+    local overload, overloadFull = nil, false
+    local positive = type(spec) == "table" and type(fillLevelDelta) == "number" and fillLevelDelta > 0
+    local main = positive and fillUnitIndex == spec.fillUnitIndex
+    -- SG2 non-stop framing: a non-stop Baler's pickup add can land in its buffer (:1979-1987).
+    local buffer = positive and not main and SGBalerNonStop ~= nil and fillUnitIndex ~= nil
+        and fillUnitIndex == SGBalerNonStop.bufferIndex(self)
+    if tick ~= nil and (main or buffer) then
         if tick.addArmed then
             tick.addArmed = false
             add = true
-            -- The original's first test (:1170), on the level the add has already set.
-            local okF, free = pcall(self.getFillUnitFreeCapacity, self, fillUnitIndex)
-            wasFull = okF and type(free) == "number" and free <= 0
-            local ok, err = pcall(G.balerSettleAdd, host, tick, fillTypeIndex, fillLevelDelta, appliedDelta)
+            if main then
+                -- The original's first test (:1170), on the level the add has already set. A buffer
+                -- add finishes nothing and assigns no overflow (:1186-1192).
+                local okF, free = pcall(self.getFillUnitFreeCapacity, self, fillUnitIndex)
+                wasFull = okF and type(free) == "number" and free <= 0
+            end
+            local ok, err = pcall(G.balerSettleAdd, host, tick, fillTypeIndex, fillLevelDelta, appliedDelta, fillUnitIndex)
             if not ok then logOnce("balerAdd", "baler add failed to settle (" .. tostring(err) .. ")") end
-        elseif (spec.fillUnitOverflowFillLevel or 0) == 0 then
+        elseif main and (spec.fillUnitOverflowFillLevel or 0) == 0 then
             local ok, err = pcall(G.balerSettleReAdd, host, tick, fillTypeIndex, appliedDelta)
             if not ok then logOnce("balerReAdd", "baler re-add failed to settle (" .. tostring(err) .. ")") end
         end
-    elseif tick == nil and type(spec) == "table" and fillUnitIndex == spec.fillUnitIndex and type(fillLevelDelta) == "number" and fillLevelDelta > 0 then
-        pcall(G.balerPadOutsideTick, host, self, fillLevelDelta)
+    elseif tick == nil and main then
+        -- SG2 non-stop framing: inside a non-stop Baler's overload scope the main add is the overload's
+        -- (:1052) and a nested one its re-add (:1180-1182); a pad's add arms nothing (SGBalerNonStop).
+        local ov = host ~= nil and SGBalerNonStop ~= nil and SGBalerNonStop.scopeOf(self) or nil
+        local inPad = ov ~= nil and SGBalerNonStop.inPad(self)
+        if ov ~= nil and ov.addArmed and not inPad then
+            overload = ov
+            local okF, free = pcall(self.getFillUnitFreeCapacity, self, fillUnitIndex)
+            overloadFull = okF and type(free) == "number" and free <= 0
+            local ok, err = pcall(SGBalerNonStop.settleOverload, host, ov, fillTypeIndex, fillLevelDelta, appliedDelta)
+            if not ok then logOnce("balerOverload", "baler overload failed to settle (" .. tostring(err) .. ")") end
+        elseif ov ~= nil and ov.settled and not inPad and (spec.fillUnitOverflowFillLevel or 0) == 0 then
+            local ok, err = pcall(G.balerSettleReAdd, host, ov, fillTypeIndex, appliedDelta)
+            if not ok then logOnce("balerOverloadReAdd", "baler overload re-add failed to settle (" .. tostring(err) .. ")") end
+        else
+            pcall(G.balerPadOutsideTick, host, self, fillLevelDelta)
+        end
     end
     local n, r = packn(original(self, fillUnitIndex, fillLevelDelta, fillTypeIndex, toolType, fillPositionData, appliedDelta, ...))
     if add and wasFull then
         local ok, err = pcall(G.balerSettleOverflow, host, tick)
         if not ok then logOnce("balerOverflow", "baler overflow failed to settle (" .. tostring(err) .. ")") end
+    end
+    if overload ~= nil then
+        local ok, err = pcall(SGBalerNonStop.afterOverload, host, overload, overloadFull)
+        if not ok then logOnce("balerOverloadAfter", "baler overload failed to finish (" .. tostring(err) .. ")") end
     end
     return unpack(r, 1, n)
 end
@@ -3058,8 +3118,15 @@ function G.installBalerFinish(vehicle)
         dropWrapper = function(self, ...) return G.aroundDrop(drop, self, ...) end
         vehicle.dropBale = dropWrapper
     end
+    -- SG2 non-stop framing: the pad marker on a non-stop Baler's setIsUnloadingBale (a registered
+    -- function, Baler.lua:155), so the overload scope never reads the pad as an overload.
+    local pad, padWrapper = vehicle.setIsUnloadingBale, nil
+    if type(pad) == "function" and SGBalerNonStop ~= nil and SGBalerNonStop.bufferIndex(vehicle) ~= nil then
+        padWrapper = function(self, ...) return SGBalerNonStop.aroundUnloading(pad, self, ...) end
+        vehicle.setIsUnloadingBale = padWrapper
+    end
     rawset(vehicle, G.FINISH_MARKER, { finish = finish, create = create, drop = drop, finishWrapper = finishWrapper, createWrapper = createWrapper,
-                                       dropWrapper = dropWrapper })
+                                       dropWrapper = dropWrapper, pad = pad, padWrapper = padWrapper })
     return true
 end
 
@@ -3107,9 +3174,9 @@ G.balerLoadFinished = balerLoadFinished
 --       this REBIND's, consumed once COMMITTED: clearing the alias does not consume the bale again.
 --       Anything else is abandoned, the held reports replay, and the clear ends the chamber's stock as
 --       before 5e-c. The mirror retires either way.
--- A drop outside the unload tick (Baler:onDelete, :594) only retires the mirror. Soil's own
--- Baler.onUpdateTick scope (BalerCollection.aroundTick, the non-stop buffer's transfer) is another
--- Baler's work: a non-stop Baler is never framed here.
+-- A drop outside the unload tick (Baler:onDelete, :594) only retires the mirror. A non-stop Baler's
+-- overload in the same listener (the buffer's transfer, :996-1062) is SGBalerNonStop's scope, opened
+-- around this one (G.balerUpdateTick below); the tick that drops a bale runs no overload (:929).
 G.REBIND = "BALE_REBIND"
 G.unloadTicks = G.unloadTicks or setmetatable({}, { __mode = "k" })   -- vehicle -> the unload tick, inside onUpdateTick
 -- The diagnostic record is the host's, as its siblings' lastSettlement is: host.lastRebind (the last
@@ -3192,9 +3259,9 @@ function G.aroundDrop(original, vehicle, baleIndex, ...)
     return original(vehicle, baleIndex, ...)
 end
 
---- (1) Baler.onUpdateTick (class listener): the unload tick's scope, for a round Baler opening with a
---- bale on (:919, :925); every other tick passes straight through.
-function G.balerUpdateTick(original, self, ...)
+--- (1) The unload tick's scope, for a round Baler opening with a bale on (:919, :925); every other tick
+--- passes straight through.
+local function balerUnloadTick(original, self, ...)
     local spec = type(self) == "table" and self.spec_baler or nil
     if g_server == nil or type(spec) ~= "table" or spec.hasUnloadingAnimation ~= true or G.unloadTicks[self] ~= nil
         or type(spec.bales) ~= "table" or #spec.bales == 0 or Baler == nil or spec.unloadingState ~= Baler.UNLOADING_OPENING then
@@ -3212,6 +3279,27 @@ function G.balerUpdateTick(original, self, ...)
             pcall(open.host.closeFrame, open.host, open.frame, nil)
         end
         A.retireRoundMirror(open.bale)
+    end
+    if not r[1] then error(r[2], 0) end
+    return unpack(r, 2, n)
+end
+
+--- Baler.onUpdateTick (class listener). SG2 non-stop framing: a framed non-stop Baler's overload scope
+--- (SGBalerNonStop) opens outermost, so 5e-c's REBIND frame, opened inside it, closes first (LIFO).
+function G.balerUpdateTick(original, self, ...)
+    local host = SGNativeHost ~= nil and SGNativeHost.current or nil
+    local scope = nil
+    if g_server ~= nil and host ~= nil and SGBalerNonStop ~= nil and type(self) == "table" and type(self.spec_baler) == "table"
+        and self.spec_baler.nonStopBaling == true then
+        local okOpen, result = pcall(SGBalerNonStop.open, host, self)
+        if okOpen then scope = result else logOnce("overloadOpen", "baler overload scope failed to open (" .. tostring(result) .. ")") end
+    end
+    if scope == nil then return balerUnloadTick(original, self, ...) end
+    local n, r = packn(pcall(balerUnloadTick, original, self, ...))
+    local okClose, err = pcall(SGBalerNonStop.close, host, scope, r[1])
+    if not okClose then
+        logOnce("overloadClose", "baler overload scope failed to close (" .. tostring(err) .. ")")
+        if scope.frame ~= nil and not scope.frame.closed then pcall(G.closeFrame, host, scope.frame, r[1]) end
     end
     if not r[1] then error(r[2], 0) end
     return unpack(r, 2, n)
