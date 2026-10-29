@@ -76,6 +76,8 @@ source(modDirectory .. "src/native/SGGroundArea.lua")
 source(modDirectory .. "src/native/SGFieldToolBufferSave.lua")
 -- SG2-5g: a straw blower's loaded bale and its fill unit as one quantity (NATIVE_STRAW_BLOWER_V1).
 source(modDirectory .. "src/native/SGStrawBlower.lua")
+-- SG2 non-stop framing: a non-stop Baler's buffer overload and its pad marker (SG-2 :471, RSF-F211 :100).
+source(modDirectory .. "src/native/SGBalerNonStop.lua")
 source(modDirectory .. "src/native/SGNativeHost.lua")
 -- SG-3 Part 2.1: the food and feed grading member (profiles, the pure evaluator, the stored
 -- qualityBasisV1 producer, the derived sg3.assessments, and the member that registers them).

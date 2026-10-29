@@ -9,7 +9,8 @@
 --   (c) the unload clear (:928, onUpdateTick, after dropBale) ends the chamber stock, once, outside any tick;
 --   (d) the partial-ejection pad (:1328-1347) never becomes known litres, logged once per baler;
 --   (e) a round overflow saves and restores through 5e-a's save participant.
--- A non-stop Baler stays unframed; two map loads in one process.
+-- A non-stop Baler stays unframed while SGBalerNonStop is not loaded (the module-absent side of K2;
+-- the loaded side is SG2-nonstop-baler_framing_spec_test.lua); two map loads in one process.
 --
 -- THE ENTRY-POINT BAR IS GROUP E: main.lua's load path wraps the live Baler class's listeners and the
 -- native host brackets the pickup's CAPTURED pointer (WorkArea.lua:266); WorkArea's own order, with its
@@ -1511,7 +1512,7 @@ group("N", function()
         local m, sg, host, w = boot5db(opts, "w5eb_n" .. i, 360 + i)
         soilReset()
         tick(w.baler)
-        T.eq(i == 1 and "N1 NAMED: a non-stop Baler opens no tick, though native picked up into its buffer (the area was active)" or "N2 NAMED: a round non-stop Baler, the same",
+        T.eq(i == 1 and "N1 NAMED: a non-stop Baler opens no tick while SGBalerNonStop is not loaded, though native picked up into its buffer (the area was active)" or "N2 NAMED: a round non-stop Baler, the same, while SGBalerNonStop is not loaded",
             tostring(host.lastBalerTick) .. "/" .. admits() .. "/" .. tostring(GO_.balerFramed(w.baler)) .. "/" .. num(w.baler.spec_baler.workAreaParameters.lastPickedUpLiters) .. "/" .. num(w.baler:getFillUnitFillLevel(3)),
             "nil/0/false/100/100")
         FSBaseMission.delete(m)
