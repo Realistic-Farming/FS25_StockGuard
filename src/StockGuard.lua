@@ -203,6 +203,16 @@ function SG:buildHandle()
         return { state = c.state, reason = c.reason, usable = c.usable, view = c.replica and SGValues.copy(c.replica) or nil, credentials = c.credentials and SGValues.copy(c.credentials) or nil }
     end
     h.getStatus = function() return SG.status(host) end
+    -- SG-5 host v2.15 :392 (G6): other mods open the stock page through the handle. A dedicated server
+    -- has no Esc menu, so it publishes nothing.
+    if g_dedicatedServer == nil then
+        h.openHostModule = function(opts)
+            if SgRfPdaGuest == nil or type(SgRfPdaGuest.openFromHostModule) ~= "function" then
+                return false, "OPEN_HOST_ABSENT"
+            end
+            return SgRfPdaGuest.openFromHostModule(opts)
+        end
+    end
     self.handle = h
     return h
 end

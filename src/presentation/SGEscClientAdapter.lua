@@ -1158,6 +1158,11 @@ function A.getPaintState(mission)
             state = "ERROR"
             reasonKey = "MALFORMED_VIEW"
             hostUsable = false
+        elseif snap.view.pagingVersion ~= 1 then
+            -- SG-5 host v2.15 :79-81: a STOCK READY view counts only when it declares paging version 1.
+            state = "ERROR"
+            reasonKey = "MALFORMED_VIEW"
+            hostUsable = false
         else
             -- [REPAIR-365 major3] The expected-key check read host.transport.client, which
             -- the published handle does not expose (src/StockGuard.lua), so it never ran in
