@@ -587,16 +587,60 @@ do
     for i = 1, 64 do rows[i] = { "T" .. i, i } end
     local c5 = CAP.new()
     T.eq("G13 six-bit ground count 64 refused", c5:prepareGround(hm(rows, 0, 6), {}, channels, false), false)
-    -- Saved mapping: lowercase keys, same index; changed index refuses; missing mapping on an accepted save refuses.
+    -- Saved mapping: lowercase keys, same index; a MOVED index of a present type is safe and
+    -- accepted (R226, carried from the installed build); a removed type, an out-of-range
+    -- index and a malformed index each refuse with their own reason; missing mapping on an
+    -- accepted save refuses.
     local c6 = CAP.new()
     local m6 = hm({ { "WHEAT", 100 }, { "ZINC", 400 } }, 0, 6)
     m6.tipTypeMappings = { wheat = 1, zinc = 2 }
     T.eq("G14 saved lowercase keys match canonical names", c6:prepareGround(m6, {}, channels, true), true)
+    -- [R226] A saved index is a POSITION, not an identity: the engine renumbers every height
+    -- type on each registration, so any added foliage or mod type shifts the rest. Both names
+    -- here are still present, so the engine can remap and this must not stop the load. This
+    -- assertion used to expect a refusal with SAVED_MAPPING_CHANGED, which is the behaviour
+    -- R226 removes.
     local c7 = CAP.new()
     local m7 = hm({ { "WHEAT", 100 }, { "ZINC", 400 } }, 0, 6)
     m7.tipTypeMappings = { wheat = 2, zinc = 1 }
-    T.eq("G15 saved reordered names refused", c7:prepareGround(m7, {}, channels, true), false)
-    T.eq("G16 reason", c7.reasonCode, "SAVED_MAPPING_CHANGED")
+    T.eq("G15 a MOVED index of a present type is accepted", c7:prepareGround(m7, {}, channels, true), true)
+    T.eq("G16 and nothing is reported", c7.reasonCode, nil)
+    -- The engine remaps from the saved AND current index, so the saved mapping has to survive
+    -- the accepted path for the superFunc call to pass it on.
+    T.eq("G16a the saved mapping is left intact for the engine", m7.tipTypeMappings.wheat, 2)
+    T.eq("G16b and not rewritten to the current index", m7.tipTypeMappings.zinc, 1)
+    -- An unchanged mapping is still accepted, and still left alone.
+    local c7b = CAP.new()
+    local m7b = hm({ { "WHEAT", 100 }, { "ZINC", 400 } }, 0, 6)
+    m7b.tipTypeMappings = { wheat = 1, zinc = 2 }
+    T.eq("G16c an unchanged mapping is accepted", c7b:prepareGround(m7b, {}, channels, true), true)
+    T.eq("G16d and preserved", m7b.tipTypeMappings.zinc, 2)
+    -- A type that is GONE still stops: native would force a raster conversion that can
+    -- reinterpret heaps of that very type.
+    local c7c = CAP.new()
+    local m7c = hm({ { "WHEAT", 100 } }, 0, 6)
+    m7c.tipTypeMappings = { wheat = 1, zinc = 2 }
+    T.eq("G16e a REMOVED type refuses", c7c:prepareGround(m7c, {}, channels, true), false)
+    T.eq("G16f with its own reason", c7c.reasonCode, "SAVED_MAPPING_REMOVED")
+    T.eq("G16g naming the type that went", c7c.offending, "zinc")
+    -- An index beyond what the channel count can represent cannot be remapped by anything.
+    local c7d = CAP.new()
+    local m7d = hm({ { "WHEAT", 100 } }, 0, 6)
+    m7d.tipTypeMappings = { wheat = 64 }
+    T.eq("G16h an index above capacity refuses", c7d:prepareGround(m7d, {}, channels, true), false)
+    T.eq("G16i with its own reason", c7d.reasonCode, "SAVED_MAPPING_OUT_OF_RANGE")
+    T.eq("G16j and capacity really is 2^6-1", c7d.groundCapacity or 63, 63)
+    -- Malformed indices are still invalid, and are reported as invalid rather than as a move.
+    local c7e = CAP.new()
+    local m7e = hm({ { "WHEAT", 100 } }, 0, 6)
+    m7e.tipTypeMappings = { wheat = 0 }
+    T.eq("G16k a zero index refuses", c7e:prepareGround(m7e, {}, channels, true), false)
+    T.eq("G16l as invalid", c7e.reasonCode, "SAVED_MAPPING_INVALID")
+    local c7f = CAP.new()
+    local m7f = hm({ { "WHEAT", 100 }, { "ZINC", 400 } }, 0, 6)
+    m7f.tipTypeMappings = { wheat = 1, zinc = 1 }
+    T.eq("G16m two names on one index refuses", c7f:prepareGround(m7f, {}, channels, true), false)
+    T.eq("G16n as invalid", c7f.reasonCode, "SAVED_MAPPING_INVALID")
     local c8 = CAP.new()
     T.eq("G17 accepted save without a mapping refused", c8:prepareGround(hm({ { "WHEAT", 100 } }, 0, 6), {}, channels, true), false)
     T.eq("G18 reason", c8.reasonCode, "SAVED_MAPPING_MISSING")
