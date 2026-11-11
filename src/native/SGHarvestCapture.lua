@@ -43,6 +43,14 @@
 --   portion with its state, count, scale and Soil snapshot; a call the profile could
 --   not admit stays one UNKNOWN portion that says why (SG-2 :505-511).
 --
+--   THE BIRTH'S PLACE. The cut's outcomeEvidence names where it happened, vehiclePosition
+--   { x, y, z, vehicleId } (SGNativeAdapters.vehiclePositionOf): the header's root node, else
+--   the combine's, read in cutOpen inside the native call. SG-1 hands outcomeEvidence to every
+--   birth producer's transform as context.report.outcomeEvidence, so a producer that needs the
+--   field (Soil's harvestOrganicOriginV1) reads it there instead of a player's vehicle, which a
+--   dedicated server and a hired worker do not have. Plain numbers, never the vehicle; nil when
+--   no root node reads. Nothing in it is saved or sent.
+--
 -- NOT HERE (said on the PR): the save extension for delay and straw slots (SG2-3c);
 -- the straw drop to ground or chopper (SG2-4, tipToGroundAroundLine); a pickup
 -- cutter's ground material (no witness, so an UNKNOWN portion until SG2-4).
@@ -253,9 +261,14 @@ function HC.cutOpen(host, combine, area, liters, inputFruitType, outputFillType)
     local frame = SGOperationContext.open(host.context, combine, HC.CUT_FRAME)
     if frame == nil then return nil end
     local cap, why = host.handle.captureOperation(host.nativeLease, "BIRTH", captureList)
+    -- Where the cut happened, read now, inside the native call: the header that cut (the cutter
+    -- whose end of processing is calling this combine), else the combine itself (header, THE BIRTH'S
+    -- PLACE).
+    local A = SGNativeAdapters
+    local position = A.vehiclePositionOf(cutter) or A.vehiclePositionOf(combine)
     frame.cut = {
         capture = cap, captureFailure = why, participants = participants, portions = portions, weightSum = sum,
-        grain = grain, straw = straw, callRef = callRef,
+        grain = grain, straw = straw, callRef = callRef, vehiclePosition = position,
         args = { area = area, liters = liters, inputFruitType = inputFruitType, outputFillType = outputFillType },
     }
     return frame
@@ -324,7 +337,8 @@ function HC.cutClose(host, frame, ok, returned)
                 allocations = allocations,
                 outcomeEvidence = { nativePath = HC.PATH_CUT, callRef = t.callRef, area = t.args.area, liters = t.args.liters,
                     inputFruitType = t.args.inputFruitType, outputFillType = t.args.outputFillType, returned = returned,
-                    grainBorn = grainBorn, strawBorn = strawBorn, weightSum = t.weightSum, portions = evidencePortions },
+                    grainBorn = grainBorn, strawBorn = strawBorn, weightSum = t.weightSum, portions = evidencePortions,
+                    vehiclePosition = t.vehiclePosition },
             }
             local outcome, reason = host.handle.settleOperation(t.capture.handle, report)
             host.lastHarvest = { callRef = t.callRef, outcome = outcome, reason = reason, report = report }

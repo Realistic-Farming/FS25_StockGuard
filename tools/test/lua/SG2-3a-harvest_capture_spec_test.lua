@@ -28,6 +28,7 @@
 --   W  a witness belongs to its own frame: a cutter end that raised leaves nothing behind
 --   N  no witness: an UNKNOWN portion, never a guessed one
 --   R  refusals: a client, a native error
+--   V  the birth's place: a birth producer's transform reads where the cut happened from its evidence
 --
 --!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
 
@@ -478,4 +479,88 @@ group("Q", function()
         head(host.lastHarvest) .. "|" .. hopperBirths .. "|" .. before .. "|" .. combines .. "|" .. (q and (q.knowledge .. ":" .. num(q.knownAmount) .. ":" .. tostring(q.payload.portions)) or "none"),
         "COMBINE_CUT/COMMITTED|1|6|0|KNOWN:" .. num(w.combine:getFillUnitFillLevel(1)) .. ":2")
     FSBaseMission.delete(m)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V. THE BIRTH'S PLACE (MD-16 chain: Soil's harvestOrganicOriginV1 on a dedicated server)
+-- ══════════════════════════════════════════════════════════════════════════
+-- A birth producer's transform reads where the cut happened from the cut's own evidence,
+-- context.report.outcomeEvidence.vehiclePosition: the header's root node, else the combine's
+-- (SGNativeAdapters.vehiclePositionOf, read in cutOpen). No player sits in any vehicle of this world
+-- and the mission names no controlled vehicle, as on a dedicated server.
+group("V", function()
+    local function bootAt(headerNode, combineNode)
+        local m, sg, host, w = boot(function(m, w)
+            w.combine = combineIn(m, "vehicle:combine")
+            w.header = headerIn(m, "vehicle:header", w.combine, { areas = 2, width = 4, depth = 1 })
+            w.combine.rootNode, w.header.rootNode = combineNode, headerNode
+            ENGINE_PLANE.sow(FRUIT, 0, 0, 4, 1, 4)
+            ENGINE_PLANE.sow(FRUIT, 4, 0, 8, 1, 3)
+        end)
+        local seen = {}
+        -- Registered on the mission's handle after the load, as Soil's OrganicOriginProperty registers.
+        local lease = m.stockGuard.registerProperty("bench.place", { schemaVersion = 1, producerId = "bench", residency = "STORED", birth = true,
+            validate = function() return true end, combine = function() return nil end, disclosure = function(_, r) return r end,
+            transform = function(ctx, inputs, outputs)
+                local ev = ctx.report and ctx.report.outcomeEvidence or {}
+                local p = ev.vehiclePosition
+                seen[#seen + 1] = tostring(ev.nativePath) .. ":" .. (p == nil and "none"
+                    or (num(p.x) .. "/" .. tostring(p.y ~= nil and num(p.y) or nil) .. "/" .. num(p.z) .. "/" .. tostring(p.vehicleId)))
+                if p == nil then return nil, "NO_PLACE" end
+                return { propertyId = "bench.place", schemaVersion = 1, producerId = "bench", propertyRevision = 0, knowledge = "KNOWN",
+                         knownAmount = outputs[1].amount, basisAmount = outputs[1].amount, amountUnit = "LITRE", payload = { x = p.x, z = p.z } }
+            end })
+        return m, sg, host, w, seen, lease
+    end
+    local function placeOf(sg, id)
+        local s = stockAt(sg, id)
+        local p = s and s.properties["bench.place"] or nil
+        if p == nil then return "none" end
+        if p.knowledge ~= "KNOWN" then return tostring(p.knowledge) .. ":" .. tostring(p.reason) end
+        return num(p.payload.x) .. "/" .. num(p.payload.z)
+    end
+
+    local m, sg, host, w, seen, lease = bootAt({ x = 37.5, y = 2.25, z = -12.75 }, { x = 41, y = 3, z = -20 })
+    T.eq("V0 [reached] the producer is registered, and the world has no player vehicle (no controlled vehicle on the mission, no local player)",
+        tostring(lease ~= nil) .. "/" .. tostring(m.controlledVehicle) .. "/" .. tostring(g_localPlayer), "true/nil/nil")
+    local hop, straw1 = hopperId(w.combine), slotId(w.combine, NA.KIND_STRAW_SLOT, 1)
+    ENGINE_HARVEST_TICK(w.header, w.combine, 16)
+    table.sort(seen)
+    T.eq("V1 NAMED [entry point]: one cut through main.lua's install is ONE BIRTH, and the birth producer's transform reads the header's place from the cut's own evidence, for the hopper and for the straw slot",
+        head(host.lastHarvest) .. "|" .. table.concat(seen, ","),
+        "COMBINE_CUT/COMMITTED|COMBINE_CUT:37.5/2.25/-12.75/vehicle:header,COMBINE_CUT:37.5/2.25/-12.75/vehicle:header")
+    T.eq("V2 NAMED: the record the producer made from that place is what the hopper's and the straw slot's stocks carry", placeOf(sg, hop) .. "|" .. placeOf(sg, straw1),
+        "37.5/-12.75|37.5/-12.75")
+    local ev = host.lastHarvest and host.lastHarvest.report and host.lastHarvest.report.outcomeEvidence or {}
+    T.eq("V3 the place is plain data: numbers and the header's persistent id, never the vehicle table",
+        type(ev.vehiclePosition) .. "/" .. type(ev.vehiclePosition and ev.vehiclePosition.x) .. "/" .. type(ev.vehiclePosition and ev.vehiclePosition.vehicleId), "table/number/string")
+    FSBaseMission.delete(m)
+
+    -- A header whose root node does not read: the combine's own place.
+    m, sg, host, w, seen = bootAt(nil, { x = 41, y = 3, z = -20 })
+    ENGINE_HARVEST_TICK(w.header, w.combine, 16)
+    table.sort(seen)
+    T.eq("V4 NAMED: with no header root node the cut names the combine's place", head(host.lastHarvest) .. "|" .. table.concat(seen, ","),
+        "COMBINE_CUT/COMMITTED|COMBINE_CUT:41/3/-20/vehicle:combine,COMBINE_CUT:41/3/-20/vehicle:combine")
+    FSBaseMission.delete(m)
+
+    -- Neither reads: no place, never a guessed one; the cut still commits and the producer is still asked.
+    m, sg, host, w, seen = bootAt(nil, nil)
+    hop = hopperId(w.combine)
+    ENGINE_HARVEST_TICK(w.header, w.combine, 16)
+    T.eq("V5 NAMED: with no root node anywhere the evidence names no place, the producer is still asked, and its refusal is the stock's honest UNAVAILABLE",
+        head(host.lastHarvest) .. "|" .. table.concat(seen, ",") .. "|" .. placeOf(sg, hop), "COMBINE_CUT/COMMITTED|COMBINE_CUT:none,COMBINE_CUT:none|UNAVAILABLE:NO_PLACE")
+    FSBaseMission.delete(m)
+
+    -- The reader on its own: nothing but a finite place is a place.
+    local function at(v) local p = NA.vehiclePositionOf(v) return p == nil and "nil" or (tostring(p.x) .. "/" .. tostring(p.y) .. "/" .. tostring(p.z) .. "/" .. tostring(p.vehicleId)) end
+    T.eq("V6 vehiclePositionOf: no vehicle, no root node, a NaN x, an infinite z, each nil",
+        at(nil) .. "," .. at({}) .. "," .. at({ rootNode = { x = 0 / 0, z = 1 } }) .. "," .. at({ rootNode = { x = 1, z = math.huge } }), "nil,nil,nil,nil")
+    T.eq("V7 a non-finite height is dropped and the place kept; a vehicle with no persistent id has none",
+        at({ rootNode = { x = 5, y = 0 / 0, z = 6 } }), "5/nil/6/nil")
+    local real = getWorldTranslation
+    getWorldTranslation = function() error("node gone") end
+    local raised = at({ rootNode = 7, uniqueId = "vehicle:x" })
+    getWorldTranslation = real
+    T.eq("V8 a read that raises is no place, and never escapes into the native call", raised, "nil")
 end)

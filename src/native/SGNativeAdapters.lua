@@ -125,6 +125,24 @@ local function persistentIdOf(object)
 end
 A.persistentIdOf = persistentIdOf
 
+--- Where a vehicle stands now, as plain numbers: { x, y, z, vehicleId }, or nil. A birth's
+--- outcomeEvidence carries it (SGHarvestCapture's cut, the Mower's cut in SGGroundObserver) so
+--- a producer's transform can tell where the material was born, on a dedicated server too,
+--- where no player sits in the vehicle that did the work. Vehicle:loadFinished sets rootNode to
+--- the vehicle's first component (Vehicle.lua:628), Vehicle:delete clears it (:1131), and the engine
+--- reads a vehicle's place the same way, getWorldTranslation(self.rootNode) (:1697, :3029). nil
+--- when there is no root node or the read is not a finite place: never a guessed position.
+--- Numbers only, because an owner's callbacks are pure over detached inputs (SGOperations), so
+--- the vehicle itself never travels. Nothing here is saved or sent.
+function A.vehiclePositionOf(vehicle)
+    if type(vehicle) ~= "table" or vehicle.rootNode == nil or type(getWorldTranslation) ~= "function" then return nil end
+    local ok, x, y, z = pcall(getWorldTranslation, vehicle.rootNode)
+    if not ok or type(x) ~= "number" or type(z) ~= "number" then return nil end
+    if x ~= x or z ~= z or math.abs(x) == math.huge or math.abs(z) == math.huge then return nil end
+    if type(y) ~= "number" or y ~= y or math.abs(y) == math.huge then y = nil end
+    return { x = x, y = y, z = z, vehicleId = persistentIdOf(vehicle) }
+end
+
 --- Canonical native fill type name for an index (FillTypeManager.lua:292), or nil.
 local function fillTypeNameOf(index)
     if index == nil or g_fillTypeManager == nil or type(g_fillTypeManager.getFillTypeNameByIndex) ~= "function" then return nil end
