@@ -1224,6 +1224,12 @@ end
 -- not admitted admits none of its lines, and a buffer that took such a call's output admits no drop
 -- until it empties: Soil's own carrier keeps what it carried. Feed eligibility (:185) is WITHHELD on
 -- SG-3; the fill-unit branch reaches no ground and no Soil.
+--
+-- THE BIRTH'S PLACE. Each GROUND_MOWER_CUT settle's outcomeEvidence names where the cut happened,
+-- vehiclePosition { x, y, z, vehicleId }: the mower's own root node (SGNativeAdapters.vehiclePositionOf),
+-- read at the cut, inside the processMowerArea call. A birth producer's transform reads it as
+-- context.report.outcomeEvidence.vehiclePosition, as on the cutter's path (SGHarvestCapture). Plain
+-- numbers, never the vehicle; nil when no root node reads. Nothing in it is saved or sent.
 
 G.MOWER = "MOWER"
 G.MOWER_DROP = "MOWER_DROP"
@@ -1344,9 +1350,10 @@ function G.mowerAfterCut(host, frame, fruitIndex, returned, result)
         portions[1] = { slotId = callRef .. ":unknown", nativeCreatorKey = creator, weight = 1, knowledge = "UNKNOWN", reason = reason }
         weightSum = 1
     end
+    -- Where the cut happened, read at the cut (THE BIRTH'S PLACE, above G.MOWER).
     m.planned = { callRef = callRef, portions = portions, weightSum = weightSum, destId = dest, destBinding = destBinding,
                   fresh = m.soilAdmitted and m.mode == "BUFFER", fruitIndex = fruitIndex, returned = returned,
-                  outputType = outputType, outputName = outputName }
+                  outputType = outputType, outputName = outputName, vehiclePosition = A.vehiclePositionOf(m.vehicle) }
 end
 
 --- Capture the frame's planned cut, with the line's cells when it is the cut's own dry-grass pickup
@@ -1389,7 +1396,8 @@ function G.mowerCapture(host, gf, pre, returned)
     if plan == nil then
         gf.sequence = gf.sequence + 1
         plan = { callRef = gf.callRef .. ":" .. tostring(gf.sequence), portions = {}, weightSum = 1, destId = m.carrierId, destBinding = m.binding,
-                 fresh = false, outputName = A.mowerBuffers[m.carrierId] ~= nil and fillTypeNameOf(m.dropArea.fillType) or nil }
+                 fresh = false, outputName = A.mowerBuffers[m.carrierId] ~= nil and fillTypeNameOf(m.dropArea.fillType) or nil,
+                 vehiclePosition = A.vehiclePositionOf(m.vehicle) }
     end
     plan.capture, plan.mowerKind, plan.participants, plan.pre = cap, "CUT", participants, (#changes > 0) and pre or nil
     plan.returnedLine = returned
@@ -1427,7 +1435,8 @@ function G.mowerSettle(host, gf, op, ok)
             maturity = p.maturity, fruitName = p.fruitName, primaryFillTypeName = p.primaryFillTypeName }
     end
     local evidence = { nativePath = "GROUND_MOWER_CUT", callRef = op.callRef, fillTypeName = op.outputName, destination = m.mode,
-                       returnedArea = op.returned, produced = L, before = B, fresh = op.fresh, portions = evidencePortions, weightSum = op.weightSum }
+                       returnedArea = op.returned, produced = L, before = B, fresh = op.fresh, portions = evidencePortions, weightSum = op.weightSum,
+                       vehiclePosition = op.vehiclePosition }
     local refuse = (not ok) and "NATIVE_ERROR" or nil
     if refuse == nil and ns == nil then refuse = "AFTER_STATE_UNREADABLE" end
     if refuse == nil and b == nil then refuse = "NO_DESTINATION" end
