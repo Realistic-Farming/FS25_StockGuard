@@ -42,6 +42,7 @@
 --   O  the drop slot wrapped over or under a foreign wrapper
 --   D  destruction, and the mission's end
 --   N  the kind: native-backed, never enumerated; a restore keeps its saved binding (SG2-5bc-save)
+--   V  the birth's place: a birth producer's transform reads where the Mower cut from its evidence
 --
 --!env: modenv
 --!load: tools/test/lua/SG2-2-engine_model.lua, tools/test/lua/SG2-3-engine_model.lua, tools/test/lua/SG2-4a-savegame_model.lua, tools/test/lua/SG2-4b-ground_model.lua, src/core/SGClassHook.lua, src/capacity/SGSha256.lua, src/capacity/SGCanonicalProfile.lua, src/capacity/SGWireFormats.lua, src/capacity/SGCapacity.lua, src/core/SGValues.lua, src/core/SGRecords.lua, src/core/SGRegistry.lua, src/core/SGOperations.lua, src/core/SGFarmRestore.lua, src/core/SGSave.lua, src/core/SGSiteBinding.lua, src/core/SGViews.lua, src/core/SGCommands.lua, src/core/SGTransport.lua, src/StockGuard.lua, src/native/SGOperationContext.lua, src/native/SGWorkAreaInstaller.lua, src/native/SGStorageBracket.lua, src/native/SGFillUnitObserver.lua, src/native/SGNativeAdapters.lua, src/native/SGStationAdapter.lua, src/native/SGDischargeCapture.lua, src/native/SGNativeSale.lua, src/native/SGCutState.lua, src/native/SGHarvestCapture.lua, src/native/SGCombineBufferSave.lua, src/native/SGNativeMaterialSave.lua, src/native/SGGround.lua, src/native/SGGroundSampler.lua, src/native/SGGroundObserver.lua, src/native/SGSoilCondition.lua, src/native/SGNativeHost.lua, src/placeables/ChemicalStationRoles.lua, src/placeables/ChemicalStationAddress.lua, src/placeables/ChemicalStationWipRoute.lua, src/placeables/ChemicalStationSaleGate.lua, main.lua
@@ -1226,5 +1227,48 @@ group("N", function()
     T.eq("N4 NAMED: a 0.0004 L residue native keeps is the buffer's, exactly: the MOWER frame's close reconciles it and leaves it bound (no epsilon of its own)",
         tostring(s ~= nil and s.observedAmount == 0.0004) .. "/" .. liveBuffers(), "true/1")
     FSBaseMission.delete(m)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V. THE BIRTH'S PLACE (MD-16 chain: Soil's harvestOrganicOriginV1 on a dedicated server)
+-- ══════════════════════════════════════════════════════════════════════════
+-- A birth producer's transform reads where the Mower cut from the cut's own evidence,
+-- context.report.outcomeEvidence.vehiclePosition: the mower's root node, read at the cut. No player
+-- sits in any vehicle of this world, as on a dedicated server.
+group("V", function()
+    local function bootAt(node, key, index)
+        resetWorld()
+        soilReset()
+        local m, sg, host, w = boot5c({ kind = "mower" }, key, index)
+        w.mower.rootNode = node
+        local seen = {}
+        -- Registered on the mission's handle after the load, as Soil's OrganicOriginProperty registers.
+        m.stockGuard.registerProperty("bench.place", { schemaVersion = 1, producerId = "bench", residency = "STORED", birth = true,
+            validate = function() return true end, combine = function() return nil end, disclosure = function(_, r) return r end,
+            transform = function(ctx, inputs, outputs)
+                local ev = ctx.report and ctx.report.outcomeEvidence or {}
+                local p = ev.vehiclePosition
+                seen[#seen + 1] = tostring(ev.nativePath) .. ":" .. (p == nil and "none"
+                    or (num(p.x) .. "/" .. tostring(p.y ~= nil and num(p.y) or nil) .. "/" .. num(p.z) .. "/" .. tostring(p.vehicleId)))
+                if p == nil then return nil, "NO_PLACE" end
+                return { propertyId = "bench.place", schemaVersion = 1, producerId = "bench", propertyRevision = 0, knowledge = "KNOWN",
+                         knownAmount = outputs[1].amount, basisAmount = outputs[1].amount, amountUnit = "LITRE", payload = { x = p.x, z = p.z } }
+            end })
+        sow(4)
+        blockDrop(true)
+        local f = tick(host, w.mower, w.cut)
+        local s = bufferStock(sg, w)
+        local p = s and s.properties["bench.place"] or nil
+        local place = p == nil and "none" or (p.knowledge ~= "KNOWN" and (tostring(p.knowledge) .. ":" .. tostring(p.reason)) or (num(p.payload.x) .. "/" .. num(p.payload.z)))
+        FSBaseMission.delete(m)
+        return opsText(f), table.concat(seen, ","), place
+    end
+    local ops, seen, place = bootAt({ x = -63.5, y = 1.5, z = 208.25 }, "w5c_v", 130)
+    T.eq("V1 NAMED [entry point]: the Mower's cut is ONE BIRTH into its buffer, and the birth producer's transform reads the mower's place from the cut's own evidence",
+        ops .. "|" .. seen, "GROUND_MOWER_CUT:COMMITTED|GROUND_MOWER_CUT:-63.5/1.5/208.25/vehicle:mower")
+    T.eq("V2 NAMED: the record the producer made from that place is what the buffer's stock carries", place, "-63.5/208.25")
+    ops, seen, place = bootAt(nil, "w5c_v2", 131)
+    T.eq("V3 NAMED: a mower whose root node does not read names no place, never a guessed one; the cut still commits and the producer's refusal is the stock's honest UNAVAILABLE",
+        ops .. "|" .. seen .. "|" .. place, "GROUND_MOWER_CUT:COMMITTED|GROUND_MOWER_CUT:none|UNAVAILABLE:NO_PLACE")
 end)
 end
